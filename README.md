@@ -65,7 +65,7 @@ aircraft: Neo      # optional: Name oder Seriennummer
 heatmap: true
 markers: true      # Startpunkte
 home: true         # Home-Punkte
-tiles: osm         # osm | satellite | topo
+tiles: osm         # osm (Carto Voyager, wie HA-Map-Card) | light | satellite | topo
 height: 450
 ```
 

@@ -23,11 +23,21 @@ const PALETTE = [
   "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990",
 ];
 
+// Same tile provider Home Assistant's own map card uses. OpenStreetMap's
+// tile servers reject requests without a Referer, which HA never sends.
+const CARTO_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
 const TILES = {
   osm: {
-    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    attribution: "&copy; OpenStreetMap contributors",
-    maxZoom: 19,
+    url: "https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+    dark: "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png",
+    attribution: CARTO_ATTR,
+    maxZoom: 20,
+  },
+  light: {
+    url: "https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png",
+    dark: "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png",
+    attribution: CARTO_ATTR,
+    maxZoom: 20,
   },
   satellite: {
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -84,6 +94,8 @@ class DjiFlightMapCard extends HTMLElement {
     this._config = null;
     this._map = null;
     this._layers = null;
+    this._tileLayer = null;
+    this._tileUrl = null;
     this._lastRefreshKey = null;
     this._loading = false;
     this._timer = null;
@@ -170,6 +182,8 @@ class DjiFlightMapCard extends HTMLElement {
         <div class="empty" id="empty" hidden>Noch keine Flüge importiert.</div>
       </ha-card>`;
     this._map = null;
+    this._tileLayer = null;
+    this._tileUrl = null;
   }
 
   _isDark() {
@@ -183,14 +197,26 @@ class DjiFlightMapCard extends HTMLElement {
     if (this._map) return this._map;
     const el = this.shadowRoot.getElementById("map");
     if (!el) return null;
-    const tiles = TILES[this._config.tiles] || TILES.osm;
     this._map = L.map(el, { zoomControl: true, attributionControl: true });
-    L.tileLayer(tiles.url, { attribution: tiles.attribution, maxZoom: tiles.maxZoom }).addTo(this._map);
+    this._applyTiles();
     this._map.setView([51.0, 10.0], 5);
     this._layers = L.layerGroup().addTo(this._map);
     // The card can be created while hidden (e.g. in a tab); Leaflet needs a size.
     new ResizeObserver(() => this._map && this._map.invalidateSize()).observe(el);
     return this._map;
+  }
+
+  _applyTiles() {
+    const L = window.L;
+    const tiles = TILES[this._config.tiles] || TILES.osm;
+    const dark = this._isDark() && !!tiles.dark;
+    const url = dark ? tiles.dark : tiles.url;
+    if (this._tileLayer && this._tileUrl === url) return;
+    if (this._tileLayer) this._map.removeLayer(this._tileLayer);
+    this._tileUrl = url;
+    this._tileLayer = L.tileLayer(url, { attribution: tiles.attribution, maxZoom: tiles.maxZoom }).addTo(this._map);
+    // Only providers without a dark variant get the CSS invert.
+    this.shadowRoot.querySelector("ha-card").classList.toggle("dark", this._isDark() && !tiles.dark);
   }
 
   _query() {
@@ -232,8 +258,7 @@ class DjiFlightMapCard extends HTMLElement {
     if (!map) return;
     const L = window.L;
     const c = this._config;
-    const card = this.shadowRoot.querySelector("ha-card");
-    card.classList.toggle("dark", this._isDark());
+    this._applyTiles();
     this._layers.clearLayers();
 
     const empty = this.shadowRoot.getElementById("empty");
