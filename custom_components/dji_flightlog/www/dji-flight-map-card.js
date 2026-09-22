@@ -27,7 +27,7 @@
 
 const STATIC = "/dji_flightlog_static";
 const API = "dji_flightlog";
-const CARD_VERSION = "0.2.4";
+const CARD_VERSION = "0.2.5";
 
 const PALETTE = [
   "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
@@ -543,6 +543,10 @@ class DjiFlightMapCard extends HTMLElement {
         .leaflet-popup-content { margin: 10px 12px; line-height: 1.4; }
         .leaflet-popup-content b { display: block; margin-bottom: 4px; }
         .leaflet-popup-content .links a { margin-right: 8px; cursor: pointer; color: var(--primary-color); }
+        .leaflet-popup-content .media { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; max-width: 260px; }
+        .leaflet-popup-content .media a { position: relative; display: block; width: 84px; height: 48px; border-radius: 4px; overflow: hidden; background: var(--divider-color, #ddd); }
+        .leaflet-popup-content .media img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .leaflet-popup-content .media span { position: absolute; right: 2px; bottom: 2px; font-size: 10px; line-height: 1; padding: 2px 3px; border-radius: 3px; background: rgba(0,0,0,.6); color: #fff; }
         .dark .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9); }
         .dark .leaflet-container { background: #111; }
         .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--card-background-color, #fff); color: var(--primary-text-color, #000); }
@@ -1215,8 +1219,18 @@ class DjiFlightMapCard extends HTMLElement {
     const exports = f.points
       ? `<div class="links">${details}${["gpx", "kml", "geojson"].map((x) => `<a data-fmt="${x}">${x.toUpperCase()}</a>`).join("")}</div>`
       : `<div class="links">${details}<i>kein Track (verschlüsseltes Log ohne API-Key)</i></div>`;
+    // Recordings from OneDrive (only present when an account is connected).
+    const media = (f.media || []).length
+      ? `<div class="media">${f.media
+          .map(
+            (m) => `<a href="${esc(m.web_url || "#")}" target="_blank" rel="noopener" title="${esc(m.name)}">${
+              m.thumb ? `<img src="${esc(m.thumb)}" loading="lazy" alt="" onerror="this.remove()">` : ""
+            }<span>${m.kind === "360" ? "360° " : ""}${m.duration_s ? esc(fmtDur(m.duration_s)) : m.kind === "photo" ? "Foto" : ""}</span></a>`,
+          )
+          .join("")}</div>`
+      : "";
     return `<b>${esc(f.aircraft_name || f.product_type || "DJI")} · ${esc(fmtDate(f.start_time))}</b>
-      ${rows.map(([k, v]) => `${esc(k)}: ${esc(v)}<br>`).join("")}${exports}`;
+      ${rows.map(([k, v]) => `${esc(k)}: ${esc(v)}<br>`).join("")}${exports}${media}`;
   }
 
   _wirePopup(popup, f) {

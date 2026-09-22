@@ -90,3 +90,31 @@ UPLOAD_DUPLICATE = "duplicate"
 UPLOAD_RETRY = "retry"  # DJI keychain fetch failed; the next scan tries again
 UPLOAD_REJECTED = "rejected"
 REASON_NOT_TXT = "not_txt"
+
+# -- OneDrive recordings -------------------------------------------------------
+# The integration has two kinds of config entries: the flight log (one) and
+# OneDrive accounts holding the videos/photos (any number). Entries created
+# before this existed have no entry_type and are flight logs.
+CONF_ENTRY_TYPE = "entry_type"
+ENTRY_TYPE_FLIGHTLOG = "flightlog"
+ENTRY_TYPE_ONEDRIVE = "onedrive"
+
+CONF_MEDIA_FOLDER = "media_folder"
+CONF_MEDIA_SCAN_INTERVAL = "media_scan_interval"
+CONF_MATCH_TOLERANCE = "match_tolerance"
+
+DEFAULT_MEDIA_FOLDER = "Drohne/Medien"
+DEFAULT_MEDIA_SCAN_INTERVAL = 900  # seconds
+DEFAULT_MATCH_TOLERANCE = 120  # seconds around a flight that still count
+
+OAUTH2_AUTHORIZE = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+OAUTH2_TOKEN = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+# Read-only; offline_access yields the refresh token.
+ONEDRIVE_SCOPES = ("Files.Read", "offline_access")
+GRAPH_URL = "https://graph.microsoft.com/v1.0"
+
+MEDIA_STORAGE_VERSION = 1
+MEDIA_STORAGE_KEY = f"{DOMAIN}.media"  # + ".<entry_id>"
+
+# Signed media URLs (thumbnails, playback) handed to the frontend stay valid this long.
+MEDIA_URL_TTL_S = 6 * 3600

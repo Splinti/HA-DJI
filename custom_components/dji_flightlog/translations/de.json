@@ -12,13 +12,43 @@
           "geo_location_limit": "Flüge als geo_location-Entities (0 = keine; sobald welche existieren, ergänzt Home Assistant das Standard-Dashboard um eine Karte)",
           "sidebar_panel": "In der Seitenleiste anzeigen"
         }
+      },
+      "onedrive_folder": {
+        "title": "OneDrive-Ordner mit Aufnahmen",
+        "description": "Angemeldet als {account}. Ordner (relativ zum OneDrive-Stamm), in dem die Drohnenvideos und -fotos liegen, Unterordner inklusive. Eine Aufnahme wird einem Flug zugeordnet, wenn sich Aufnahme- und Flugzeit überschneiden.",
+        "data": {
+          "media_folder": "Ordner",
+          "media_scan_interval": "Sync-Intervall",
+          "match_tolerance": "Toleranz um einen Flug"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Erneut bei OneDrive anmelden",
+        "description": "Die OneDrive-Anmeldung ist abgelaufen oder wurde widerrufen. Bitte erneut anmelden, damit Aufnahmen weiter verknüpft werden."
+      },
+      "pick_implementation": {
+        "title": "Anmeldedaten auswählen"
       }
     },
     "error": {
-      "dir_not_found": "Ordner existiert nicht"
+      "dir_not_found": "Ordner existiert nicht",
+      "folder_not_found": "Ordner in OneDrive nicht gefunden",
+      "cannot_connect": "OneDrive nicht erreichbar"
     },
     "abort": {
-      "already_configured": "Bereits eingerichtet"
+      "already_configured": "Bereits eingerichtet",
+      "cannot_connect": "OneDrive nicht erreichbar",
+      "wrong_account": "Mit einem anderen Microsoft-Konto angemeldet als zuvor",
+      "reauth_successful": "Erneut angemeldet",
+      "missing_credentials": "Bitte zuerst die Anmeldedaten (Application Credentials) der Azure-App hinterlegen",
+      "missing_configuration": "OneDrive ist nicht konfiguriert; bitte zuerst Anmeldedaten hinterlegen",
+      "authorize_url_timeout": "Zeitüberschreitung beim Erzeugen der Anmelde-URL",
+      "no_url_available": "Keine URL verfügbar; externe/interne URL von Home Assistant prüfen",
+      "oauth_error": "Ungültige Token-Daten erhalten",
+      "oauth_failed": "Fehler beim Abrufen des Zugriffstokens",
+      "oauth_timeout": "Zeitüberschreitung beim Abrufen des OAuth-Tokens",
+      "oauth_unauthorized": "OAuth-Autorisierungsfehler beim Abrufen des Zugriffstokens",
+      "user_rejected_authorize": "Zugriff wurde nicht gewährt"
     }
   },
   "options": {
@@ -31,12 +61,17 @@
           "scan_interval": "Scan-Intervall",
           "max_track_points": "Max. gespeicherte Punkte pro Track",
           "geo_location_limit": "Flüge als geo_location-Entities (0 = keine; sobald welche existieren, ergänzt Home Assistant das Standard-Dashboard um eine Karte)",
-          "sidebar_panel": "In der Seitenleiste anzeigen"
+          "sidebar_panel": "In der Seitenleiste anzeigen",
+          "media_folder": "OneDrive-Ordner",
+          "media_scan_interval": "Sync-Intervall",
+          "match_tolerance": "Toleranz um einen Flug"
         }
       }
     },
     "error": {
-      "dir_not_found": "Ordner existiert nicht"
+      "dir_not_found": "Ordner existiert nicht",
+      "folder_not_found": "Ordner in OneDrive nicht gefunden",
+      "cannot_connect": "OneDrive nicht erreichbar"
     }
   },
   "device": {
@@ -172,5 +207,8 @@
         }
       }
     }
+  },
+  "application_credentials": {
+    "description": "Die Aufnahmen werden über Microsoft Graph aus OneDrive gelesen. Registriere dafür eine App im [Microsoft-Entra-Portal]({portal_url}): Kontotyp „Persönliche Microsoft-Konten“ (bzw. alle, für OneDrive for Business), Plattform **Web** mit Umleitungs-URI `{redirect_url}`, dann einen geheimen Clientschlüssel erstellen. Delegierte Berechtigungen: Files.Read, offline_access."
   }
 }

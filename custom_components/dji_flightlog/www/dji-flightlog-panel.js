@@ -12,6 +12,10 @@
  *
  * Registered by the integration via panel_custom; the maps are
  * dji-flight-map-card elements, loaded on demand like the detail view.
+ *
+ * With a OneDrive account connected, every flight carries the recordings
+ * made during it (`flight.media`); the selected flight shows them as a
+ * strip of thumbnails that play in an overlay or open in OneDrive.
  */
 
 const STATIC = "/dji_flightlog_static";
@@ -66,6 +70,8 @@ const fmtDur = (s) => {
   return h ? `${h} h ${m} min` : `${m}:${String(s % 60).padStart(2, "0")} min`;
 };
 const fmtDist = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m || 0)} m`);
+const fmtClock = (iso) => (iso ? new Date(iso).toLocaleTimeString(undefined, { timeStyle: "short" }) : "");
+const KIND_LABEL = { video: "Video", "360": "360°", photo: "Foto" };
 const esc = (t) =>
   String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
@@ -277,6 +283,43 @@ class DjiFlightLogPanel extends HTMLElement {
         .row .act:hover { background: var(--divider-color, #e0e0e0); color: var(--primary-text-color); }
         .row a.act { color: var(--primary-color); }
         .hint { padding: 12px 16px; font-size: 13px; color: var(--secondary-text-color); }
+        .row .badge { flex: 0 0 auto; font-size: 12px; color: var(--secondary-text-color); display: flex; align-items: center; gap: 2px; }
+        .row .badge svg { width: 16px; height: 16px; }
+        .row .hint { padding: 0; font-size: 11px; color: var(--secondary-text-color); }
+
+        .media { display: flex; gap: 8px; overflow-x: auto; padding: 0 16px 12px 34px; background: var(--secondary-background-color, #f2f2f2); }
+        .media .m { flex: 0 0 136px; cursor: pointer; }
+        .media .thumb {
+          position: relative; width: 136px; height: 77px; border-radius: 6px; overflow: hidden;
+          background: var(--divider-color, #ddd); display: flex; align-items: center; justify-content: center;
+          color: var(--secondary-text-color); font-size: 12px;
+        }
+        .media .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+        .media .thumb .k, .media .thumb .p {
+          position: absolute; font-size: 11px; line-height: 1; padding: 3px 5px; border-radius: 4px;
+          background: rgba(0,0,0,.6); color: #fff;
+        }
+        .media .thumb .k { left: 4px; top: 4px; }
+        .media .thumb .p { right: 4px; bottom: 4px; }
+        .media .m:hover .thumb { outline: 2px solid var(--primary-color); }
+        .media .cap { display: flex; justify-content: space-between; font-size: 11px; color: var(--secondary-text-color); margin-top: 3px; }
+        .media .cap a { color: var(--primary-color); text-decoration: none; }
+
+        #player[hidden] { display: none; }
+        #player {
+          position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.75);
+          display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box;
+        }
+        #player .box {
+          width: min(1100px, 100%); max-height: 100%; display: flex; flex-direction: column;
+          background: var(--card-background-color, #fff); border-radius: 12px; overflow: hidden;
+        }
+        #player .bar { display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 16px; }
+        #player .bar .ttl { flex: 1; min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #player .bar a { font-size: 13px; color: var(--primary-color); text-decoration: none; white-space: nowrap; }
+        #player .bar button { background: none; border: none; color: inherit; cursor: pointer; padding: 6px; border-radius: 50%; line-height: 0; }
+        #player video, #player img.full { width: 100%; max-height: calc(100dvh - 140px); background: #000; display: block; object-fit: contain; }
+        #player .hint { padding: 8px 16px 12px; font-size: 13px; color: var(--secondary-text-color); }
         .empty { padding: 24px 16px; color: var(--secondary-text-color); text-align: center; }
         .note {
           margin: 0 16px; padding: 10px 14px; border-radius: 8px; font-size: 13px;
@@ -400,7 +443,8 @@ class DjiFlightLogPanel extends HTMLElement {
           </div>
         </section>
       </div>
-      <div id="drop" hidden><div>Flugaufzeichnungen hier ablegen<small>DJIFlightRecord_*.txt oder der Ordner FlightRecord</small></div></div>`;
+      <div id="drop" hidden><div>Flugaufzeichnungen hier ablegen<small>DJIFlightRecord_*.txt oder der Ordner FlightRecord</small></div></div>
+      <div id="player" hidden></div>`;
 
     this.shadowRoot.getElementById("menu").onclick = () => this._fireMenu();
     this.shadowRoot.getElementById("scan").onclick = () => this._scan();
@@ -451,6 +495,14 @@ class DjiFlightLogPanel extends HTMLElement {
     this._setupCard();
     // ?spot=<id> (a dashboard card linking here) wins over the remembered view.
     this._setView(new URL(location.href).searchParams.has("spot") ? "plan" : this._view);
+
+    this._onKey = (e) => {
+      if (e.key === "Escape") this._closePlayer();
+    };
+  }
+
+  disconnectedCallback() {
+    this._closePlayer();
   }
 
   get _card() {
@@ -913,6 +965,14 @@ class DjiFlightLogPanel extends HTMLElement {
     if (unsupported && Number(unsupported.state) > 0) {
       msgs.push(`${unsupported.state} Datei(en) im Log-Ordner sind keine DJI-Fly-Flugaufzeichnungen.`);
     }
+    for (const acc of this._data?.media?.accounts || []) {
+      if (!acc.ok) {
+        msgs.push(
+          `OneDrive-Abgleich für ${acc.title} (Ordner „${acc.folder}“) fehlgeschlagen. Details stehen im Protokoll; ` +
+            `bei abgelaufener Anmeldung bietet Home Assistant unter Einstellungen → Geräte & Dienste eine neue Anmeldung an.`,
+        );
+      }
+    }
     el.hidden = msgs.length === 0;
     el.className = msgs.length ? "note" : "";
     el.innerHTML = msgs.map((m) => `<div>${esc(m)}</div>`).join("");
@@ -980,6 +1040,9 @@ class DjiFlightLogPanel extends HTMLElement {
       ["Max. Speed", `${(max("max_h_speed_ms") * 3.6).toFixed(1)} km/h`],
       ["Letzter Flug", flights.length ? fmtDate(flights[0].start_time, { dateStyle: "short", timeStyle: "short" }) : "–"],
     ];
+    if (this._data?.media?.connected) {
+      tiles.push(["Aufnahmen", flights.reduce((a, f) => a + (f.media?.length || 0), 0)]);
+    }
     this.shadowRoot.getElementById("stats").innerHTML = tiles
       .map(([k, v]) => `<div class="tile"><div class="v">${esc(v)}</div><div class="k">${esc(k)}</div></div>`)
       .join("");
@@ -1005,6 +1068,7 @@ class DjiFlightLogPanel extends HTMLElement {
       list.innerHTML = `<div class="empty">Keine Flüge im gewählten Zeitraum.</div>`;
       return;
     }
+    const mediaConnected = !!this._data?.media?.connected;
     let html = "";
     let day = null;
     for (const f of flights) {
@@ -1014,8 +1078,15 @@ class DjiFlightLogPanel extends HTMLElement {
         html += `<div class="day">${esc(d)}</div>`;
       }
       const time = fmtDate(f.start_time, { timeStyle: "short" });
+      const selected = this._selected === f.flight_id;
+      const media = f.media || [];
+      // The log knows whether the camera recorded; say so if nothing matched.
+      const missing =
+        mediaConnected && !media.length && (f.video_time_s > 0 || f.photo_num > 0)
+          ? `<div class="hint">Laut Log aufgenommen, keine Datei in OneDrive gefunden</div>`
+          : "";
       html += `
-        <div class="row${this._selected === f.flight_id ? " sel" : ""}" data-id="${esc(f.flight_id)}">
+        <div class="row${selected ? " sel" : ""}" data-id="${esc(f.flight_id)}">
           <div class="dot" style="background:${esc(colorFor(f, flights))}"></div>
           <div class="main">
             <div class="t">${esc(time)} · ${esc(fmtDur(f.duration_s))} · ${esc(fmtDist(f.distance_m))}</div>
@@ -1031,13 +1102,27 @@ class DjiFlightLogPanel extends HTMLElement {
                 : ""
             }
             ${f.sd_full ? `<div class="warn">SD-Karte voll</div>` : ""}
+            ${missing}
           </div>
+          ${media.length ? `<div class="badge" title="${media.length} Aufnahme(n)">${svg(ICON_VIDEO)}${media.length}</div>` : ""}
           <button class="act det" title="Details zum Flug">${svg(
             "M16,11.78L20.24,4.45L21.97,5.45L16.74,14.5L10.23,10.75L5.46,19H22V21H2V3H4V17.54L9.5,8L16,11.78Z",
           )}</button>
-        </div>`;
+        </div>
+        ${selected && media.length ? this._mediaHtml(f) : ""}`;
     }
     list.innerHTML = html;
+    for (const img of list.querySelectorAll(".media img")) {
+      img.onerror = () => img.remove(); // leaves the kind label as placeholder
+    }
+    for (const el of list.querySelectorAll(".media .m")) {
+      const f = flights.find((x) => x.flight_id === el.dataset.fid);
+      const m = f?.media?.[Number(el.dataset.i)];
+      el.onclick = (e) => {
+        if (e.target.closest("a")) return; // "OneDrive" link opens by itself
+        if (m) this._openMedia(m);
+      };
+    }
     for (const row of list.querySelectorAll(".row")) {
       row.onclick = () => {
         const id = row.dataset.id;
@@ -1050,6 +1135,75 @@ class DjiFlightLogPanel extends HTMLElement {
         this._openDetails(row.dataset.id);
       };
     }
+  }
+
+  _mediaHtml(f) {
+    return `<div class="media">${f.media
+      .map(
+        (m, i) => `
+        <div class="m" data-fid="${esc(f.flight_id)}" data-i="${i}" title="${esc(m.name)}">
+          <div class="thumb">
+            ${esc(KIND_LABEL[m.kind] || m.kind)}
+            ${m.thumb ? `<img src="${esc(m.thumb)}" loading="lazy" alt="">` : ""}
+            ${m.kind === "360" ? `<span class="k">360°</span>` : ""}
+            ${m.duration_s ? `<span class="p">${m.play ? "▶ " : ""}${esc(fmtDur(m.duration_s))}</span>` : ""}
+          </div>
+          <div class="cap">
+            <span>${esc(fmtClock(m.start))}${m.has_raw ? " · RAW" : ""}</span>
+            ${m.web_url ? `<a href="${esc(m.web_url)}" target="_blank" rel="noopener">OneDrive</a>` : ""}
+          </div>
+        </div>`,
+      )
+      .join("")}</div>`;
+  }
+
+  _openMedia(m) {
+    if (!m.play) {
+      // 360° original without proxy, raw photo, ...: only OneDrive can show it.
+      if (m.web_url) window.open(m.web_url, "_blank", "noopener");
+      return;
+    }
+    const dlg = this.shadowRoot.getElementById("player");
+    const isPhoto = m.kind === "photo";
+    dlg.innerHTML = `
+      <div class="box">
+        <div class="bar">
+          <span class="ttl">${esc(m.name)} · ${esc(fmtDate(m.start))}</span>
+          ${m.web_url ? `<a href="${esc(m.web_url)}" target="_blank" rel="noopener">In OneDrive öffnen</a>` : ""}
+          <button class="close" title="Schließen">${svg(ICON_CLOSE)}</button>
+        </div>
+        ${isPhoto ? `<img class="full" src="${esc(m.play)}" alt="">` : `<video controls autoplay playsinline preload="metadata" src="${esc(m.play)}"></video>`}
+        <div class="hint" id="phint"${m.kind === "360" ? "" : " hidden"}>${
+          m.kind === "360"
+            ? "360°-Vorschau (Proxy der Kamera, beide Fisheye-Linsen nebeneinander). Das Original lässt sich in DJI Studio / LightCut bearbeiten."
+            : ""
+        }</div>
+      </div>`;
+    dlg.hidden = false;
+    dlg.onclick = (e) => {
+      if (e.target === dlg) this._closePlayer();
+    };
+    dlg.querySelector(".close").onclick = () => this._closePlayer();
+    const video = dlg.querySelector("video");
+    if (video) {
+      video.onerror = () => {
+        const hint = dlg.querySelector("#phint");
+        hint.hidden = false;
+        hint.textContent =
+          "Dieses Video kann der Browser nicht abspielen (vermutlich H.265/HEVC ohne Hardware-Decoder). " +
+          "Über „In OneDrive öffnen“ ansehen oder herunterladen.";
+      };
+    }
+    window.addEventListener("keydown", this._onKey);
+  }
+
+  _closePlayer() {
+    const dlg = this.shadowRoot?.getElementById("player");
+    if (dlg && !dlg.hidden) {
+      dlg.hidden = true;
+      dlg.innerHTML = ""; // stops the video download
+    }
+    if (this._onKey) window.removeEventListener("keydown", this._onKey);
   }
 }
 
@@ -1109,6 +1263,9 @@ function fillPanel(card) {
   haCard.style.flexDirection = "column";
   mapEl.style.flex = "1 1 auto";
 }
+
+const ICON_VIDEO = "M17,10.5V7A1,1 0 0,0 16,6H4A1,1 0 0,0 3,7V17A1,1 0 0,0 4,18H16A1,1 0 0,0 17,17V13.5L21,17.5V6.5L17,10.5Z";
+const ICON_CLOSE = "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z";
 
 // Same palette the card uses, so list dots match the tracks.
 const PALETTE = [
