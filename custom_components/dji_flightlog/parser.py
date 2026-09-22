@@ -15,7 +15,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .const import STATUS_FAILED, STATUS_HEADER_ONLY, STATUS_OK
+from .const import (
+    MAX_LOG_FILE_BYTES,
+    REASON_FC_DAT,
+    REASON_SUPPORT_BUNDLE,
+    REASON_TOO_LARGE,
+    STATUS_FAILED,
+    STATUS_HEADER_ONLY,
+    STATUS_OK,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,6 +33,35 @@ _MIN_GPS_LEVEL = 3
 
 class KeychainError(Exception):
     """Fetching the DJI decryption keychain failed (network / API key)."""
+
+
+# Markers of a DJI support log bundle, as exported by DJI Assistant 2 or the
+# app's "export device logs". It packs AES-encrypted blobs (`*.log.enc`,
+# `FC_SMP-*.DAT.enc`) that only DJI can decrypt - there is no flight record
+# in there for us to read.
+_BUNDLE_MARKERS = (b"LOGH", b".log.enc", b".DAT.enc", b"flyctrl_smp")
+_HEAD_BYTES = 8192
+
+
+def classify_log_file(path: Path, size: int) -> str | None:
+    """Return a rejection reason for files that cannot hold a flight record.
+
+    ``None`` means "looks like a flight record, try parsing it". Only the
+    first few KB are read, so a 60 MB bundle never reaches memory.
+    """
+    # Reading the first few KB is cheap whatever the file size, and the
+    # content gives a far more actionable reason than "too large" would.
+    with path.open("rb") as fh:
+        head = fh.read(_HEAD_BYTES)
+    if any(marker in head for marker in _BUNDLE_MARKERS):
+        return REASON_SUPPORT_BUNDLE
+    if size > MAX_LOG_FILE_BYTES:
+        return REASON_TOO_LARGE
+    if path.suffix.lower() == ".dat":
+        # Flight controller DAT (aircraft/SD card). Encrypted on every model
+        # DJI Fly supports; DatCon only handles Phantom 3/4-era aircraft.
+        return REASON_FC_DAT
+    return None
 
 
 @dataclass
@@ -98,6 +135,16 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.astimezone(UTC).isoformat()
 
 
+# The DJI app writes these placeholders into the address fields when its
+# reverse geocoding has not finished before the record is closed.
+_PLACE_PLACEHOLDERS = frozenset({"map loading", "loading", "unknown", "n/a", "--"})
+
+
+def _clean_place(value: str | None) -> str:
+    text = (value or "").strip()
+    return "" if text.lower() in _PLACE_PLACEHOLDERS else text
+
+
 def _valid_fix(lat: float, lon: float) -> bool:
     return (
         lat != 0.0
@@ -153,11 +200,11 @@ def parse_flight(
         "log_version": version,
         "start_time": _iso(details.start_time) or _iso(now),
         "end_time": None,
-        "duration_s": float(details.total_time or 0.0),
-        "distance_m": float(details.total_distance or 0.0),
-        "max_height_m": float(details.max_height or 0.0),
-        "max_h_speed_ms": float(details.max_horizontal_speed or 0.0),
-        "max_v_speed_ms": float(details.max_vertical_speed or 0.0),
+        "duration_s": round(float(details.total_time or 0.0), 1),
+        "distance_m": round(float(details.total_distance or 0.0), 1),
+        "max_height_m": round(float(details.max_height or 0.0), 1),
+        "max_h_speed_ms": round(float(details.max_horizontal_speed or 0.0), 2),
+        "max_v_speed_ms": round(float(details.max_vertical_speed or 0.0), 2),
         "aircraft_name": details.aircraft_name or "",
         "aircraft_sn": details.aircraft_sn or "",
         "product_type": getattr(details.product_type, "name", str(details.product_type)),
@@ -166,8 +213,8 @@ def parse_flight(
         "takeoff_lon": details.longitude if has_header_fix else None,
         "home_lat": None,
         "home_lon": None,
-        "city": details.city or "",
-        "street": details.street or "",
+        "city": _clean_place(details.city),
+        "street": _clean_place(details.street),
         "battery_start_pct": None,
         "battery_end_pct": None,
         "photo_num": int(details.capture_num or 0),

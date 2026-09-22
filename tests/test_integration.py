@@ -71,11 +71,16 @@ async def setup_entry(hass: HomeAssistant, log_dir: Path, tmp_path: Path):
     # Keep track files out of the harness' shared testing_config directory.
     hass.config.config_dir = str(tmp_path / "config")
 
-    async def _setup(n_files: int = 2) -> MockConfigEntry:
+    async def _setup(n_files: int = 2, **extra: object) -> MockConfigEntry:
         _write_logs(log_dir, n_files)
         entry = MockConfigEntry(
             domain=DOMAIN,
-            data={CONF_LOG_DIR: str(log_dir), CONF_API_KEY: "KEY", CONF_SCAN_INTERVAL: 60},
+            data={
+                CONF_LOG_DIR: str(log_dir),
+                CONF_API_KEY: "KEY",
+                CONF_SCAN_INTERVAL: 60,
+                **extra,
+            },
             unique_id=DOMAIN,
         )
         entry.add_to_hass(hass)
@@ -112,7 +117,9 @@ async def test_sensors_and_devices(hass: HomeAssistant, setup_entry):
 
 
 async def test_geo_location_entities(hass: HomeAssistant, setup_entry):
-    await setup_entry(2)
+    from custom_components.dji_flightlog.const import CONF_GEO_LOCATION_LIMIT
+
+    await setup_entry(2, **{CONF_GEO_LOCATION_LIMIT: 10})
     states = [s for s in hass.states.async_all("geo_location") if s.attributes.get("source") == DOMAIN]
     assert len(states) == 2
     s = next(x for x in states if x.attributes["flight_id"] == "flight0000")
@@ -120,6 +127,33 @@ async def test_geo_location_entities(hass: HomeAssistant, setup_entry):
     assert s.attributes["longitude"] == pytest.approx(11.5)
     assert s.attributes["aircraft_name"] == "Neo"
     assert float(s.state) == pytest.approx(490.0)  # distance flown
+
+
+async def test_geo_location_off_by_default(hass: HomeAssistant, setup_entry):
+    """No geo_location entities unless asked for: they would drag the flights
+    onto Home Assistant's auto-generated Overview map."""
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.dji_flightlog.const import CONF_GEO_LOCATION_LIMIT
+
+    entry = await setup_entry(2)
+    assert [s for s in hass.states.async_all("geo_location") if s.attributes.get("source") == DOMAIN] == []
+
+    # Turning it on creates them ...
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
+        hass.config_entries.async_update_entry(entry, options={**entry.data, CONF_GEO_LOCATION_LIMIT: 10})
+        await hass.async_block_till_done()
+    assert len(hass.states.async_all("geo_location")) == 2
+
+    # ... and turning it off again leaves nothing behind, registry included.
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
+        hass.config_entries.async_update_entry(entry, options={**entry.data, CONF_GEO_LOCATION_LIMIT: 0})
+        await hass.async_block_till_done()
+    assert hass.states.async_all("geo_location") == []
+    registry = er.async_get(hass)
+    assert [
+        e for e in er.async_entries_for_config_entry(registry, entry.entry_id) if e.domain == "geo_location"
+    ] == []
 
 
 async def test_event_and_rescan(hass: HomeAssistant, setup_entry, log_dir: Path):
@@ -152,6 +186,32 @@ async def test_event_and_rescan(hass: HomeAssistant, setup_entry, log_dir: Path)
         await hass.async_block_till_done(wait_background_tasks=True)
         assert m.call_count == 0
     assert len(events) == 2
+
+
+async def test_unsupported_file_is_reported(hass: HomeAssistant, setup_entry, log_dir: Path):
+    """A DJI Assistant support bundle must be named as such, not silently ignored."""
+    import os
+
+    from .test_parser import BUNDLE_HEAD
+
+    await setup_entry(1)
+    bundle = log_dir / "DJI_Avata_360_2026-09-22_12-34-44.DAT"
+    bundle.write_bytes(BUNDLE_HEAD + bytes(10000))
+    past = (datetime.now(UTC) - timedelta(minutes=5)).timestamp()
+    os.utime(bundle, (past, past))
+
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as m:
+        await hass.services.async_call(
+            "button", "press", {"entity_id": "button.dji_flight_log_scan_log_folder"}, blocking=True
+        )
+        await hass.async_block_till_done()
+        m.assert_not_called()  # never read a 60 MB bundle into memory
+
+    state = hass.states.get("sensor.dji_flight_log_unsupported_files")
+    assert state.state == "1"
+    assert state.attributes["files"] == [{"file": bundle.name, "reason": "support_bundle"}]
+    # and it did not become a flight
+    assert hass.states.get("sensor.dji_flight_log_flights").state == "1"
 
 
 async def test_scan_button(hass: HomeAssistant, setup_entry, log_dir: Path):
@@ -297,3 +357,89 @@ async def test_lovelace_resource_registered(hass: HomeAssistant, setup_entry):
         await hass.async_block_till_done()
     urls = [r["url"] for r in resources.async_items()]
     assert sum(u.startswith("/dji_flightlog_static/") for u in urls) == 1
+
+
+async def test_api_key_added_later_backfills_tracks(hass: HomeAssistant, log_dir: Path, tmp_path: Path):
+    """Without a key only headers are imported; adding one must fill in the tracks."""
+    from custom_components.dji_flightlog.const import STATUS_HEADER_ONLY
+
+    hass.config.config_dir = str(tmp_path / "config")
+
+    def parse(path, *, api_key, max_track_points, now=None):
+        summary, track = _fake_parse(path, api_key=api_key, max_track_points=max_track_points)
+        if not api_key:
+            summary.status = STATUS_HEADER_ONLY
+            summary.points = 0
+            return summary, None
+        return summary, track
+
+    _write_logs(log_dir, 1)
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_LOG_DIR: str(log_dir), CONF_API_KEY: ""}, unique_id=DOMAIN
+    )
+    entry.add_to_hass(hass)
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=parse):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert coordinator.data.flights["flight0000"]["status"] == STATUS_HEADER_ONLY
+    assert coordinator.data.flights["flight0000"]["points"] == 0
+    assert await coordinator.store.async_read_track("flight0000") is None
+
+    # Entering the key in the options flow reloads the entry and re-reads the file.
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=parse):
+        hass.config_entries.async_update_entry(
+            entry, options={CONF_LOG_DIR: str(log_dir), CONF_API_KEY: "KEY"}
+        )
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    flight = coordinator.data.flights["flight0000"]
+    assert flight["status"] == "ok"
+    assert flight["points"] == 50
+    track = await coordinator.store.async_read_track("flight0000")
+    assert track is not None and len(track["points"]) == 50
+
+
+async def test_sidebar_panel(hass: HomeAssistant, setup_entry, hass_client):
+    """The panel is registered, served, and removed again when switched off."""
+    from homeassistant.components.frontend import DATA_PANELS
+
+    from custom_components.dji_flightlog.const import (
+        CONF_SIDEBAR_PANEL,
+        PANEL_ELEMENT,
+        PANEL_TITLE,
+        PANEL_URL_PATH,
+    )
+
+    entry = await setup_entry(1)
+    panel = hass.data[DATA_PANELS][PANEL_URL_PATH]
+    assert panel.component_name == "custom"
+    assert panel.sidebar_title == PANEL_TITLE
+    custom = panel.config["_panel_custom"]
+    assert custom["name"] == PANEL_ELEMENT
+    assert custom["module_url"].startswith("/dji_flightlog_static/dji-flightlog-panel.js?v=")
+    assert custom["embed_iframe"] is False
+
+    # The module it points at is actually served.
+    client = await hass_client()
+    resp = await client.get(custom["module_url"])
+    assert resp.status == 200
+    body = await resp.text()
+    assert "dji-flightlog-panel" in body
+
+    # Reloading must not raise "panel already registered".
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
+        await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+    assert PANEL_URL_PATH in hass.data[DATA_PANELS]
+
+    # Turning the option off removes the sidebar entry.
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
+        hass.config_entries.async_update_entry(
+            entry,
+            options={**entry.data, CONF_SIDEBAR_PANEL: False},
+        )
+        await hass.async_block_till_done()
+    assert PANEL_URL_PATH not in hass.data[DATA_PANELS]

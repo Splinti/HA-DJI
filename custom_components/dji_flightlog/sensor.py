@@ -213,6 +213,7 @@ async def async_setup_entry(
             new += [
                 LastImportSensor(coordinator, entry),
                 PendingFilesSensor(coordinator, entry),
+                UnsupportedFilesSensor(coordinator, entry),
                 AircraftCountSensor(coordinator, entry),
             ]
         for sn in data.aircraft:
@@ -338,6 +339,28 @@ class PendingFilesSensor(_BaseSensor):
         return self.coordinator.data.pending_files
 
 
+class UnsupportedFilesSensor(_BaseSensor):
+    """Files in the folder that are not DJI Fly flight records."""
+
+    _attr_translation_key = "unsupported_files"
+    _attr_icon = "mdi:file-alert-outline"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: FlightLogCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_{TOTALS_ID}_unsupported_files"
+        self._attr_device_info = totals_device_info(entry)
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.data.unsupported)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"files": self.coordinator.data.unsupported}
+
+
 class AircraftCountSensor(_BaseSensor):
     _attr_translation_key = "aircraft_count"
     _attr_icon = "mdi:quadcopter"
@@ -371,11 +394,20 @@ def totals_device_info(entry: ConfigEntry) -> DeviceInfo:
     )
 
 
+def _model(stats: AircraftStats) -> str | None:
+    """Readable model, falling back to the name for product types pydjirecord
+    does not know yet (they come through as ``UNKNOWN_<n>``)."""
+    product = stats.product_type or ""
+    if not product or product.startswith("UNKNOWN") or product == "NONE":
+        return stats.name or None
+    return product
+
+
 def aircraft_device_info(entry: ConfigEntry, stats: AircraftStats) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, f"{entry.entry_id}_{stats.sn}")},
         name=stats.name or stats.product_type or "DJI Aircraft",
         manufacturer="DJI",
-        model=stats.product_type or None,
+        model=_model(stats),
         serial_number=stats.sn if stats.sn != "unknown" else None,
     )

@@ -10,10 +10,17 @@ from unittest.mock import patch
 
 import pytest
 
-from custom_components.dji_flightlog.const import STATUS_HEADER_ONLY, STATUS_OK
+from custom_components.dji_flightlog.const import (
+    REASON_FC_DAT,
+    REASON_SUPPORT_BUNDLE,
+    REASON_TOO_LARGE,
+    STATUS_HEADER_ONLY,
+    STATUS_OK,
+)
 from custom_components.dji_flightlog.parser import (
     KeychainError,
     _downsample,
+    classify_log_file,
     parse_flight,
     summarize_frames,
     track_to_geojson,
@@ -229,3 +236,48 @@ def test_exports(frames):
 
     kml = track_to_kml(s, t)
     assert "<coordinates>" in kml and "11.5,48.1,500.0" in kml
+
+
+# --- file classification ----------------------------------------------------
+
+# Header of a real DJI support log bundle, as exported by DJI Assistant 2
+# (DJI_<model>_<date>.DAT): a record header naming an encrypted blob, then LOGH.
+BUNDLE_HEAD = (
+    bytes.fromhex("a4401110004eb455")
+    + b"-E4/hms/system/hms/hms_07.log.enc"
+    + bytes(213)
+    + b"LOGH"
+    + bytes.fromhex("02000000a0000000")
+    + b"eagle4_wa530"
+)
+
+
+def test_classify_support_bundle(tmp_path):
+    p = tmp_path / "DJI_Avata_360_2026-09-22_12-34-44.DAT"
+    p.write_bytes(BUNDLE_HEAD + bytes(5000))
+    assert classify_log_file(p, p.stat().st_size) == REASON_SUPPORT_BUNDLE
+
+
+def test_classify_support_bundle_named_txt(tmp_path):
+    # The suffix must not decide on its own; the content does.
+    p = tmp_path / "renamed.txt"
+    p.write_bytes(BUNDLE_HEAD)
+    assert classify_log_file(p, p.stat().st_size) == REASON_SUPPORT_BUNDLE
+
+
+def test_classify_fc_dat(tmp_path):
+    p = tmp_path / "FLY042.DAT"
+    p.write_bytes(bytes.fromhex("551234") + bytes(500))
+    assert classify_log_file(p, p.stat().st_size) == REASON_FC_DAT
+
+
+def test_classify_too_large(tmp_path):
+    p = tmp_path / "huge.txt"
+    p.write_bytes(bytes(16))
+    assert classify_log_file(p, 64 * 1024 * 1024) == REASON_TOO_LARGE
+
+
+def test_classify_accepts_flight_record(tmp_path):
+    p = tmp_path / "DJIFlightRecord_2026-09-20_[12-00-00].txt"
+    p.write_bytes(bytes.fromhex("0e0050") + b"x" * 4000)
+    assert classify_log_file(p, p.stat().st_size) is None

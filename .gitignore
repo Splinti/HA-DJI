@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.log
+
+# Eigene Flugaufzeichnungen (enthalten Seriennummern und GPS-Positionen)
+flightrecords/

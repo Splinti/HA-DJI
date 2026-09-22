@@ -7,20 +7,30 @@ from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
+from homeassistant.components import panel_custom
+from homeassistant.components.frontend import async_remove_panel
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.loader import async_get_integration
 
 from .const import (
     ATTR_FLIGHT_ID,
     ATTR_FORMAT,
     ATTR_PATH,
     CARD_URL,
+    CONF_SIDEBAR_PANEL,
+    DEFAULT_SIDEBAR_PANEL,
     DOMAIN,
     EXPORT_FORMATS,
+    PANEL_ELEMENT,
+    PANEL_ICON,
+    PANEL_TITLE,
+    PANEL_URL,
+    PANEL_URL_PATH,
     SERVICE_EXPORT_TRACK,
     SERVICE_IMPORT_FILE,
     SERVICE_SCAN,
@@ -76,12 +86,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _async_register_services(hass)
     await _async_register_lovelace_resource(hass)
+    await _async_setup_panel(hass, entry)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
+        _async_remove_panel(hass)
         hass.data[DOMAIN].pop(entry.entry_id, None)
         if not hass.data[DOMAIN]:
             for service in (SERVICE_SCAN, SERVICE_IMPORT_FILE, SERVICE_EXPORT_TRACK):
@@ -173,6 +185,37 @@ def _async_register_services(hass: HomeAssistant) -> None:
         schema=EXPORT_TRACK_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+
+
+# -- sidebar panel -------------------------------------------------------------
+
+
+async def _async_setup_panel(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Add (or remove) the full-page panel in the sidebar."""
+    wanted = entry.options.get(CONF_SIDEBAR_PANEL, entry.data.get(CONF_SIDEBAR_PANEL, DEFAULT_SIDEBAR_PANEL))
+    if not wanted:
+        _async_remove_panel(hass)
+        return
+    # The version query busts the browser's ES module cache after an update.
+    integration = await async_get_integration(hass, DOMAIN)
+    try:
+        await panel_custom.async_register_panel(
+            hass,
+            frontend_url_path=PANEL_URL_PATH,
+            webcomponent_name=PANEL_ELEMENT,
+            module_url=f"{PANEL_URL}?v={integration.version}",
+            sidebar_title=PANEL_TITLE,
+            sidebar_icon=PANEL_ICON,
+            require_admin=False,
+        )
+    except ValueError:
+        # Already registered (entry reloaded without HA restart).
+        _LOGGER.debug("Panel %s already registered", PANEL_URL_PATH)
+
+
+@callback
+def _async_remove_panel(hass: HomeAssistant) -> None:
+    async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
 
 
 # -- lovelace resource ---------------------------------------------------------

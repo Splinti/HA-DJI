@@ -18,7 +18,8 @@ RC 2 / Handy ──USB──▶ PC (Sync-Skript) ──SMB──▶ /share/dji/f
 - **Sensoren** – ein Gerät „DJI Flight Log" mit Gesamtwerten plus ein Gerät je Drohne (Seriennummer):
   Flüge, Flugzeit, Distanz, max. Höhe, max. Geschwindigkeit, erster/letzter Flug, letzter Flug: Dauer, Distanz, max. Höhe, max. Speed, Akku Ende / verbraucht.
   Diagnose: letzter Import, ausstehende Dateien, Anzahl Drohnen. Button „Log-Ordner scannen“ für sofortigen Import.
-- **geo_location** – Startpunkt jedes Flugs als Entity (`source: dji_flightlog`) → erscheint auf der eingebauten Map-Card, nutzbar in Zonen-Automationen.
+- **geo_location** *(optional, standardmäßig aus)* – Startpunkt jedes Flugs als Entity (`source: dji_flightlog`), nutzbar auf der eingebauten Map-Card und in Zonen-Automationen. Aus gutem Grund opt-in: HA hängt an das automatische „Übersicht"-Dashboard eine Karte an, sobald *irgendeine* `geo_location`-Entity existiert – die Flüge würden dann ungefragt auf der Standard-Karte landen.
+- **Eigenes Panel in der Seitenleiste** – Vollbild-Ansicht mit Statistik, Filtern, großer Karte und Flugliste zum Anklicken.
 - **Karte** – `custom:dji-flight-map-card` (Leaflet, offline-fähig außer Kacheln): alle Tracks, Heatmap, Popups mit Kennzahlen und GPX/KML/GeoJSON-Download, Filter nach Zeitraum/Drohne, Modus „nur letzter Flug".
 - **Event** `dji_flightlog_flight_imported` bei jedem neuen Flug (Payload = Flugzusammenfassung) → Benachrichtigung, OneDrive-Upload, …
 - **Services** `dji_flightlog.scan`, `dji_flightlog.import_file`, `dji_flightlog.export_track` (GPX/KML/GeoJSON, in Datei oder als Response).
@@ -42,9 +43,23 @@ RC 2 / Handy ──USB──▶ PC (Sync-Skript) ──SMB──▶ /share/dji/f
 | DJI API-Key | – | Nötig für GPS-Track/Telemetrie bei Logs ab v13 (alle aktuellen Drohnen). Ohne Key: nur Header-Daten (Zeit, Dauer, Distanz, max. Höhe) |
 | Scan-Intervall | 300 s | |
 | Max. Punkte pro Track | 1500 | Downsampling beim Speichern |
-| geo_location-Limit | 200 | Nur die neuesten N Flüge bekommen eine Entity |
+| geo_location-Limit | 0 (aus) | Nur die neuesten N Flüge bekommen eine Entity. **0 = keine** – siehe Hinweis unten |
+| In der Seitenleiste anzeigen | an | Panel „Drohnenflüge" in der HA-Seitenleiste |
 
 **DJI API-Key** (kostenlos): auf [developer.dji.com](https://developer.dji.com) registrieren → *Developer Center* → *Create App* → Typ **Open API** → E-Mail bestätigen → *App Key* kopieren.
+
+## Eigenes Dashboard in der Seitenleiste
+
+Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge"** in der HA-Seitenleiste – kein Lovelace-Dashboard, sondern eine eigene Seite:
+
+- Statistik-Kacheln (Flüge, Flugzeit, Strecke, max. Höhe/Speed, letzter Flug) über den gefilterten Zeitraum
+- Filter: Zeitraum (7 Tage … alles), Drohne (ab zwei Drohnen), Heatmap an/aus
+- Große Karte, die die volle Höhe nutzt
+- Flugliste rechts (auf dem Handy darunter), nach Tagen gruppiert; Klick auf einen Flug zoomt auf ihn und hebt ihn hervor, nochmal klicken hebt die Auswahl auf
+- ↻-Button oben rechts scannt den Log-Ordner sofort
+- Hinweisleiste, wenn Flüge ohne GPS-Track importiert wurden (fehlender API-Key) oder nicht unterstützte Dateien im Ordner liegen
+
+Abschaltbar über *Integration → Konfigurieren → „In der Seitenleiste anzeigen"*. Die Position in der Seitenleiste lässt sich wie bei jedem Panel per Rechtsklick bzw. über *Profil → Seitenleiste bearbeiten* ändern.
 
 ## Karte im Dashboard
 
@@ -71,13 +86,17 @@ height: 450
 
 Weitere Optionen: `scan_button` (↻ im Titel, Default true), `limit`, `since` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
 
-Die **eingebaute Map-Card** zeigt die Startpunkte ohne Zusatz-Card:
+### Flüge auf der Standard-Karte
+
+Setzt man das geo_location-Limit auf einen Wert > 0, zeigt auch die **eingebaute Map-Card** die Startpunkte:
 
 ```yaml
 type: map
 geo_location_sources:
   - dji_flightlog
 ```
+
+Nebenwirkung: Home Assistant ergänzt sein automatisch erzeugtes „Übersicht"-Dashboard dann selbsttätig um eine Karte mit allen `geo_location`-Quellen. Wer die Flüge dort **nicht** sehen will, lässt das Limit auf 0 – die Entities werden dann samt Registry-Einträgen entfernt.
 
 Komplettes Beispiel-Dashboard: [`examples/dashboard.yaml`](examples/dashboard.yaml).
 
@@ -95,6 +114,18 @@ homeassistant:
   allowlist_external_dirs:
     - /share/dji
 ```
+
+## Welche Datei brauche ich?
+
+Nur die **App-Flugaufzeichnung** der DJI-Fly-App:
+
+| Datei | Woher | Brauchbar? |
+|---|---|---|
+| `DJIFlightRecord_*.txt` bzw. `FlightRecord_*.txt` | RC 2 / Handy: `Android/data/dji.go.v5/files/FlightRecord/` | **Ja** – das ist die richtige (neuere DJI-Fly-Versionen lassen das `DJI`-Präfix weg) |
+| `DJI_<Modell>_<Datum>.DAT` (zig MB) | DJI Assistant 2 / "Geräteprotokolle exportieren" | Nein – Werkstatt-Bundle aus AES-verschlüsselten `*.log.enc` und `FC_SMP-*.DAT.enc`; nur DJI kann das lesen |
+| `FLYnnn.DAT` | SD-Karte / Flightcontroller | Nein – bei allen aktuellen Modellen verschlüsselt |
+
+Nicht verwertbare Dateien werden nicht stillschweigend übersprungen: sie landen im Sensor „Nicht unterstützte Dateien" (mit Dateiname und Grund) und erzeugen eine erklärende Warnung im Protokoll.
 
 ## Logs vom RC 2 / Handy auf den HA-Host bekommen
 

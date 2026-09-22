@@ -9,7 +9,8 @@
           "api_key": "DJI API-Key",
           "scan_interval": "Scan-Intervall",
           "max_track_points": "Max. gespeicherte Punkte pro Track",
-          "geo_location_limit": "Flüge als geo_location-Entities (0 = keine)"
+          "geo_location_limit": "Flüge als geo_location-Entities (0 = keine; sobald welche existieren, ergänzt Home Assistant das Standard-Dashboard um eine Karte)",
+          "sidebar_panel": "In der Seitenleiste anzeigen"
         }
       }
     },
@@ -29,7 +30,8 @@
           "api_key": "DJI API-Key",
           "scan_interval": "Scan-Intervall",
           "max_track_points": "Max. gespeicherte Punkte pro Track",
-          "geo_location_limit": "Flüge als geo_location-Entities (0 = keine)"
+          "geo_location_limit": "Flüge als geo_location-Entities (0 = keine; sobald welche existieren, ergänzt Home Assistant das Standard-Dashboard um eine Karte)",
+          "sidebar_panel": "In der Seitenleiste anzeigen"
         }
       }
     },
@@ -86,6 +88,9 @@
       },
       "aircraft_count": {
         "name": "Drohnen"
+      },
+      "unsupported_files": {
+        "name": "Nicht unterstützte Dateien"
       }
     },
     "button": {

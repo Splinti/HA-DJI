@@ -16,10 +16,12 @@ from .const import (
     CONF_LOG_DIR,
     CONF_MAX_TRACK_POINTS,
     CONF_SCAN_INTERVAL,
+    CONF_SIDEBAR_PANEL,
     DEFAULT_GEO_LOCATION_LIMIT,
     DEFAULT_LOG_DIR,
     DEFAULT_MAX_TRACK_POINTS,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SIDEBAR_PANEL,
     DOMAIN,
 )
 
@@ -44,6 +46,10 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_GEO_LOCATION_LIMIT,
                 default=defaults.get(CONF_GEO_LOCATION_LIMIT, DEFAULT_GEO_LOCATION_LIMIT),
             ): selector.NumberSelector(selector.NumberSelectorConfig(min=0, max=2000, step=10)),
+            vol.Optional(
+                CONF_SIDEBAR_PANEL,
+                default=defaults.get(CONF_SIDEBAR_PANEL, DEFAULT_SIDEBAR_PANEL),
+            ): selector.BooleanSelector(),
         }
     )
 

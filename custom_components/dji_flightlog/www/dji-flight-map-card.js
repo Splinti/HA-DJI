@@ -122,6 +122,8 @@ class DjiFlightMapCard extends HTMLElement {
     this._config = null;
     this._map = null;
     this._layers = null;
+    this._flightLayers = {};
+    this._focused = null;
     this._tileLayer = null;
     this._tileUrl = null;
     this._lastRefreshKey = null;
@@ -322,6 +324,7 @@ class DjiFlightMapCard extends HTMLElement {
     const c = this._config;
     this._applyTiles();
     this._layers.clearLayers();
+    this._flightLayers = {};
 
     const empty = this.shadowRoot.getElementById("empty");
     empty.hidden = flights.length > 0;
@@ -346,13 +349,21 @@ class DjiFlightMapCard extends HTMLElement {
       const color = colorFor(f);
       const track = byId[f.flight_id];
       const popup = this._popupHtml(f);
+      const entry = (this._flightLayers[f.flight_id] = {
+        color,
+        bounds: L.latLngBounds([]),
+      });
       if (track && track.points.length > 1) {
         const latlngs = track.points.map((p) => [p[1], p[0]]);
         const line = L.polyline(latlngs, { color, weight: c.line_weight, opacity: 0.85 });
         line.bindPopup(popup);
         line.on("popupopen", (e) => this._wirePopup(e.popup, f));
         this._layers.addLayer(line);
-        latlngs.forEach((ll) => bounds.extend(ll));
+        entry.line = line;
+        latlngs.forEach((ll) => {
+          bounds.extend(ll);
+          entry.bounds.extend(ll);
+        });
         if (c.heatmap) for (const ll of latlngs) heatPoints.push([ll[0], ll[1], 0.5]);
         if (c.home && track.home) {
           this._layers.addLayer(
@@ -365,6 +376,8 @@ class DjiFlightMapCard extends HTMLElement {
         m.bindPopup(popup);
         m.on("popupopen", (e) => this._wirePopup(e.popup, f));
         this._layers.addLayer(m);
+        entry.marker = m;
+        entry.bounds.extend([f.takeoff_lat, f.takeoff_lon]);
         bounds.extend([f.takeoff_lat, f.takeoff_lon]);
       }
     }
@@ -373,10 +386,35 @@ class DjiFlightMapCard extends HTMLElement {
       this._layers.addLayer(L.heatLayer(heatPoints, { radius: 18, blur: 20, minOpacity: 0.3 }));
     }
 
-    if (c.fit && bounds.isValid()) {
+    if (this._focused && this._flightLayers[this._focused]) {
+      this.focusFlight(this._focused, { openPopup: false });
+    } else if (c.fit && bounds.isValid()) {
       map.fitBounds(bounds, { padding: [24, 24], maxZoom: 17 });
     }
     setTimeout(() => map.invalidateSize(), 50);
+  }
+
+  /** Merge config changes (filters, mode) and reload without rebuilding the map. */
+  updateOptions(patch) {
+    Object.assign(this._config, patch);
+    this._lastRefreshKey = null;
+    return this._refresh();
+  }
+
+  /** Zoom to one flight and highlight it; pass null to clear the selection. */
+  focusFlight(flightId, { openPopup = true } = {}) {
+    this._focused = flightId;
+    const entry = flightId && this._flightLayers[flightId];
+    for (const [id, l] of Object.entries(this._flightLayers)) {
+      const on = !flightId || id === flightId;
+      if (l.line) l.line.setStyle({ opacity: on ? 0.95 : 0.25, weight: this._config.line_weight + (id === flightId ? 2 : 0) });
+      if (l.marker) l.marker.setStyle({ opacity: on ? 1 : 0.3, fillOpacity: on ? 1 : 0.3 });
+    }
+    if (!entry || !this._map) return;
+    if (entry.bounds && entry.bounds.isValid()) {
+      this._map.fitBounds(entry.bounds, { padding: [40, 40], maxZoom: 17 });
+    }
+    if (openPopup) (entry.line || entry.marker)?.openPopup();
   }
 
   _colorFn(flights) {

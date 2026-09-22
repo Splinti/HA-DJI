@@ -9,7 +9,8 @@
           "api_key": "DJI API key",
           "scan_interval": "Scan interval",
           "max_track_points": "Max. stored points per track",
-          "geo_location_limit": "Flights exposed as geo_location entities (0 = none)"
+          "geo_location_limit": "Flights exposed as geo_location entities (0 = none; any of them makes Home Assistant add a map to the auto-generated Overview dashboard)",
+          "sidebar_panel": "Show in sidebar"
         }
       }
     },
@@ -29,7 +30,8 @@
           "api_key": "DJI API key",
           "scan_interval": "Scan interval",
           "max_track_points": "Max. stored points per track",
-          "geo_location_limit": "Flights exposed as geo_location entities (0 = none)"
+          "geo_location_limit": "Flights exposed as geo_location entities (0 = none; any of them makes Home Assistant add a map to the auto-generated Overview dashboard)",
+          "sidebar_panel": "Show in sidebar"
         }
       }
     },
@@ -86,6 +88,9 @@
       },
       "aircraft_count": {
         "name": "Aircraft"
+      },
+      "unsupported_files": {
+        "name": "Unsupported files"
       }
     },
     "button": {

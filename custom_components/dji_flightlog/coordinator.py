@@ -23,11 +23,15 @@ from .const import (
     DOMAIN,
     EVENT_FLIGHT_IMPORTED,
     LOG_FILE_SUFFIXES,
+    REASON_FC_DAT,
+    REASON_SUPPORT_BUNDLE,
+    REASON_TOO_LARGE,
     STATUS_FAILED,
     STATUS_HEADER_ONLY,
     STATUS_OK,
+    STATUS_UNSUPPORTED,
 )
-from .parser import KeychainError, parse_flight
+from .parser import KeychainError, classify_log_file, parse_flight
 from .storage import FlightStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,6 +41,19 @@ _MIN_FILE_AGE = timedelta(seconds=30)
 
 # Header-only imports get retried until they succeed with the API key.
 _RETRY_STATUSES = (STATUS_HEADER_ONLY,)
+
+_REJECT_REASONS = {
+    REASON_SUPPORT_BUNDLE: (
+        "is a DJI support log bundle (encrypted *.log.enc / FC_SMP-*.DAT.enc), not a flight "
+        "record. Those are exported by DJI Assistant 2 and only DJI can decrypt them. Use the "
+        "DJI Fly app records instead: Android/data/dji.go.v5/files/FlightRecord/DJIFlightRecord_*.txt"
+    ),
+    REASON_FC_DAT: (
+        "is a flight controller DAT from the aircraft. DJI encrypts these on every current model; "
+        "use the DJI Fly app record (DJIFlightRecord_*.txt) instead"
+    ),
+    REASON_TOO_LARGE: "is too large to be a DJI Fly flight record and was skipped",
+}
 
 
 @dataclass
@@ -68,6 +85,7 @@ class FlightData:
     last_import: str | None = None
     last_scan: str | None = None
     pending_files: int = 0
+    unsupported: list[dict[str, Any]] = field(default_factory=list)
     log_dir_ok: bool = False
 
 
@@ -127,6 +145,15 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             return None, False
 
         record = {"size": stat.st_size, "mtime": stat.st_mtime, "flight_id": None, "status": None}
+
+        reason = classify_log_file(path, stat.st_size)
+        if reason is not None:
+            _LOGGER.warning("%s %s", path.name, _REJECT_REASONS[reason])
+            record["status"] = STATUS_UNSUPPORTED
+            record["reason"] = reason
+            self.store.files[str(path)] = record
+            return None, False
+
         try:
             summary, track = parse_flight(path, api_key=self.api_key, max_track_points=self.max_track_points)
         except KeychainError as err:
@@ -251,4 +278,9 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
                 stats.name = f["aircraft_name"]
         imported = [f["imported_at"] for f in data.flights.values() if f.get("imported_at")]
         data.last_import = max(imported) if imported else None
+        data.unsupported = [
+            {"file": Path(path).name, "reason": rec.get("reason", "")}
+            for path, rec in sorted(self.store.files.items())
+            if rec.get("status") == STATUS_UNSUPPORTED
+        ]
         return data

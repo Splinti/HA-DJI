@@ -10,6 +10,8 @@ Die Integration überwacht nur einen Ordner. Dieses Dokument beschreibt, wie die
 | **Android-Handy** (DJI Fly, z. B. mit Goggles N3) | `Android\data\dji.go.v5\files\FlightRecord` (Android 11+) bzw. `DJI\dji.go.v5\FlightRecord` (älter) | USB am PC (MTP). |
 | iPhone | Dateien-App → *Auf meinem iPhone/DJI Fly/FlightRecords* | Kurzbefehle-Automation, siehe unten |
 
+> **Nicht verwechseln:** Der Export aus **DJI Assistant 2** (Drohne per USB an den PC, „Geräteprotokolle exportieren") liefert eine Datei wie `DJI_Avata_360_2026-09-22_12-34-44.DAT` mit zig MB. Das ist ein Werkstatt-Bundle aus AES-verschlüsselten Einzellogs (`hms/*.log.enc`, `flyctrl_smp/FC_SMP-*.DAT.enc`) – gedacht für den DJI-Support, und nur DJI besitzt die Schlüssel. Es gibt dafür kein öffentliches Tool. Die Integration erkennt solche Dateien und meldet sie als „nicht unterstützt".
+
 Dateien heißen `DJIFlightRecord_YYYY-MM-DD_[HH-MM-SS].txt`. Bei aktuellen Drohnen sind sie verschlüsselt (Log-Version 13+); die Integration entschlüsselt sie mit dem DJI-API-Key.
 
 ## Warum kein Sync-APK?
