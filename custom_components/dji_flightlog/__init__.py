@@ -32,7 +32,7 @@ from .storage import FlightStore
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.GEO_LOCATION]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON, Platform.GEO_LOCATION]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -121,7 +121,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         return
 
     async def handle_scan(call: ServiceCall) -> None:
-        await _get_coordinator(hass).async_request_refresh()
+        await _get_coordinator(hass).async_refresh()
 
     async def handle_import_file(call: ServiceCall) -> ServiceResponse:
         coordinator = _get_coordinator(hass)

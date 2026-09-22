@@ -87,6 +87,11 @@
       "aircraft_count": {
         "name": "Drohnen"
       }
+    },
+    "button": {
+      "scan": {
+        "name": "Log-Ordner scannen"
+      }
     }
   },
   "services": {

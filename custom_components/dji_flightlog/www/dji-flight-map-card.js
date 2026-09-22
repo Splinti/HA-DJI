@@ -23,18 +23,22 @@ const PALETTE = [
   "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990",
 ];
 
-// Same tile provider Home Assistant's own map card uses. OpenStreetMap's
-// tile servers reject requests without a Referer, which HA never sends.
-const CARTO_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
+// Default: Home Assistant's own tile proxy (map_tiles, HA >= 2026.8). It
+// fetches OpenStreetMap tiles server-side with a proper User-Agent, so the
+// browser needs neither a Referer nor a third-party key. The token comes
+// from the websocket API and rotates every 30 min (two are valid at a time).
+const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+const CARTO_ATTR = OSM_ATTR + ' &copy; <a href="https://carto.com/attributions">CARTO</a>';
 const TILES = {
-  osm: {
-    url: "https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
-    dark: "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png",
-    attribution: CARTO_ATTR,
+  ha: {
+    url: "/api/map_tiles/raster/{z}/{x}/{y}.png?token={token}",
+    attribution: OSM_ATTR,
     maxZoom: 20,
+    maxNativeZoom: 19,
+    token: true,
   },
-  light: {
-    url: "https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png",
+  carto: {
+    url: "https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
     dark: "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png",
     attribution: CARTO_ATTR,
     maxZoom: 20,
@@ -50,6 +54,30 @@ const TILES = {
     maxZoom: 17,
   },
 };
+TILES.osm = TILES.ha; // backwards compatible alias
+
+// One token shared by all cards on the page.
+let tileToken = null;
+let tileTokenTimer = null;
+async function fetchTileToken(hass) {
+  try {
+    const res = await hass.callWS({ type: "map_tiles/access_token" });
+    tileToken = res.token || null;
+  } catch (err) {
+    console.warn("dji-flight-map-card: map_tiles token unavailable (HA < 2026.8?)", err);
+    tileToken = null;
+  }
+  return tileToken;
+}
+function ensureTokenRefresh(hass, onChange) {
+  if (tileTokenTimer) return;
+  tileTokenTimer = setInterval(async () => {
+    const old = tileToken;
+    await fetchTileToken(hass);
+    if (tileToken !== old) onChange();
+  }, 20 * 60 * 1000);
+}
+const tokenListeners = new Set();
 
 let leafletPromise = null;
 function loadLeaflet() {
@@ -109,7 +137,7 @@ class DjiFlightMapCard extends HTMLElement {
       title: "",
       mode: "all",
       height: 400,
-      tiles: "osm",
+      tiles: "ha",
       heatmap: false,
       markers: true,
       home: true,
@@ -124,6 +152,7 @@ class DjiFlightMapCard extends HTMLElement {
       dark: "auto",
       refresh_entity: "sensor.dji_flight_log_last_import",
       refresh_seconds: 300,
+      scan_button: true,
       ...config,
     };
     this._render();
@@ -151,6 +180,7 @@ class DjiFlightMapCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    tokenListeners.delete(this);
     if (this._timer) {
       clearInterval(this._timer);
       this._timer = null;
@@ -166,6 +196,11 @@ class DjiFlightMapCard extends HTMLElement {
         ha-card { overflow: hidden; }
         .header { padding: 12px 16px 0; font-size: 1.2em; font-weight: 500; display: flex; justify-content: space-between; align-items: baseline; }
         .header .sub { font-size: 0.75em; color: var(--secondary-text-color); font-weight: normal; }
+        .header .actions { display: flex; align-items: center; gap: 8px; }
+        .header button { background: none; border: none; cursor: pointer; color: var(--secondary-text-color); font-size: 1.1em; padding: 2px 4px; line-height: 1; }
+        .header button:hover { color: var(--primary-text-color); }
+        .header button.busy { animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
         #map { height: ${Number(c.height)}px; width: 100%; background: var(--card-background-color, #fff); }
         .empty { padding: 24px 16px; color: var(--secondary-text-color); text-align: center; }
         .leaflet-container { font: inherit; }
@@ -177,13 +212,30 @@ class DjiFlightMapCard extends HTMLElement {
         .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--card-background-color, #fff); color: var(--primary-text-color, #000); }
       </style>
       <ha-card>
-        ${c.title ? `<div class="header"><span>${esc(c.title)}</span><span class="sub" id="sub"></span></div>` : ""}
+        ${c.title ? `<div class="header"><span>${esc(c.title)}</span><span class="actions"><span class="sub" id="sub"></span>${c.scan_button ? `<button id="scan" title="Log-Ordner jetzt scannen">&#x21bb;</button>` : ""}</span></div>` : ""}
         <div id="map"></div>
         <div class="empty" id="empty" hidden>Noch keine Flüge importiert.</div>
       </ha-card>`;
     this._map = null;
     this._tileLayer = null;
     this._tileUrl = null;
+    const scan = this.shadowRoot.getElementById("scan");
+    if (scan) scan.onclick = () => this._scanNow();
+  }
+
+  async _scanNow() {
+    const btn = this.shadowRoot.getElementById("scan");
+    if (!this._hass || !btn || btn.classList.contains("busy")) return;
+    btn.classList.add("busy");
+    try {
+      await this._hass.callService("dji_flightlog", "scan", {});
+      // The scan runs in the background; give it a moment, then reload.
+      setTimeout(() => this._refresh(), 3000);
+    } catch (err) {
+      console.error("dji-flight-map-card scan:", err);
+    } finally {
+      setTimeout(() => btn.classList.remove("busy"), 3000);
+    }
   }
 
   _isDark() {
@@ -198,6 +250,10 @@ class DjiFlightMapCard extends HTMLElement {
     const el = this.shadowRoot.getElementById("map");
     if (!el) return null;
     this._map = L.map(el, { zoomControl: true, attributionControl: true });
+    const tiles = TILES[this._config.tiles] || TILES.ha;
+    if (tiles.token && tileToken === null) await fetchTileToken(this._hass);
+    tokenListeners.add(this);
+    ensureTokenRefresh(this._hass, () => tokenListeners.forEach((c) => c._applyTiles(true)));
     this._applyTiles();
     this._map.setView([51.0, 10.0], 5);
     this._layers = L.layerGroup().addTo(this._map);
@@ -206,16 +262,22 @@ class DjiFlightMapCard extends HTMLElement {
     return this._map;
   }
 
-  _applyTiles() {
+  _applyTiles(force = false) {
     const L = window.L;
-    const tiles = TILES[this._config.tiles] || TILES.osm;
+    let tiles = TILES[this._config.tiles] || TILES.ha;
+    if (tiles.token && !tileToken) tiles = TILES.carto; // older HA without map_tiles
     const dark = this._isDark() && !!tiles.dark;
     const url = dark ? tiles.dark : tiles.url;
-    if (this._tileLayer && this._tileUrl === url) return;
+    if (!force && this._tileLayer && this._tileUrl === url) return;
     if (this._tileLayer) this._map.removeLayer(this._tileLayer);
     this._tileUrl = url;
-    this._tileLayer = L.tileLayer(url, { attribution: tiles.attribution, maxZoom: tiles.maxZoom }).addTo(this._map);
-    // Only providers without a dark variant get the CSS invert.
+    this._tileLayer = L.tileLayer(url, {
+      attribution: tiles.attribution,
+      maxZoom: tiles.maxZoom,
+      maxNativeZoom: tiles.maxNativeZoom || tiles.maxZoom,
+      token: tileToken || "",
+    }).addTo(this._map);
+    // Providers without a dark variant get the same CSS filter HA's map uses.
     this.shadowRoot.querySelector("ha-card").classList.toggle("dark", this._isDark() && !tiles.dark);
   }
 

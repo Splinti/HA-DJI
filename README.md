@@ -17,7 +17,7 @@ RC 2 / Handy ──USB──▶ PC (Sync-Skript) ──SMB──▶ /share/dji/f
 
 - **Sensoren** – ein Gerät „DJI Flight Log" mit Gesamtwerten plus ein Gerät je Drohne (Seriennummer):
   Flüge, Flugzeit, Distanz, max. Höhe, max. Geschwindigkeit, erster/letzter Flug, letzter Flug: Dauer, Distanz, max. Höhe, max. Speed, Akku Ende / verbraucht.
-  Diagnose: letzter Import, ausstehende Dateien, Anzahl Drohnen.
+  Diagnose: letzter Import, ausstehende Dateien, Anzahl Drohnen. Button „Log-Ordner scannen“ für sofortigen Import.
 - **geo_location** – Startpunkt jedes Flugs als Entity (`source: dji_flightlog`) → erscheint auf der eingebauten Map-Card, nutzbar in Zonen-Automationen.
 - **Karte** – `custom:dji-flight-map-card` (Leaflet, offline-fähig außer Kacheln): alle Tracks, Heatmap, Popups mit Kennzahlen und GPX/KML/GeoJSON-Download, Filter nach Zeitraum/Drohne, Modus „nur letzter Flug".
 - **Event** `dji_flightlog_flight_imported` bei jedem neuen Flug (Payload = Flugzusammenfassung) → Benachrichtigung, OneDrive-Upload, …
@@ -65,11 +65,11 @@ aircraft: Neo      # optional: Name oder Seriennummer
 heatmap: true
 markers: true      # Startpunkte
 home: true         # Home-Punkte
-tiles: osm         # osm (Carto Voyager, wie HA-Map-Card) | light | satellite | topo
+tiles: ha          # ha (HA-eigener OSM-Proxy, Default) | carto | satellite | topo
 height: 450
 ```
 
-Weitere Optionen: `limit`, `since` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
+Weitere Optionen: `scan_button` (↻ im Titel, Default true), `limit`, `since` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
 
 Die **eingebaute Map-Card** zeigt die Startpunkte ohne Zusatz-Card:
 

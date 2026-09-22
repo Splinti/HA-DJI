@@ -154,6 +154,18 @@ async def test_event_and_rescan(hass: HomeAssistant, setup_entry, log_dir: Path)
     assert len(events) == 2
 
 
+async def test_scan_button(hass: HomeAssistant, setup_entry, log_dir: Path):
+    await setup_entry(1)
+    assert hass.states.get("sensor.dji_flight_log_flights").state == "1"
+    _write_logs(log_dir, 2)  # adds file index 1
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
+        await hass.services.async_call(
+            "button", "press", {"entity_id": "button.dji_flight_log_scan_log_folder"}, blocking=True
+        )
+        await hass.async_block_till_done()
+    assert hass.states.get("sensor.dji_flight_log_flights").state == "2"
+
+
 async def test_services(hass: HomeAssistant, setup_entry, tmp_path: Path):
     await setup_entry(1)
     hass.config.allowlist_external_dirs = {str(tmp_path)}
