@@ -1,0 +1,29 @@
+scan:
+
+import_file:
+  fields:
+    path:
+      required: true
+      example: "/share/dji/flightrecords/DJIFlightRecord_2026-09-20_[14-02-11].txt"
+      selector:
+        text:
+
+export_track:
+  fields:
+    flight_id:
+      required: true
+      example: "last"
+      selector:
+        text:
+    format:
+      default: gpx
+      selector:
+        select:
+          options:
+            - gpx
+            - kml
+            - geojson
+    path:
+      example: "/share/dji/exports/"
+      selector:
+        text:

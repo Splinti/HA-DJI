@@ -1,0 +1,26 @@
+[project]
+name = "dji-home-assistant"
+version = "0.1.0"
+description = "DJI flight records in Home Assistant: sensors, geo_location entities and a native map card"
+requires-python = ">=3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+  "ignore::DeprecationWarning",
+  "ignore::pytest.PytestRemovedIn9Warning",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+src = ["custom_components"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF012"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["custom_components.dji_flightlog"]

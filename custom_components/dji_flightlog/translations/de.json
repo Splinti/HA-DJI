@@ -1,0 +1,126 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "DJI Flight Log",
+        "description": "Ordner, in dem die DJI-Fly-Flugaufzeichnungen (*.txt) abgelegt werden. Neuere Logs (v13+) sind verschlüsselt; für GPS-Track und Telemetrie wird ein kostenloser DJI-Developer-API-Key benötigt. Ohne Key werden nur die Header-Daten (Zeit, Dauer, Distanz, max. Höhe) importiert.",
+        "data": {
+          "log_dir": "Log-Ordner",
+          "api_key": "DJI API-Key",
+          "scan_interval": "Scan-Intervall",
+          "max_track_points": "Max. gespeicherte Punkte pro Track",
+          "geo_location_limit": "Flüge als geo_location-Entities (0 = keine)"
+        }
+      }
+    },
+    "error": {
+      "dir_not_found": "Ordner existiert nicht"
+    },
+    "abort": {
+      "already_configured": "Bereits eingerichtet"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "DJI Flight Log",
+        "data": {
+          "log_dir": "Log-Ordner",
+          "api_key": "DJI API-Key",
+          "scan_interval": "Scan-Intervall",
+          "max_track_points": "Max. gespeicherte Punkte pro Track",
+          "geo_location_limit": "Flüge als geo_location-Entities (0 = keine)"
+        }
+      }
+    },
+    "error": {
+      "dir_not_found": "Ordner existiert nicht"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "flights": {
+        "name": "Flüge"
+      },
+      "flight_time": {
+        "name": "Flugzeit"
+      },
+      "distance": {
+        "name": "Distanz"
+      },
+      "max_height": {
+        "name": "Max. Höhe"
+      },
+      "max_speed": {
+        "name": "Max. Geschwindigkeit"
+      },
+      "first_flight": {
+        "name": "Erster Flug"
+      },
+      "last_flight": {
+        "name": "Letzter Flug"
+      },
+      "last_flight_duration": {
+        "name": "Letzter Flug Dauer"
+      },
+      "last_flight_distance": {
+        "name": "Letzter Flug Distanz"
+      },
+      "last_flight_max_height": {
+        "name": "Letzter Flug max. Höhe"
+      },
+      "last_flight_max_speed": {
+        "name": "Letzter Flug max. Geschwindigkeit"
+      },
+      "last_flight_battery_end": {
+        "name": "Letzter Flug Akku Ende"
+      },
+      "last_flight_battery_used": {
+        "name": "Letzter Flug Akku verbraucht"
+      },
+      "last_import": {
+        "name": "Letzter Import"
+      },
+      "pending_files": {
+        "name": "Ausstehende Dateien"
+      },
+      "aircraft_count": {
+        "name": "Drohnen"
+      }
+    }
+  },
+  "services": {
+    "scan": {
+      "name": "Log-Ordner scannen",
+      "description": "Log-Ordner sofort scannen statt auf das nächste Intervall zu warten."
+    },
+    "import_file": {
+      "name": "Datei importieren",
+      "description": "Eine einzelne DJI-Fly-Flugaufzeichnung importieren.",
+      "fields": {
+        "path": {
+          "name": "Pfad",
+          "description": "Absoluter Pfad der .txt-Logdatei."
+        }
+      }
+    },
+    "export_track": {
+      "name": "Track exportieren",
+      "description": "Flugtrack als GPX, KML oder GeoJSON exportieren. Ohne Pfad wird der Inhalt in der Antwort zurückgegeben.",
+      "fields": {
+        "flight_id": {
+          "name": "Flug-ID",
+          "description": "Flug-ID oder 'last' für den letzten Flug."
+        },
+        "format": {
+          "name": "Format",
+          "description": "gpx, kml oder geojson."
+        },
+        "path": {
+          "name": "Pfad",
+          "description": "Datei oder Ordner (muss in allowlist_external_dirs liegen)."
+        }
+      }
+    }
+  }
+}

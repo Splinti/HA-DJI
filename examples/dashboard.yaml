@@ -1,0 +1,54 @@
+# Beispiel-Dashboard (Raw-Konfigurationseditor → einfügen).
+# Entity-IDs entsprechen den Standardnamen; das Gerät je Drohne heißt wie die Drohne
+# (z. B. sensor.neo_flights, sensor.avata_2_last_flight).
+title: Drohne
+views:
+  - title: Flüge
+    path: drone
+    cards:
+      - type: custom:dji-flight-map-card
+        title: Alle Flüge
+        mode: all
+        heatmap: true
+        days: 365
+        height: 480
+
+      - type: horizontal-stack
+        cards:
+          - type: statistic
+            entity: sensor.dji_flight_log_flights
+            name: Flüge
+          - type: entity
+            entity: sensor.dji_flight_log_flight_time
+            name: Flugzeit
+          - type: entity
+            entity: sensor.dji_flight_log_distance
+            name: Distanz
+          - type: entity
+            entity: sensor.dji_flight_log_max_height
+            name: Rekordhöhe
+
+      - type: custom:dji-flight-map-card
+        title: Letzter Flug
+        mode: last
+        tiles: satellite
+        height: 360
+
+      - type: entities
+        title: Letzter Flug
+        entities:
+          - entity: sensor.dji_flight_log_last_flight
+          - entity: sensor.dji_flight_log_last_flight_duration
+          - entity: sensor.dji_flight_log_last_flight_distance
+          - entity: sensor.dji_flight_log_last_flight_max_height
+          - entity: sensor.dji_flight_log_last_flight_max_speed
+          - entity: sensor.dji_flight_log_last_flight_battery_used
+          - entity: sensor.dji_flight_log_last_import
+          - entity: sensor.dji_flight_log_pending_files
+
+      # Eingebaute Map-Card: Startpunkte aller Flüge als geo_location
+      - type: map
+        title: Startpunkte
+        geo_location_sources:
+          - dji_flightlog
+        default_zoom: 8

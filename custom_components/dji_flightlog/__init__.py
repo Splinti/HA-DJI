@@ -1,0 +1,203 @@
+"""DJI Flight Log: import DJI Fly flight records into Home Assistant."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+import voluptuous as vol
+from homeassistant.components.http import StaticPathConfig
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse, callback
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_validation as cv
+
+from .const import (
+    ATTR_FLIGHT_ID,
+    ATTR_FORMAT,
+    ATTR_PATH,
+    CARD_URL,
+    DOMAIN,
+    EXPORT_FORMATS,
+    SERVICE_EXPORT_TRACK,
+    SERVICE_IMPORT_FILE,
+    SERVICE_SCAN,
+    STATIC_URL_BASE,
+)
+from .coordinator import FlightLogCoordinator
+from .http import async_register_views, render_export
+from .storage import FlightStore
+
+_LOGGER = logging.getLogger(__name__)
+
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.GEO_LOCATION]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+_DATA_SETUP_DONE = f"{DOMAIN}_global_setup"
+
+IMPORT_FILE_SCHEMA = vol.Schema({vol.Required(ATTR_PATH): cv.string})
+EXPORT_TRACK_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_FLIGHT_ID): cv.string,
+        vol.Optional(ATTR_FORMAT, default="gpx"): vol.In(EXPORT_FORMATS),
+        vol.Optional(ATTR_PATH): cv.string,
+    }
+)
+
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Register HTTP views and the static card once per HA run."""
+    if hass.data.get(_DATA_SETUP_DONE):
+        return True
+    hass.data[_DATA_SETUP_DONE] = True
+
+    async_register_views(hass)
+    www = Path(__file__).parent / "www"
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(STATIC_URL_BASE, str(www), cache_headers=False)]
+    )
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    await async_setup(hass, {})
+
+    store = FlightStore(hass)
+    await store.async_load()
+    coordinator = FlightLogCoordinator(hass, entry, store)
+    await coordinator.async_config_entry_first_refresh()
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
+    _async_register_services(hass)
+    await _async_register_lovelace_resource(hass)
+    return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if ok:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        if not hass.data[DOMAIN]:
+            for service in (SERVICE_SCAN, SERVICE_IMPORT_FILE, SERVICE_EXPORT_TRACK):
+                hass.services.async_remove(DOMAIN, service)
+    return ok
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+# -- services ------------------------------------------------------------------
+
+
+def _get_coordinator(hass: HomeAssistant) -> FlightLogCoordinator:
+    coordinators = list(hass.data.get(DOMAIN, {}).values())
+    if not coordinators:
+        raise HomeAssistantError("DJI Flight Log is not set up")
+    return coordinators[0]
+
+
+def _resolve_flight(coordinator: FlightLogCoordinator, flight_id: str) -> dict[str, Any]:
+    """Accept a flight id or the alias ``last``."""
+    if flight_id == "last":
+        if coordinator.data is None or coordinator.data.totals.last is None:
+            raise ServiceValidationError("No flights imported yet")
+        return coordinator.data.totals.last
+    summary = coordinator.data.flights.get(flight_id) if coordinator.data else None
+    if summary is None:
+        raise ServiceValidationError(f"Unknown flight_id {flight_id}")
+    return summary
+
+
+@callback
+def _async_register_services(hass: HomeAssistant) -> None:
+    if hass.services.has_service(DOMAIN, SERVICE_SCAN):
+        return
+
+    async def handle_scan(call: ServiceCall) -> None:
+        await _get_coordinator(hass).async_request_refresh()
+
+    async def handle_import_file(call: ServiceCall) -> ServiceResponse:
+        coordinator = _get_coordinator(hass)
+        path = Path(call.data[ATTR_PATH])
+        if not await hass.async_add_executor_job(path.is_file):
+            raise ServiceValidationError(f"{path} is not a file")
+        summary = await coordinator.async_import_file(path)
+        return {"flight": summary} if summary else {"flight": None}
+
+    async def handle_export_track(call: ServiceCall) -> ServiceResponse:
+        coordinator = _get_coordinator(hass)
+        summary = _resolve_flight(coordinator, call.data[ATTR_FLIGHT_ID])
+        fmt = call.data[ATTR_FORMAT]
+        track = await coordinator.store.async_read_track(summary["flight_id"])
+        if track is None:
+            raise ServiceValidationError(
+                f"Flight {summary['flight_id']} has no track (encrypted log without API key?)"
+            )
+        body, _ctype = render_export(summary, track, fmt)
+
+        target = call.data.get(ATTR_PATH)
+        if target:
+            out = Path(target)
+            if out.is_dir() or target.endswith(("/", "\\")):
+                out = out / f"{summary['start_time'][:10]}_{summary['flight_id']}.{fmt}"
+            if not hass.config.is_allowed_path(str(out)):
+                raise ServiceValidationError(f"{out} is not in allowlist_external_dirs (configuration.yaml)")
+
+            def _write() -> None:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(body, encoding="utf-8")
+
+            await hass.async_add_executor_job(_write)
+            return {"path": str(out), "flight_id": summary["flight_id"], "format": fmt}
+        return {"content": body, "flight_id": summary["flight_id"], "format": fmt}
+
+    hass.services.async_register(DOMAIN, SERVICE_SCAN, handle_scan)
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_IMPORT_FILE,
+        handle_import_file,
+        schema=IMPORT_FILE_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EXPORT_TRACK,
+        handle_export_track,
+        schema=EXPORT_TRACK_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+
+# -- lovelace resource ---------------------------------------------------------
+
+
+async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
+    """Add the map card as a dashboard resource (storage mode only).
+
+    Best effort: the Lovelace internals differ between HA versions, and in
+    YAML mode the user has to list the resource manually anyway.
+    """
+    lovelace = hass.data.get("lovelace")
+    resources = getattr(lovelace, "resources", None)
+    if resources is None and isinstance(lovelace, dict):
+        resources = lovelace.get("resources")
+    if resources is None or not hasattr(resources, "async_create_item"):
+        _LOGGER.debug("Lovelace resources not available; add %s manually", CARD_URL)
+        return
+    try:
+        if not getattr(resources, "loaded", True):
+            await resources.async_load()
+        for item in resources.async_items():
+            if item.get("url", "").startswith(CARD_URL):
+                return
+        await resources.async_create_item({"res_type": "module", "url": CARD_URL})
+        _LOGGER.info("Registered dashboard resource %s", CARD_URL)
+    except Exception as err:
+        _LOGGER.warning("Could not register dashboard resource %s: %s", CARD_URL, err)

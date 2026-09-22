@@ -1,0 +1,88 @@
+# Beispiel-Automationen für dji_flightlog.
+# Das Event dji_flightlog_flight_imported trägt die komplette Flugzusammenfassung
+# (flight_id, file, filename, start_time, duration_s, distance_m, max_height_m,
+#  aircraft_name, aircraft_sn, takeoff_lat/lon, battery_start_pct/battery_end_pct, status, ...).
+
+# 1) Benachrichtigung bei neuem Flug
+- alias: "Drohne: neuer Flug importiert"
+  trigger:
+    - platform: event
+      event_type: dji_flightlog_flight_imported
+  action:
+    - service: notify.mobile_app_dein_handy
+      data:
+        title: "Neuer Flug: {{ trigger.event.data.aircraft_name }}"
+        message: >-
+          {{ (trigger.event.data.duration_s / 60) | round(1) }} min,
+          {{ (trigger.event.data.distance_m / 1000) | round(2) }} km,
+          max. {{ trigger.event.data.max_height_m | round(0) }} m
+          {% if trigger.event.data.city %}({{ trigger.event.data.city }}){% endif %}
+
+# 2) Rohdatei + GPX nach OneDrive hochladen
+#    Voraussetzung: OneDrive-Integration eingerichtet (Einstellungen → Integrationen → OneDrive),
+#    /share/dji in allowlist_external_dirs.
+- alias: "Drohne: Flug nach OneDrive sichern"
+  trigger:
+    - platform: event
+      event_type: dji_flightlog_flight_imported
+  variables:
+    year: "{{ trigger.event.data.start_time[:4] }}"
+    gpx_dir: "/share/dji/exports/{{ year }}/"
+  action:
+    # Rohdatei (.txt) hochladen
+    - service: onedrive.upload
+      data:
+        config_entry_id: DEINE_ONEDRIVE_CONFIG_ENTRY_ID   # Entwicklerwerkzeuge → Aktionen → onedrive.upload → YAML-Modus zeigt die ID
+        filename: "{{ trigger.event.data.file }}"
+        destination_folder: "Drohne/FlightRecords/{{ year }}"
+    # GPX nur, wenn ein Track vorhanden ist (Log entschlüsselt)
+    - if:
+        - condition: template
+          value_template: "{{ trigger.event.data.status == 'ok' and trigger.event.data.points > 0 }}"
+      then:
+        - service: dji_flightlog.export_track
+          data:
+            flight_id: "{{ trigger.event.data.flight_id }}"
+            format: gpx
+            path: "{{ gpx_dir }}"
+          response_variable: gpx
+        - service: onedrive.upload
+          data:
+            config_entry_id: DEINE_ONEDRIVE_CONFIG_ENTRY_ID
+            filename: "{{ gpx.path }}"
+            destination_folder: "Drohne/GPX/{{ year }}"
+
+# 3) Nur lokal: GPX/KML in /share/dji/exports ablegen
+- alias: "Drohne: GPX + KML lokal ablegen"
+  trigger:
+    - platform: event
+      event_type: dji_flightlog_flight_imported
+      event_data:
+        status: ok
+  action:
+    - service: dji_flightlog.export_track
+      data:
+        flight_id: "{{ trigger.event.data.flight_id }}"
+        format: gpx
+        path: "/share/dji/exports/{{ trigger.event.data.start_time[:4] }}/"
+    - service: dji_flightlog.export_track
+      data:
+        flight_id: "{{ trigger.event.data.flight_id }}"
+        format: kml
+        path: "/share/dji/exports/{{ trigger.event.data.start_time[:4] }}/"
+
+# 4) Sofort scannen, wenn der Samba-Share Änderungen meldet
+#    (Folder-Watcher-Integration per UI einrichten: Ordner /share/dji/flightrecords,
+#     /share/dji zusätzlich in allowlist_external_dirs)
+- alias: "Drohne: Ordner geändert → scannen"
+  trigger:
+    - platform: event
+      event_type: folder_watcher
+      event_data:
+        event_type: created
+  condition:
+    - condition: template
+      value_template: "{{ trigger.event.data.path.endswith('.txt') }}"
+  action:
+    - delay: "00:00:35"   # Dateien jünger als 30 s werden übersprungen (evtl. noch im Schreiben)
+    - service: dji_flightlog.scan

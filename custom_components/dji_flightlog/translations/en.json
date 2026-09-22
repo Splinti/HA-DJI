@@ -1,0 +1,82 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "DJI Flight Log",
+        "description": "Folder that receives the DJI Fly flight records (*.txt). Newer logs (v13+) are encrypted; a free DJI Developer API key is needed to decode the GPS track and telemetry. Without it only the header data (time, duration, distance, max height) is imported.",
+        "data": {
+          "log_dir": "Log folder",
+          "api_key": "DJI API key",
+          "scan_interval": "Scan interval",
+          "max_track_points": "Max. stored points per track",
+          "geo_location_limit": "Flights exposed as geo_location entities (0 = none)"
+        }
+      }
+    },
+    "error": {
+      "dir_not_found": "Folder does not exist"
+    },
+    "abort": {
+      "already_configured": "Already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "DJI Flight Log",
+        "data": {
+          "log_dir": "Log folder",
+          "api_key": "DJI API key",
+          "scan_interval": "Scan interval",
+          "max_track_points": "Max. stored points per track",
+          "geo_location_limit": "Flights exposed as geo_location entities (0 = none)"
+        }
+      }
+    },
+    "error": {
+      "dir_not_found": "Folder does not exist"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "flights": { "name": "Flights" },
+      "flight_time": { "name": "Flight time" },
+      "distance": { "name": "Distance" },
+      "max_height": { "name": "Max height" },
+      "max_speed": { "name": "Max speed" },
+      "first_flight": { "name": "First flight" },
+      "last_flight": { "name": "Last flight" },
+      "last_flight_duration": { "name": "Last flight duration" },
+      "last_flight_distance": { "name": "Last flight distance" },
+      "last_flight_max_height": { "name": "Last flight max height" },
+      "last_flight_max_speed": { "name": "Last flight max speed" },
+      "last_flight_battery_end": { "name": "Last flight battery end" },
+      "last_flight_battery_used": { "name": "Last flight battery used" },
+      "last_import": { "name": "Last import" },
+      "pending_files": { "name": "Pending files" },
+      "aircraft_count": { "name": "Aircraft" }
+    }
+  },
+  "services": {
+    "scan": {
+      "name": "Scan log folder",
+      "description": "Scan the log folder now instead of waiting for the next interval."
+    },
+    "import_file": {
+      "name": "Import file",
+      "description": "Import a single DJI Fly flight record.",
+      "fields": {
+        "path": { "name": "Path", "description": "Absolute path of the .txt log file." }
+      }
+    },
+    "export_track": {
+      "name": "Export track",
+      "description": "Export a flight track as GPX, KML or GeoJSON. Without a path the content is returned in the response.",
+      "fields": {
+        "flight_id": { "name": "Flight ID", "description": "Flight id or 'last' for the most recent flight." },
+        "format": { "name": "Format", "description": "gpx, kml or geojson." },
+        "path": { "name": "Path", "description": "File or folder to write to (must be in allowlist_external_dirs)." }
+      }
+    }
+  }
+}
