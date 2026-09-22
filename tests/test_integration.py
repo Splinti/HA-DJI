@@ -106,7 +106,9 @@ async def test_sensors_and_devices(hass: HomeAssistant, setup_entry):
     assert last.state == "2026-09-02T10:00:00+00:00"
     assert last.attributes["flight_id"] == "flight0001"
     assert last.attributes["aircraft_name"] == "Avata 2"
-    assert last.attributes["latitude"] == pytest.approx(48.1)
+    # No "latitude"/"longitude" here: that would put the sensor on HA's map.
+    assert last.attributes["takeoff_lat"] == pytest.approx(48.1)
+    assert "latitude" not in last.attributes and "longitude" not in last.attributes
 
     # per-aircraft devices
     assert hass.states.get("sensor.neo_flights").state == "1"

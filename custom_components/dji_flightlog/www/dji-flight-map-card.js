@@ -128,7 +128,21 @@ class DjiFlightMapCard extends HTMLElement {
     this._tileUrl = null;
     this._lastRefreshKey = null;
     this._loading = false;
+    this._pending = false;
+    this._mapInit = null;
     this._timer = null;
+    // Callers set `hass`/`config` before this module is loaded (the panel
+    // creates the card via innerHTML and imports it afterwards). Such an
+    // assignment lands as an *own* property on the element and shadows the
+    // prototype setter for good, so the card would never see a hass and stay
+    // empty until a page change builds a fresh element. The upgrade runs this
+    // constructor, so collect those properties here and re-assign them.
+    for (const prop of ["hass", "config"]) {
+      if (!Object.prototype.hasOwnProperty.call(this, prop)) continue;
+      const value = this[prop];
+      delete this[prop];
+      this[prop] = value;
+    }
   }
 
   setConfig(config) {
@@ -191,6 +205,16 @@ class DjiFlightMapCard extends HTMLElement {
 
   _render() {
     const c = this._config;
+    // Tear down before rewriting the shadow DOM: Leaflet must still find its
+    // own container, otherwise its listeners stay on the discarded element.
+    if (this._map) this._map.remove();
+    this._map = null;
+    this._mapInit = null;
+    this._layers = null;
+    this._flightLayers = {};
+    this._tileLayer = null;
+    this._tileUrl = null;
+    tokenListeners.delete(this);
     this.shadowRoot.innerHTML = `
       <link rel="stylesheet" href="${STATIC}/leaflet.css">
       <style>
@@ -218,9 +242,6 @@ class DjiFlightMapCard extends HTMLElement {
         <div id="map"></div>
         <div class="empty" id="empty" hidden>Noch keine Flüge importiert.</div>
       </ha-card>`;
-    this._map = null;
-    this._tileLayer = null;
-    this._tileUrl = null;
     const scan = this.shadowRoot.getElementById("scan");
     if (scan) scan.onclick = () => this._scanNow();
   }
@@ -246,22 +267,39 @@ class DjiFlightMapCard extends HTMLElement {
     return !!(this._hass?.themes?.darkMode);
   }
 
-  async _ensureMap() {
+  _ensureMap() {
+    if (this._map) return Promise.resolve(this._map);
+    // Setup has several await points (Leaflet script, tile token). Without the
+    // remembered promise a second call during that window would build a second
+    // map into the same container.
+    this._mapInit ??= this._initMap().catch((err) => {
+      this._mapInit = null;
+      throw err;
+    });
+    return this._mapInit;
+  }
+
+  async _initMap() {
     const L = await loadLeaflet();
-    if (this._map) return this._map;
     const el = this.shadowRoot.getElementById("map");
     if (!el) return null;
-    this._map = L.map(el, { zoomControl: true, attributionControl: true });
     const tiles = TILES[this._config.tiles] || TILES.ha;
+    // Fetch the token before creating the map: from here on there is no await
+    // left where anyone could get hold of a map that has no view yet.
     if (tiles.token && tileToken === null) await fetchTileToken(this._hass);
+    const map = L.map(el, { zoomControl: true, attributionControl: true });
+    // View first: without a center and zoom Leaflet has no pixel origin, and
+    // every addLayer dies with "Cannot read properties of undefined
+    // (reading 'x')".
+    map.setView([51.0, 10.0], 5);
+    this._map = map;
+    this._layers = L.layerGroup().addTo(map);
     tokenListeners.add(this);
     ensureTokenRefresh(this._hass, () => tokenListeners.forEach((c) => c._applyTiles(true)));
     this._applyTiles();
-    this._map.setView([51.0, 10.0], 5);
-    this._layers = L.layerGroup().addTo(this._map);
     // The card can be created while hidden (e.g. in a tab); Leaflet needs a size.
     new ResizeObserver(() => this._map && this._map.invalidateSize()).observe(el);
-    return this._map;
+    return map;
   }
 
   _applyTiles(force = false) {
@@ -296,7 +334,13 @@ class DjiFlightMapCard extends HTMLElement {
   }
 
   async _refresh() {
-    if (!this._hass || !this._config || this._loading) return;
+    if (!this._hass || !this._config) return;
+    // Queue instead of dropping: otherwise a filter change made while a load
+    // is in flight is lost.
+    if (this._loading) {
+      this._pending = true;
+      return;
+    }
     this._loading = true;
     try {
       const q = this._query();
@@ -314,6 +358,10 @@ class DjiFlightMapCard extends HTMLElement {
       if (sub) sub.textContent = `Fehler: ${err.message || err}`;
     } finally {
       this._loading = false;
+      if (this._pending) {
+        this._pending = false;
+        this._refresh();
+      }
     }
   }
 

@@ -94,7 +94,14 @@ class DjiFlightLogPanel extends HTMLElement {
       <style>
         :host {
           display: block;
-          height: 100%;
+          /* HA's panel container has no height of its own, so a height: 100%
+             would resolve to auto and the panel would be as tall as its
+             content. */
+          height: 100vh;
+          height: 100dvh;
+          /* auto, not hidden: on very short windows scrolling beats cutting
+             off the flight list (.mapwrap has min-height: 260px). */
+          overflow: auto;
           background: var(--primary-background-color, #fafafa);
           color: var(--primary-text-color, #212121);
           font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
@@ -140,7 +147,7 @@ class DjiFlightLogPanel extends HTMLElement {
 
         .body { flex: 1 1 auto; display: flex; gap: 12px; padding: 12px 16px 16px; min-height: 0; box-sizing: border-box; }
         .mapwrap { flex: 1 1 auto; min-width: 0; min-height: 260px; display: flex; }
-        .mapwrap dji-flight-map-card { flex: 1 1 auto; display: block; }
+        .mapwrap dji-flight-map-card { flex: 1 1 auto; display: block; min-width: 0; min-height: 0; }
         aside {
           flex: 0 0 320px; overflow-y: auto; background: var(--card-background-color, #fff);
           border-radius: var(--ha-card-border-radius, 12px);

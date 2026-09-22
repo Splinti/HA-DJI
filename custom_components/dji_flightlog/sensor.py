@@ -50,10 +50,13 @@ def _last_flight_attrs(stats: AircraftStats) -> dict[str, Any]:
         "max_h_speed_ms": f.get("max_h_speed_ms"),
         "aircraft_name": f.get("aircraft_name"),
         "aircraft_sn": f.get("aircraft_sn"),
-        "latitude": f.get("takeoff_lat"),
-        "longitude": f.get("takeoff_lon"),
-        "home_latitude": f.get("home_lat"),
-        "home_longitude": f.get("home_lon"),
+        # Not "latitude"/"longitude": Home Assistant puts every entity carrying
+        # those two attributes onto its auto-generated map — the same reason the
+        # geo_location entities are off by default.
+        "takeoff_lat": f.get("takeoff_lat"),
+        "takeoff_lon": f.get("takeoff_lon"),
+        "home_lat": f.get("home_lat"),
+        "home_lon": f.get("home_lon"),
         "city": f.get("city"),
         "battery_start_pct": f.get("battery_start_pct"),
         "battery_end_pct": f.get("battery_end_pct"),
