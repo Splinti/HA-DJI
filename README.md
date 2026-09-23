@@ -3,7 +3,8 @@
 Custom Integration, die DJI-Fly-Flugaufzeichnungen (`DJIFlightRecord_*.txt`) aus einem Ordner importiert und daraus **Sensoren**, **geo_location-Entities** und eine **native Karten-Card** in Home Assistant macht. Läuft komplett lokal; nur zum Entschlüsseln neuerer Logs wird einmalig pro Flug ein Schlüssel von DJI geholt.
 
 ```
-RC 2 / Handy ──USB──▶ PC (Sync-Skript) ──SMB──▶ /share/dji/flightrecords
+RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB──────▶ /share/dji/flightrecords
+                          └─ Browser-Upload (Panel) ──▶        ▲
                                                         │
                                           dji_flightlog (Watch-Folder, pydjirecord)
                                                         │
@@ -19,12 +20,12 @@ RC 2 / Handy ──USB──▶ PC (Sync-Skript) ──SMB──▶ /share/dji/f
   Flüge, Flugzeit, Distanz, max. Höhe, max. Geschwindigkeit, erster/letzter Flug, letzter Flug: Dauer, Distanz, max. Höhe, max. Speed, Akku Ende / verbraucht.
   „Gemerkte Orte“ (Anzahl, Liste im Attribut `spots`). Diagnose: letzter Import, ausstehende Dateien, Anzahl Drohnen. Button „Log-Ordner scannen“ für sofortigen Import.
 - **geo_location** *(optional, standardmäßig aus)* – Startpunkt jedes Flugs als Entity (`source: dji_flightlog`), nutzbar auf der eingebauten Map-Card und in Zonen-Automationen. Aus gutem Grund opt-in: HA hängt an das automatische „Übersicht"-Dashboard eine Karte an, sobald *irgendeine* `geo_location`-Entity existiert – die Flüge würden dann ungefragt auf der Standard-Karte landen.
-- **Eigenes Panel in der Seitenleiste** – Vollbild-Ansicht mit Statistik, Filtern, großer Karte und Flugliste zum Anklicken.
+- **Eigenes Panel in der Seitenleiste** – Vollbild-Ansicht mit Statistik, Filtern, großer Karte und Flugliste zum Anklicken. Flugaufzeichnungen lassen sich dort direkt **hochladen** (Button oder Drag & Drop).
 - **Orte merken mit DIPUL-Zonen** – im Panel einen Punkt auf der Karte wählen und speichern, die [DIPUL](https://www.dipul.de)-Geozonen (Flughäfen, Kontrollzonen, Naturschutz, Wohngebiete, …) werden dabei eingeblendet und am Punkt abgefragt. Liste im Dashboard per `custom:dji-spots-card`, mit Google-Maps-Link zum Starten der Navigation.
 - **Karte** – `custom:dji-flight-map-card` (Leaflet, offline-fähig außer Kacheln): alle Tracks, Heatmap, Popups mit Kennzahlen und GPX/KML/GeoJSON-Download, Filter nach Zeitraum/Drohne, Modus „nur letzter Flug".
 - **Event** `dji_flightlog_flight_imported` bei jedem neuen Flug (Payload = Flugzusammenfassung) → Benachrichtigung, OneDrive-Upload, …
 - **Services** `dji_flightlog.scan`, `dji_flightlog.import_file`, `dji_flightlog.export_track` (GPX/KML/GeoJSON, in Datei oder als Response).
-- **HTTP-API** (HA-Auth): `/api/dji_flightlog/flights`, `/tracks`, `/flights/<id>/track`, `/flights/<id>/export/<gpx|kml|geojson>`, `/spots` (GET/POST), `/spots/<id>` (PATCH/DELETE).
+- **HTTP-API** (HA-Auth): `/api/dji_flightlog/flights`, `/tracks`, `/flights/<id>/track`, `/flights/<id>/export/<gpx|kml|geojson>`, `/spots` (GET/POST), `/spots/<id>` (PATCH/DELETE), `/upload` (POST, multipart-Feld `file`, nur Admins).
 
 ## Installation
 
@@ -58,6 +59,7 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 - Große Karte, die die volle Höhe nutzt
 - Flugliste rechts (auf dem Handy darunter), nach Tagen gruppiert; Klick auf einen Flug zoomt auf ihn und hebt ihn hervor, nochmal klicken hebt die Auswahl auf
 - ↻-Button oben rechts scannt den Log-Ordner sofort
+- ⇧-Button oben rechts: **Flugaufzeichnungen hochladen** (nur für Admins). Alternativ Dateien oder den ganzen Ordner `FlightRecord` auf die Seite ziehen. Die Dateien landen im Log-Ordner und werden sofort importiert; schon vorhandene werden erkannt und nicht doppelt gespeichert
 - Marker-Button oben rechts: **Ort merken** (siehe unten); Schalter „DIPUL-Zonen“ blendet die Geozonen auch ohne Planungsmodus ein
 - Tab „Orte“ in der Liste: gemerkte Orte mit Navigations-Link und Löschen; Klick zoomt auf den Ort
 - Hinweisleiste, wenn Flüge ohne GPS-Track importiert wurden (fehlender API-Key) oder nicht unterstützte Dateien im Ordner liegen
@@ -156,7 +158,7 @@ Nicht verwertbare Dateien werden nicht stillschweigend übersprungen: sie landen
 
 ## Logs vom RC 2 / Handy auf den HA-Host bekommen
 
-Siehe [`docs/sync.md`](docs/sync.md). Kurzfassung: DJI blockt APK-Installation auf dem RC 2 und Android verbietet fremden Apps den Zugriff auf `Android/data`, deshalb läuft der Sync über USB am PC: [`scripts/Sync-DjiFlightRecords.ps1`](scripts/Sync-DjiFlightRecords.ps1) kopiert bei angestecktem Gerät neue Logs auf den HA-Samba-Share.
+Siehe [`docs/sync.md`](docs/sync.md). Kurzfassung: DJI blockt APK-Installation auf dem RC 2 und Android verbietet fremden Apps den Zugriff auf `Android/data`, deshalb läuft der Sync über USB am PC: [`scripts/Sync-DjiFlightRecords.ps1`](scripts/Sync-DjiFlightRecords.ps1) kopiert bei angestecktem Gerät neue Logs auf den HA-Samba-Share. Ohne jede Einrichtung geht es über den **Upload im Panel**: Gerät anstecken, im Explorer den Ordner `FlightRecord` öffnen, alles markieren und ins Panel ziehen.
 
 ## Entwicklung
 

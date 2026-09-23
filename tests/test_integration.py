@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import aiohttp
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
@@ -368,6 +369,96 @@ async def test_http_requires_auth(hass: HomeAssistant, setup_entry, hass_client_
     client = await hass_client_no_auth()
     resp = await client.get(f"/api/{DOMAIN}/flights")
     assert resp.status == 401
+
+
+def _upload_form(*files: tuple[str, bytes]) -> aiohttp.FormData:
+    form = aiohttp.FormData()
+    for name, data in files:
+        form.add_field("file", data, filename=name, content_type="text/plain")
+    return form
+
+
+async def test_upload(hass: HomeAssistant, setup_entry, hass_client, log_dir: Path):
+    events = []
+    await setup_entry(1)
+    hass.bus.async_listen(EVENT_FLIGHT_IMPORTED, lambda e: events.append(e))
+    client = await hass_client()
+    url = f"/api/{DOMAIN}/upload"
+    name = "DJIFlightRecord_2026-09-05_5.txt"
+
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as m:
+        # Imported right away (no 30 s wait, no rescan needed).
+        resp = await client.post(url, data=_upload_form((name, b"\x02" * 50)))
+        assert resp.status == 200
+        [res] = (await resp.json())["results"]
+        assert res["status"] == "imported"
+        assert res["saved_as"] == name
+        assert res["flight"]["flight_id"] == "flight0005"
+        await hass.async_block_till_done()
+        assert (log_dir / name).read_bytes() == b"\x02" * 50
+        assert len(events) == 1
+        assert hass.states.get("sensor.dji_flight_log_flights").state == "2"
+        resp = await client.get(f"/api/{DOMAIN}/flights")
+        assert len((await resp.json())["flights"]) == 2
+
+        # The same file again: nothing written, nothing parsed.
+        m.reset_mock()
+        resp = await client.post(url, data=_upload_form((name, b"\x02" * 50)))
+        [res] = (await resp.json())["results"]
+        assert res["status"] == "duplicate"
+        assert res["flight"]["flight_id"] == "flight0005"
+        assert m.call_count == 0
+
+        # Same name, other content: kept side by side. Several files per
+        # request work, other file types are rejected.
+        resp = await client.post(
+            url,
+            data=_upload_form(
+                (name, b"\x03" * 50),
+                ("DJI_Avata_360.DAT", b"x"),
+                ("notes.txt", b"x"),
+            ),
+        )
+        other, dat, notes = (await resp.json())["results"]
+        assert other["status"] == "imported"
+        assert other["saved_as"] == "DJIFlightRecord_2026-09-05_5_2.txt"
+        assert dat == {"file": "DJI_Avata_360.DAT", "status": "rejected", "reason": "not_txt"}
+        assert notes["status"] == "failed"  # _fake_parse cannot read it
+        assert (log_dir / "notes.txt").is_file()
+    await hass.async_block_till_done()
+    assert len(events) == 2
+    assert not list(log_dir.glob(".*"))  # no temp files left behind
+
+    resp = await client.post(url, data=aiohttp.FormData({"other": "x"}))
+    assert resp.status == 400
+    resp = await client.post(url, json={})
+    assert resp.status == 400
+
+
+async def test_upload_requires_admin(
+    hass: HomeAssistant, setup_entry, hass_client, hass_read_only_access_token, log_dir: Path
+):
+    await setup_entry(1)
+    client = await hass_client(hass_read_only_access_token)
+    resp = await client.post(
+        f"/api/{DOMAIN}/upload", data=_upload_form(("DJIFlightRecord_2026-09-05_5.txt", b"x"))
+    )
+    assert resp.status == 401
+    assert not (log_dir / "DJIFlightRecord_2026-09-05_5.txt").exists()
+
+
+def test_safe_log_filename():
+    from custom_components.dji_flightlog.http import safe_log_filename
+
+    assert safe_log_filename("DJIFlightRecord_2026-09-22_[12-34-44].txt") == (
+        "DJIFlightRecord_2026-09-22_[12-34-44].txt"
+    )
+    assert safe_log_filename("C:\\Users\\x\\Flug 1.TXT") == "Flug 1.TXT"
+    assert safe_log_filename("a/b/..txt") is None
+    assert safe_log_filename(".hidden.txt") == "hidden.txt"
+    assert safe_log_filename("bad<>:name.txt") == "bad___name.txt"
+    assert safe_log_filename("record.dat") is None
+    assert safe_log_filename(".txt") is None
 
 
 async def test_missing_dir_does_not_break_setup(hass: HomeAssistant, tmp_path: Path):

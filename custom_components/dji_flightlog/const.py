@@ -66,3 +66,10 @@ STATUS_UNSUPPORTED = "unsupported"
 REASON_SUPPORT_BUNDLE = "support_bundle"
 REASON_TOO_LARGE = "too_large"
 REASON_FC_DAT = "fc_dat"
+
+# Per-file outcome of a browser upload (plus STATUS_FAILED / STATUS_UNSUPPORTED).
+UPLOAD_IMPORTED = "imported"
+UPLOAD_DUPLICATE = "duplicate"
+UPLOAD_RETRY = "retry"  # DJI keychain fetch failed; the next scan tries again
+UPLOAD_REJECTED = "rejected"
+REASON_NOT_TXT = "not_txt"

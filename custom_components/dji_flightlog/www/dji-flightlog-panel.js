@@ -4,7 +4,9 @@
  * Full-page Home Assistant panel (sidebar entry) for the dji_flightlog
  * integration: statistics, filters, a large map, a clickable flight list and
  * the saved spots ("Ort merken" picks a new one on the map, with the DIPUL
- * geo zones shown). ``?spot=<id>`` in the URL opens that spot.
+ * geo zones shown). ``?spot=<id>`` in the URL opens that spot. Flight records
+ * can be uploaded with the upload button or by dropping files / folders onto
+ * the page (admins only).
  *
  * Registered by the integration via panel_custom; the map itself is the
  * dji-flight-map-card element, which this module loads on demand.
@@ -59,12 +61,15 @@ class DjiFlightLogPanel extends HTMLElement {
     this._planning = false;
     this._spots = [];
     this._spotsKey = null;
+    this._reload = false;
+    this._uploading = false;
   }
 
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
     if (!this._rendered) this._render();
+    this.shadowRoot.getElementById("upload").hidden = !hass.user?.is_admin;
     // Only once the card is upgraded and configured (see _setupCard).
     if (this._cardReady) this._card.hass = hass;
     // Reload whenever the integration reports a new import.
@@ -141,6 +146,8 @@ class DjiFlightLogPanel extends HTMLElement {
         header button:hover { background: rgba(255,255,255,0.12); }
         header button.active { background: rgba(255,255,255,0.24); }
         header button.busy svg { animation: spin 1s linear infinite; }
+        header button#upload.busy svg { animation: pulse 1s ease-in-out infinite alternate; }
+        @keyframes pulse { to { opacity: 0.3; } }
         @keyframes spin { to { transform: rotate(360deg); } }
         #menu { display: none; }
         .layout.narrow #menu { display: inline-flex; }
@@ -205,6 +212,32 @@ class DjiFlightLogPanel extends HTMLElement {
           background: var(--warning-color, #ffa600); color: #000;
         }
         .note a { color: inherit; }
+
+        #upbar {
+          margin: 12px 16px 0; padding: 10px 14px; border-radius: 8px; font-size: 13px;
+          background: var(--card-background-color, #fff);
+          border-left: 4px solid var(--primary-color);
+          box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,.08));
+          display: flex; gap: 8px; align-items: flex-start;
+        }
+        #upbar .txt { flex: 1; min-width: 0; }
+        #upbar ul { margin: 6px 0 0; padding-left: 18px; color: var(--secondary-text-color); }
+        #upbar li { overflow-wrap: anywhere; }
+        #upbar button { background: none; border: none; cursor: pointer; color: inherit; padding: 2px; line-height: 0; }
+        #upbar.problem { border-left-color: var(--warning-color, #ffa600); }
+        #drop {
+          position: fixed; inset: 0; z-index: 10;
+          display: flex; align-items: center; justify-content: center;
+          background: rgba(0, 0, 0, 0.45);
+        }
+        #drop div {
+          pointer-events: none; /* dragleave only fires when leaving the overlay */
+          padding: 32px 40px; border-radius: 16px; text-align: center; font-size: 18px;
+          border: 3px dashed var(--primary-color);
+          background: var(--card-background-color, #fff);
+        }
+        #upbar[hidden], #drop[hidden] { display: none; }
+        #drop small { display: block; margin-top: 6px; font-size: 13px; color: var(--secondary-text-color); }
       </style>
       <div class="layout page">
         <header>
@@ -213,11 +246,16 @@ class DjiFlightLogPanel extends HTMLElement {
           <button id="plan" title="Ort merken: Punkt auf der Karte wählen, DIPUL-Zonen werden eingeblendet">${svg(
             "M20,14H18V11H15V9H18V6H20V9H23V11H20V14M12,2C15.86,2 19,5.14 19,9C19,14.25 12,22 12,22C12,22 5,14.25 5,9A7,7 0 0,1 12,2M12,6.5A2.5,2.5 0 0,0 9.5,9A2.5,2.5 0 0,0 12,11.5A2.5,2.5 0 0,0 14.5,9A2.5,2.5 0 0,0 12,6.5Z",
           )}</button>
+          <button id="upload" title="Flugaufzeichnungen hochladen (DJIFlightRecord_*.txt), oder Dateien auf die Seite ziehen" hidden>${svg(
+            "M9,16V10H5L12,3L19,10H15V16H9M5,20V18H19V20H5Z",
+          )}</button>
+          <input type="file" id="file" accept=".txt" multiple hidden>
           <button id="scan" title="Log-Ordner jetzt scannen">${svg(
             "M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z",
           )}</button>
         </header>
 
+        <div id="upbar" hidden></div>
         <div id="note" hidden></div>
 
         <div class="stats" id="stats"></div>
@@ -243,10 +281,19 @@ class DjiFlightLogPanel extends HTMLElement {
             <div id="list"></div>
           </aside>
         </div>
-      </div>`;
+      </div>
+      <div id="drop" hidden><div>Flugaufzeichnungen hier ablegen<small>DJIFlightRecord_*.txt oder der Ordner FlightRecord</small></div></div>`;
 
     this.shadowRoot.getElementById("menu").onclick = () => this._fireMenu();
     this.shadowRoot.getElementById("scan").onclick = () => this._scan();
+    const fileInput = this.shadowRoot.getElementById("file");
+    this.shadowRoot.getElementById("upload").onclick = () => fileInput.click();
+    fileInput.onchange = () => {
+      const files = [...fileInput.files];
+      fileInput.value = ""; // picking the same files again must fire change
+      this._upload(files);
+    };
+    this._setupDrop();
     this.shadowRoot.getElementById("range").onchange = (e) => {
       this._filters.days = e.target.value;
       this._applyFilters();
@@ -435,7 +482,11 @@ class DjiFlightLogPanel extends HTMLElement {
   }
 
   async _load() {
-    if (!this._hass || this._loading) return;
+    if (!this._hass) return;
+    if (this._loading) {
+      this._reload = true; // run once more when the current load is done
+      return;
+    }
     this._loading = true;
     try {
       this._data = await this._hass.callApi("GET", `${API}/flights?${this._query()}`);
@@ -448,6 +499,10 @@ class DjiFlightLogPanel extends HTMLElement {
       if (list) list.innerHTML = `<div class="empty">Fehler: ${esc(err.message || err)}</div>`;
     } finally {
       this._loading = false;
+      if (this._reload) {
+        this._reload = false;
+        this._load();
+      }
     }
   }
 
@@ -472,6 +527,105 @@ class DjiFlightLogPanel extends HTMLElement {
     } finally {
       setTimeout(() => btn.classList.remove("busy"), 3000);
     }
+  }
+
+  // -- upload ---------------------------------------------------------------
+
+  _setupDrop() {
+    const drop = this.shadowRoot.getElementById("drop");
+    const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+    this.addEventListener("dragenter", (e) => {
+      if (!hasFiles(e) || !this._hass?.user?.is_admin) return;
+      e.preventDefault();
+      drop.hidden = false;
+    });
+    drop.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    });
+    drop.addEventListener("dragleave", () => (drop.hidden = true));
+    drop.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      drop.hidden = true;
+      this._upload(await collectDropped(e.dataTransfer));
+    });
+  }
+
+  async _upload(files) {
+    if (!files.length || this._uploading) return;
+    this._uploading = true;
+    const btn = this.shadowRoot.getElementById("upload");
+    btn.classList.add("busy");
+    const results = [];
+    try {
+      for (const [i, file] of files.entries()) {
+        this._renderUpload({ done: i, total: files.length });
+        if (!/\.txt$/i.test(file.name)) {
+          results.push({ file: file.name, status: "rejected", reason: /\.dat$/i.test(file.name) ? "dat" : "not_txt" });
+          continue;
+        }
+        try {
+          const body = new FormData();
+          body.append("file", file, file.name);
+          const resp = await this._hass.fetchWithAuth(`/api/${API}/upload`, { method: "POST", body });
+          if (!resp.ok) {
+            throw new Error(resp.status === 401 ? "nur Administratoren dürfen hochladen" : `HTTP ${resp.status}`);
+          }
+          results.push(...(await resp.json()).results);
+        } catch (err) {
+          // Also lands here when a file from the controller cannot be read.
+          results.push({ file: file.name, status: "error", message: err.message || String(err) });
+        }
+      }
+    } finally {
+      this._uploading = false;
+      btn.classList.remove("busy");
+    }
+    this._renderUpload({ results });
+    if (results.some((r) => r.status === "imported")) {
+      this._load();
+      this._card?.updateOptions({});
+    }
+  }
+
+  _renderUpload(state) {
+    const bar = this.shadowRoot.getElementById("upbar");
+    if (!state) {
+      bar.hidden = true;
+      return;
+    }
+    if (!state.results) {
+      bar.hidden = false;
+      bar.className = "";
+      bar.innerHTML = `<div class="txt">Lade hoch … ${state.done + 1} von ${state.total}</div>`;
+      return;
+    }
+    const count = (st) => state.results.filter((r) => r.status === st).length;
+    const imported = count("imported");
+    const dupes = count("duplicate");
+    const problems = state.results.filter((r) => r.status !== "imported" && r.status !== "duplicate");
+    const parts = [];
+    if (imported) parts.push(`${imported} ${imported === 1 ? "neuer Flug" : "neue Flüge"}`);
+    if (dupes) parts.push(`${dupes} schon vorhanden`);
+    if (problems.length) parts.push(`${problems.length} nicht importiert`);
+    bar.hidden = false;
+    bar.className = problems.length ? "problem" : "";
+    bar.innerHTML = `
+      <div class="txt">
+        <div>${esc(parts.join(" · ") || "Keine Dateien")}</div>
+        ${
+          problems.length
+            ? `<ul>${problems
+                .slice(0, 20)
+                .map((r) => `<li>${esc(r.file)}: ${esc(uploadProblem(r))}</li>`)
+                .join("")}${problems.length > 20 ? `<li>… und ${problems.length - 20} weitere</li>` : ""}</ul>`
+            : ""
+        }
+      </div>
+      <button title="Schließen">${svg(
+        "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
+      )}</button>`;
+    bar.querySelector("button").onclick = () => this._renderUpload(null);
   }
 
   _renderNote() {
@@ -576,6 +730,66 @@ function colorFor(flight, flights) {
     return PALETTE[flights.findIndex((f) => f.flight_id === flight.flight_id) % PALETTE.length];
   }
   return PALETTE[sns.indexOf(flight.aircraft_sn || "?") % PALETTE.length];
+}
+
+function uploadProblem(r) {
+  switch (r.reason) {
+    case "dat":
+      return "DAT-Dateien werden nicht unterstützt, nur DJIFlightRecord_*.txt aus DJI Fly";
+    case "not_txt":
+      return "keine .txt-Datei, nur DJIFlightRecord_*.txt aus DJI Fly";
+    case "too_large":
+      return "zu groß für eine Flugaufzeichnung";
+    case "support_bundle":
+      return "DJI-Support-Paket (verschlüsselt), keine Flugaufzeichnung";
+    case "fc_dat":
+      return "Flugcontroller-DAT der Drohne, nicht lesbar";
+  }
+  switch (r.status) {
+    case "failed":
+      return "konnte nicht gelesen werden";
+    case "retry":
+      return "DJI-Schlüssel nicht abrufbar, wird beim nächsten Scan erneut versucht";
+    case "error":
+      return `Fehler: ${r.message}`;
+  }
+  return r.status;
+}
+
+// Files (and, recursively, the .txt files in dropped folders). The items must
+// be read synchronously: the DataTransfer is emptied once the handler yields.
+async function collectDropped(dt) {
+  if (!dt.items) return [...dt.files];
+  const files = [];
+  const dirs = [];
+  for (const item of dt.items) {
+    if (item.kind !== "file") continue;
+    const entry = item.webkitGetAsEntry?.();
+    if (entry?.isDirectory) {
+      dirs.push(entry);
+    } else {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  for (const dir of dirs) files.push(...(await readDir(dir)));
+  return files;
+}
+
+async function readDir(dir) {
+  const out = [];
+  const reader = dir.createReader();
+  for (;;) {
+    // readEntries hands out at most ~100 entries per call.
+    const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+    if (!batch.length) break;
+    for (const entry of batch) {
+      if (entry.name.startsWith(".")) continue;
+      if (entry.isDirectory) out.push(...(await readDir(entry)));
+      else if (/\.txt$/i.test(entry.name)) out.push(await new Promise((res, rej) => entry.file(res, rej)));
+    }
+  }
+  return out;
 }
 
 function svg(path) {

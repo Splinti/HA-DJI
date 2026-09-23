@@ -30,6 +30,9 @@ from .const import (
     STATUS_HEADER_ONLY,
     STATUS_OK,
     STATUS_UNSUPPORTED,
+    UPLOAD_DUPLICATE,
+    UPLOAD_IMPORTED,
+    UPLOAD_RETRY,
 )
 from .parser import KeychainError, classify_log_file, parse_flight
 from .storage import FlightStore
@@ -134,13 +137,14 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             return True
         return bool(entry.get("status") in _RETRY_STATUSES and self.api_key)
 
-    def _process_file(self, path: Path) -> tuple[dict[str, Any] | None, bool]:
+    def _process_file(self, path: Path, *, check_age: bool = True) -> tuple[dict[str, Any] | None, bool]:
         """Blocking: parse one file, persist the track, update the index.
 
-        Returns ``(summary, is_new_flight)``.
+        Returns ``(summary, is_new_flight)``. ``check_age=False`` is for files
+        known to be complete (uploads), which would otherwise wait 30 s.
         """
         stat = path.stat()
-        if datetime.now(UTC) - datetime.fromtimestamp(stat.st_mtime, tz=UTC) < _MIN_FILE_AGE:
+        if check_age and datetime.now(UTC) - datetime.fromtimestamp(stat.st_mtime, tz=UTC) < _MIN_FILE_AGE:
             _LOGGER.debug("Skipping %s, modified less than %s ago", path.name, _MIN_FILE_AGE)
             return None, False
 
@@ -214,6 +218,64 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             self._fire_imported(summary)
         await self.async_refresh()
         return summary
+
+    def _save_upload(self, filename: str, data: bytes) -> dict[str, Any]:
+        """Blocking: write an uploaded log into the log folder and import it.
+
+        ``filename`` must already be sanitised. Re-uploading a file that is
+        already there (same name and content) writes nothing; a different file
+        with the same name gets a ``_2``, ``_3`` ... suffix.
+        """
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        path = self.log_dir / filename
+        stem, suffix = path.stem, path.suffix
+        already_there = False
+        n = 1
+        while path.exists():
+            if path.stat().st_size == len(data) and path.read_bytes() == data:
+                already_there = True
+                break
+            n += 1
+            path = self.log_dir / f"{stem}_{n}{suffix}"
+        if not already_there:
+            # Dot-prefixed temp name: a concurrent scan skips it until complete.
+            tmp = path.with_name(f".{path.name}.part")
+            tmp.write_bytes(data)
+            os.replace(tmp, path)
+
+        summary, is_new = None, False
+        if self._needs_processing(path, path.stat()):
+            summary, is_new = self._process_file(path, check_age=False)
+
+        result: dict[str, Any] = {"file": filename, "saved_as": path.name}
+        record = self.store.files.get(str(path))
+        if record is None:
+            # KeychainError: not remembered, so the next scan retries it.
+            result["status"] = UPLOAD_RETRY
+        elif record["status"] in (STATUS_OK, STATUS_HEADER_ONLY):
+            result["status"] = UPLOAD_IMPORTED if is_new else UPLOAD_DUPLICATE
+            result["flight"] = summary or self.store.flights.get(record["flight_id"])
+        else:
+            result["status"] = record["status"]
+            if record.get("reason"):
+                result["reason"] = record["reason"]
+        return result
+
+    async def async_import_upload(self, filename: str, data: bytes) -> dict[str, Any]:
+        """Save one uploaded log and import it right away (HTTP upload)."""
+        result = await self.hass.async_add_executor_job(self._save_upload, filename, data)
+        await self.store.async_save()
+        if result["status"] == UPLOAD_IMPORTED:
+            self._fire_imported(result["flight"])
+        # Publish without a rescan: the panel uploads file by file, and the
+        # flight list (served from self.data) should grow with each one.
+        data = self._aggregate()
+        if self.data is not None:
+            data.pending_files = self.data.pending_files
+            data.last_scan = self.data.last_scan
+        data.log_dir_ok = True
+        self.async_set_updated_data(data)
+        return result
 
     async def async_remove_flight(self, flight_id: str) -> bool:
         if flight_id not in self.store.flights:

@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import voluptuous as vol
-from aiohttp import web
-from homeassistant.components.http import HomeAssistantView
+from aiohttp import BodyPartReader, web
+from homeassistant.components.http import HomeAssistantView, require_admin
 from homeassistant.core import HomeAssistant
 
 from . import spots as spot_utils
-from .const import DOMAIN, EXPORT_FORMATS
+from .const import (
+    DOMAIN,
+    EXPORT_FORMATS,
+    MAX_LOG_FILE_BYTES,
+    REASON_NOT_TXT,
+    REASON_TOO_LARGE,
+    UPLOAD_REJECTED,
+)
 from .coordinator import FlightLogCoordinator
 from .parser import _downsample, track_to_geojson, track_to_gpx, track_to_kml
 
@@ -213,6 +221,63 @@ class SpotView(HomeAssistantView):
         return self.json({"deleted": spot_id})
 
 
+_UNSAFE_CHARS = re.compile(r"[^\w.()\[\] -]")
+
+
+def safe_log_filename(name: str) -> str | None:
+    """Reduce an uploaded file name to a plain ``*.txt`` name, or ``None``."""
+    base = re.split(r"[\\/]", name)[-1].strip()
+    base = _UNSAFE_CHARS.sub("_", base).lstrip(".")[-120:]
+    if not base.lower().endswith(".txt") or len(base) <= len(".txt"):
+        return None
+    return base
+
+
+class UploadView(HomeAssistantView):
+    """Upload DJI Fly flight records from the browser (multipart, field ``file``).
+
+    Each file is saved into the log folder and imported right away. The panel
+    sends one file per request, so progress can be shown and HA's request
+    size limit never matters; several files per request work as well.
+    """
+
+    url = f"{API_BASE}/upload"
+    name = f"api:{DOMAIN}:upload"
+    requires_auth = True
+
+    @require_admin
+    async def post(self, request: web.Request) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None:
+            return self.json_message("Integration not ready", status_code=503)
+        try:
+            reader = await request.multipart()
+        except (AssertionError, ValueError):
+            return self.json_message("Expected multipart/form-data", status_code=400)
+
+        results: list[dict[str, Any]] = []
+        while (part := await reader.next()) is not None:
+            if not isinstance(part, BodyPartReader) or part.name != "file" or not part.filename:
+                continue
+            filename = safe_log_filename(part.filename)
+            if filename is None:
+                results.append({"file": part.filename, "status": UPLOAD_REJECTED, "reason": REASON_NOT_TXT})
+                continue
+            data = bytearray()
+            while chunk := await part.read_chunk():
+                data += chunk
+                if len(data) > MAX_LOG_FILE_BYTES:
+                    break
+            if len(data) > MAX_LOG_FILE_BYTES:
+                results.append({"file": part.filename, "status": UPLOAD_REJECTED, "reason": REASON_TOO_LARGE})
+                continue
+            results.append(await coordinator.async_import_upload(filename, bytes(data)))
+
+        if not results:
+            return self.json_message("No file in the request (form field 'file')", status_code=400)
+        return self.json({"results": results})
+
+
 async def _spots_changed(coordinator: FlightLogCoordinator) -> None:
     await coordinator.store.async_save()
     # Pushes the new list to the "saved spots" sensor, which the cards watch.
@@ -228,5 +293,13 @@ def render_export(summary: dict[str, Any], track: dict[str, Any], fmt: str) -> t
 
 
 def async_register_views(hass: HomeAssistant) -> None:
-    for view in (FlightsView, TracksView, TrackView, ExportView, SpotsView, SpotView):
+    for view in (
+        FlightsView,
+        TracksView,
+        TrackView,
+        ExportView,
+        SpotsView,
+        SpotView,
+        UploadView,
+    ):
         hass.http.register_view(view())

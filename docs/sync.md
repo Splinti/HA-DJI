@@ -22,7 +22,19 @@ Dateien heißen `DJIFlightRecord_YYYY-MM-DD_[HH-MM-SS].txt`. Bei aktuellen Drohn
 
 Über USB am PC ist der Ordner dagegen bei beiden Geräten ohne Tricks lesbar (MTP läuft mit App-Rechten von DJI Fly bzw. dem System). Daher:
 
-## Empfohlen: PC-Sync-Skript (Windows)
+## Am einfachsten: Upload im Panel
+
+Ohne Samba und ohne Skript, von jedem PC mit Browser aus:
+
+1. RC 2 bzw. Handy per USB anstecken (ggf. „Dateiübertragung" bestätigen).
+2. Im Explorer den Ordner `FlightRecord` öffnen (Pfad siehe Tabelle oben).
+3. Alle Dateien markieren und auf das Panel **„Drohnenflüge"** in Home Assistant ziehen, oder dort den ⇧-Button nutzen.
+
+Die Dateien werden im Log-Ordner gespeichert und sofort importiert; eine Leiste zeigt, wie viele Flüge neu waren, welche schon vorhanden waren und warum eine Datei ggf. nicht importiert wurde. Es reicht also, immer den ganzen Ordner zu ziehen. Hochladen dürfen nur HA-Administratoren.
+
+> Direkt vom RC 2 (MTP-Gerät) klappt es am ehesten per **Drag & Drop** aus dem Explorer. Der Datei-Dialog des Browsers verweigert MTP-Orte je nach Browser; dann den Ordner erst auf den PC kopieren und von dort hochladen.
+
+## Automatisch: PC-Sync-Skript (Windows)
 
 `scripts/Sync-DjiFlightRecords.ps1` durchsucht alle per USB angeschlossenen MTP-Geräte nach dem FlightRecord-Ordner und kopiert neue `.txt`-Dateien auf den HA-Share.
 
@@ -60,5 +72,5 @@ Wireless-Debugging aktivieren, vom PC aus `adb pull /sdcard/Android/data/dji.go.
 ### iPhone (falls mal relevant)
 Kurzbefehle-App → Automation „Wenn mit WLAN <Heimnetz> verbunden" → *Ordnerinhalt abrufen* (DJI Fly/FlightRecords) → *Datei sichern* auf einen SMB-Speicherort (in der Dateien-App vorher `smb://homeassistant/share` verbinden). iOS erlaubt hier den Zugriff, weil DJI Fly seinen Ordner in der Dateien-App freigibt.
 
-## Manuell
+## Manuell per Samba
 Ordner per Explorer vom Gerät nach `\\homeassistant\share\dji\flightrecords` ziehen – die Integration kümmert sich um den Rest.
