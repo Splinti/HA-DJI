@@ -1,8 +1,20 @@
 name: Release
 
+# Erhöht die Version in manifest.json, committet sie und erstellt das Release.
+# Ohne Haken wird die Patch-Version erhöht (0.3.0 -> 0.3.1). Wurde die Version
+# schon von Hand erhöht und gibt es dazu noch kein Release, wird sie so genommen.
+
 on:
   workflow_dispatch:
     inputs:
+      major:
+        description: "Major-Version erhöhen (1.2.3 -> 2.0.0)"
+        type: boolean
+        default: false
+      minor:
+        description: "Minor-Version erhöhen (1.2.3 -> 1.3.0)"
+        type: boolean
+        default: false
       prerelease:
         description: "Als Pre-Release markieren"
         type: boolean
@@ -11,31 +23,61 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Version aus manifest.json lesen
+      - name: Version bestimmen
         id: version
-        run: |
-          version=$(jq -r .version custom_components/dji_flightlog/manifest.json)
-          if [ -z "$version" ] || [ "$version" = "null" ]; then
-            echo "::error::Keine Version in manifest.json gefunden"
-            exit 1
-          fi
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-
-      - name: Prüfen, ob das Release schon existiert
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
+          MAJOR: ${{ inputs.major }}
+          MINOR: ${{ inputs.minor }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::Release $TAG existiert bereits - Version in manifest.json erhöhen"
+          current=$(jq -r .version custom_components/dji_flightlog/manifest.json)
+          if ! [[ "$current" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Version '$current' in manifest.json ist nicht im Format X.Y.Z"
             exit 1
           fi
+          major=${BASH_REMATCH[1]} minor=${BASH_REMATCH[2]} patch=${BASH_REMATCH[3]}
+
+          if [ "$MAJOR" = "true" ]; then
+            version="$((major + 1)).0.0"
+          elif [ "$MINOR" = "true" ]; then
+            version="$major.$((minor + 1)).0"
+          elif ! gh release view "v$current" >/dev/null 2>&1; then
+            version="$current"  # von Hand erhöht, noch nicht veröffentlicht
+          else
+            version="$major.$minor.$((patch + 1))"
+          fi
+
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "::error::Release v$version existiert bereits"
+            exit 1
+          fi
+          echo "Version: $current -> $version"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Version in manifest.json committen
+        if: steps.version.outputs.version != steps.version.outputs.current
+        env:
+          CURRENT: ${{ steps.version.outputs.current }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed -i "s/\"version\": \"$CURRENT\"/\"version\": \"$VERSION\"/" custom_components/dji_flightlog/manifest.json
+          test "$(jq -r .version custom_components/dji_flightlog/manifest.json)" = "$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release v$VERSION"
+          git push origin "HEAD:$GITHUB_REF_NAME"
 
       - name: Zip bauen
         run: |
@@ -48,7 +90,8 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          args=(--target "$GITHUB_SHA" --title "$TAG" --generate-notes)
+          # HEAD ist nach dem Versions-Commit nicht mehr $GITHUB_SHA.
+          args=(--target "$(git rev-parse HEAD)" --title "$TAG" --generate-notes)
           if [ "$PRERELEASE" = "true" ]; then
             args+=(--prerelease)
           fi
