@@ -8,3 +8,5 @@ __pycache__/
 
 # Eigene Flugaufzeichnungen (enthalten Seriennummern und GPS-Positionen)
 flightrecords/
+
+node_modules/

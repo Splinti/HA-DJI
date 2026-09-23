@@ -295,6 +295,7 @@ class DjiFlightLogPanel extends HTMLElement {
       refresh_seconds: 0, // the panel drives reloads
       fit: true,
       spots: true,
+      spot_on_click: true,
       dipul: this._filters.dipul,
     });
     // Let the map fill the panel instead of using the card's fixed height.
@@ -376,7 +377,7 @@ class DjiFlightLogPanel extends HTMLElement {
     if (!this._spots.length) {
       list.innerHTML =
         intro ||
-        `<div class="empty">Noch keine Orte gemerkt.<br>Oben auf das Marker-Symbol tippen und einen Punkt auf der Karte wählen.</div>`;
+        `<div class="empty">Noch keine Orte gemerkt.<br>Auf die Karte tippen, um einen Ort zu merken.</div>`;
       return;
     }
     list.innerHTML =

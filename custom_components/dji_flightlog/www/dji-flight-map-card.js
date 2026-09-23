@@ -13,6 +13,9 @@
  *   heatmap: true
  *   days: 365
  *   dipul: true          # overlay the German UAS geo zones (DIPUL)
+ *   tiles: ha            # ha | carto | satellite | topo (start layer)
+ *   tile_switch: true    # "Karte | Satellit" toggle on the map
+ *   spot_on_click: false # a click on the map opens the "Neuer Ort" form
  *   spots: true          # show saved spots (default in mode: all)
  *
  * The same module also defines custom:dji-spots-card, a list of the saved
@@ -23,7 +26,7 @@
 
 const STATIC = "/dji_flightlog_static";
 const API = "dji_flightlog";
-const CARD_VERSION = "0.2.2";
+const CARD_VERSION = "0.2.4";
 
 const PALETTE = [
   "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
@@ -52,8 +55,13 @@ const TILES = {
   },
   satellite: {
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    attribution: "Tiles &copy; Esri",
-    maxZoom: 19,
+    // Place names and borders on top of the imagery, for orientation.
+    labels:
+      "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Bilder &copy; Esri, Maxar, Earthstar Geographics, GIS User Community",
+    maxZoom: 20,
+    maxNativeZoom: 19,
+    photo: true, // never colour-inverted in dark mode
   },
   topo: {
     url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
@@ -243,6 +251,24 @@ function ensureTokenRefresh(hass, onChange) {
 }
 const tokenListeners = new Set();
 
+// Map/satellite choice of the toggle, remembered per browser. Storage can be
+// unavailable (private mode, blocked site data), so every access is guarded.
+const BASE_KEY = "dji_flightlog.base_layer";
+function loadBase() {
+  try {
+    return localStorage.getItem(BASE_KEY);
+  } catch {
+    return null;
+  }
+}
+function saveBase(base) {
+  try {
+    localStorage.setItem(BASE_KEY, base);
+  } catch {
+    /* not persisted; the choice still applies until reload */
+  }
+}
+
 let leafletPromise = null;
 function loadLeaflet() {
   if (window.L && window.L.heatLayer) return Promise.resolve(window.L);
@@ -342,6 +368,9 @@ class DjiFlightMapCard extends HTMLElement {
       refresh_seconds: 300,
       scan_button: true,
       dipul: false,
+      tile_switch: true,
+      // A click on the map opens the "Neuer Ort" form without planning mode.
+      spot_on_click: false,
       // Saved spots only make sense on the overview map.
       spots: (config.mode || "all") === "all",
       spots_entity: "sensor.dji_flight_log_saved_spots",
@@ -407,6 +436,8 @@ class DjiFlightMapCard extends HTMLElement {
     this._tileUrl = null;
     this._spotLayer = null;
     this._spotMarkers = {};
+    this._labelLayer = null;
+    this._switchEl = null;
     this._dipulLayer = null;
     this._hintEl = null;
     this._planMarker = null;
@@ -453,6 +484,13 @@ class DjiFlightMapCard extends HTMLElement {
         .leaflet-popup-content .btns .primary { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
         .leaflet-popup-content .btns button:disabled { opacity: 0.5; cursor: default; }
         .dji-spot { background: none; border: none; }
+        .tileswitch { display: flex; overflow: hidden; }
+        .leaflet-bar.tileswitch a {
+          width: auto; height: 28px; line-height: 28px; padding: 0 10px; font-size: 12px;
+          border-bottom: none; border-radius: 0; cursor: pointer;
+        }
+        .leaflet-bar.tileswitch a + a { border-left: 1px solid #ccc; }
+        .leaflet-bar.tileswitch a.on { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
         .planning .leaflet-container { cursor: crosshair; }
         .maphint {
           background: var(--card-background-color, #fff); color: var(--primary-text-color, #000);
@@ -506,7 +544,8 @@ class DjiFlightMapCard extends HTMLElement {
     const L = await loadLeaflet();
     const el = this.shadowRoot.getElementById("map");
     if (!el) return null;
-    const tiles = TILES[this._config.tiles] || TILES.ha;
+    this._base ??= this._initialBase();
+    const tiles = TILES[this._tilesKey()] || TILES.ha;
     // Fetch the token before creating the map: from here on there is no await
     // left where anyone could get hold of a map that has no view yet.
     if (tiles.token && tileToken === null) await fetchTileToken(this._hass);
@@ -517,15 +556,33 @@ class DjiFlightMapCard extends HTMLElement {
     map.setView([51.0, 10.0], 5);
     this._map = map;
     this._layers = L.layerGroup().addTo(map);
+    // Own panes above the base tiles: outside .leaflet-tile-pane, so the dark
+    // mode filter does not invert them. Labels sit below the DIPUL zones.
+    for (const [name, z] of [["labels", 250], ["dipul", 350]]) {
+      const pane = map.createPane(name);
+      pane.style.zIndex = z;
+      pane.style.pointerEvents = "none";
+    }
     tokenListeners.add(this);
     ensureTokenRefresh(this._hass, () => tokenListeners.forEach((c) => c._applyTiles(true)));
     this._applyTiles();
     this._spotLayer = L.layerGroup().addTo(map);
-    // Own pane above the base tiles: outside .leaflet-tile-pane, so the dark
-    // mode filter does not invert the zone colours.
-    const pane = map.createPane("dipul");
-    pane.style.zIndex = 350;
-    pane.style.pointerEvents = "none";
+    if (this._config.tile_switch) {
+      const Switch = L.Control.extend({
+        onAdd: () => {
+          const div = L.DomUtil.create("div", "leaflet-bar tileswitch");
+          div.innerHTML = `<a role="button" data-base="map" title="Straßenkarte">Karte</a><a role="button" data-base="satellite" title="Satellitenbild (Esri)">Satellit</a>`;
+          L.DomEvent.disableClickPropagation(div);
+          for (const a of div.querySelectorAll("a")) {
+            a.classList.toggle("on", a.dataset.base === this._base);
+            a.onclick = () => this.setBaseLayer(a.dataset.base);
+          }
+          this._switchEl = div;
+          return div;
+        },
+      });
+      new Switch({ position: "topright" }).addTo(map);
+    }
     const Hint = L.Control.extend({
       onAdd: () => {
         this._hintEl = L.DomUtil.create("div", "maphint");
@@ -534,7 +591,14 @@ class DjiFlightMapCard extends HTMLElement {
       },
     });
     new Hint({ position: "topright" }).addTo(map);
+    // Remember whether a click is only closing a popup: Leaflet closes it on
+    // "preclick", before "click" arrives, so count open popups ourselves.
+    let openPopups = 0;
+    map.on("popupopen", () => openPopups++);
+    map.on("popupclose", () => (openPopups = Math.max(0, openPopups - 1)));
+    map.on("preclick", () => (this._clickClosedPopup = openPopups > 0));
     map.on("click", (e) => this._onMapClick(e));
+    map.on("dblclick", () => clearTimeout(this._clickTimer));
     map.on("zoomend", () => this._updateHint());
     this._applyDipul();
     // The card can be created while hidden (e.g. in a tab); Leaflet needs a size.
@@ -542,9 +606,32 @@ class DjiFlightMapCard extends HTMLElement {
     return map;
   }
 
+  _initialBase() {
+    const stored = this._config.tile_switch ? loadBase() : null;
+    if (stored === "map" || stored === "satellite") return stored;
+    return this._config.tiles === "satellite" ? "satellite" : "map";
+  }
+
+  /** TILES key for the current map/satellite choice. */
+  _tilesKey() {
+    if (this._base === "satellite") return "satellite";
+    return this._config.tiles === "satellite" ? "ha" : this._config.tiles;
+  }
+
+  /** Switch between "map" and "satellite"; remembered for this browser. */
+  async setBaseLayer(base) {
+    this._base = base;
+    if (this._config.tile_switch) saveBase(base);
+    if (!this._map) return;
+    const tiles = TILES[this._tilesKey()] || TILES.ha;
+    // A card that started on satellite has not fetched the HA tile token yet.
+    if (tiles.token && tileToken === null) await fetchTileToken(this._hass);
+    this._applyTiles();
+  }
+
   _applyTiles(force = false) {
     const L = window.L;
-    let tiles = TILES[this._config.tiles] || TILES.ha;
+    let tiles = TILES[this._tilesKey()] || TILES.ha;
     if (tiles.token && !tileToken) tiles = TILES.carto; // older HA without map_tiles
     const dark = this._isDark() && !!tiles.dark;
     const url = dark ? tiles.dark : tiles.url;
@@ -557,8 +644,14 @@ class DjiFlightMapCard extends HTMLElement {
       maxNativeZoom: tiles.maxNativeZoom || tiles.maxZoom,
       token: tileToken || "",
     }).addTo(this._map);
-    // Providers without a dark variant get the same CSS filter HA's map uses.
-    this.shadowRoot.querySelector("ha-card").classList.toggle("dark", this._isDark() && !tiles.dark);
+    if (this._labelLayer) this._labelLayer.remove();
+    this._labelLayer = tiles.labels
+      ? L.tileLayer(tiles.labels, { pane: "labels", maxZoom: tiles.maxZoom, maxNativeZoom: tiles.maxNativeZoom }).addTo(this._map)
+      : null;
+    for (const a of this._switchEl?.querySelectorAll("a") || []) a.classList.toggle("on", a.dataset.base === this._base);
+    // Street maps without a dark variant get the same CSS filter HA's map
+    // uses; photos would only turn into negatives.
+    this.shadowRoot.querySelector("ha-card").classList.toggle("dark", this._isDark() && !tiles.dark && !tiles.photo);
   }
 
   _query() {
@@ -853,11 +946,32 @@ class DjiFlightMapCard extends HTMLElement {
   }
 
   _onMapClick(e) {
-    if (!this._planning) return;
+    const quick = this._config.spot_on_click && this._config.spots;
+    if (!this._planning && !quick) return;
+    if (!this._planning) {
+      // Outside planning mode a click that only dismissed a popup, or one on
+      // a track or marker (bubbled up to the map), must not start a new spot.
+      if (this._clickClosedPopup) return;
+      if (e.sourceTarget && e.sourceTarget !== this._map) return;
+    }
+    // Wait briefly: the first click of a double-click (zoom) must not open
+    // the form; the "dblclick" handler cancels this timer.
+    clearTimeout(this._clickTimer);
+    this._clickTimer = setTimeout(() => this._openPlan(e), 250);
+  }
+
+  _openPlan(e) {
+    if (!this._map) return;
     const L = window.L;
     const { lat, lng } = e.latlng;
-    if (this._planMarker) this._planMarker.setLatLng(e.latlng);
-    else this._planMarker = L.marker(e.latlng, { icon: spotIcon(L, PLAN_COLOR), zIndexOffset: 1000 }).addTo(this._map);
+    // A fresh marker per click; closing its popup without saving removes it.
+    this._planMarker?.off().remove();
+    const marker = L.marker(e.latlng, { icon: spotIcon(L, PLAN_COLOR), zIndexOffset: 1000 }).addTo(this._map);
+    marker.on("popupclose", () => {
+      marker.remove();
+      if (this._planMarker === marker) this._planMarker = null;
+    });
+    this._planMarker = marker;
 
     const el = document.createElement("div");
     el.innerHTML = `
@@ -871,10 +985,10 @@ class DjiFlightMapCard extends HTMLElement {
       </div>
       <div class="err" hidden></div>
       <div class="small">${lat.toFixed(5)}, ${lng.toFixed(5)} · Zonen nur zur Orientierung, vor dem Flug auf dipul.de prüfen.</div>`;
-    this._planMarker.unbindPopup().bindPopup(el, { minWidth: 240, maxWidth: 320 }).openPopup();
+    marker.bindPopup(el, { minWidth: 240, maxWidth: 320 }).openPopup();
 
     const seq = ++this._planSeq;
-    const popup = this._planMarker.getPopup();
+    const popup = marker.getPopup();
     const showZones = (html) => {
       if (seq !== this._planSeq) return; // a newer click replaced this popup
       el.querySelector(".zwrap").innerHTML = html;
@@ -908,8 +1022,8 @@ class DjiFlightMapCard extends HTMLElement {
           note: el.querySelector(".note").value,
           ...(await zonesP),
         });
-        this._planMarker?.remove();
-        this._planMarker = null;
+        marker.off().remove();
+        if (this._planMarker === marker) this._planMarker = null;
         this._pendingSpot = res.spot?.id || null;
         await this._spotsChanged();
       } catch (err) {

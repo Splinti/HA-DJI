@@ -66,7 +66,7 @@ Abschaltbar über *Integration → Konfigurieren → „In der Seitenleiste anze
 
 ## Orte merken (DIPUL-Zonen)
 
-Im Panel auf den Marker-Button tippen: Die Karte blendet die Geozonen der [DIPUL](https://www.dipul.de) (DFS, Digitale Plattform Unbemannte Luftfahrt) ein, ab Zoomstufe 8. Ein Tipp auf die Karte fragt die Zonen an diesem Punkt ab (z. B. „Kontrollzone Frankfurt Main (EDDF) Zone 4 (691 ft MSL – 2500 ft MSL)“, „Vogelschutzgebiet Hessische Rhön“). Name und Notiz eingeben, **Merken**.
+Im Panel einfach auf eine freie Stelle der Karte tippen: Es öffnet sich „Neuer Ort“ mit den DIPUL-Zonen an diesem Punkt. Der Marker-Button oben rechts schaltet zusätzlich den Planungsmodus ein: Die Karte blendet die Geozonen der [DIPUL](https://www.dipul.de) (DFS, Digitale Plattform Unbemannte Luftfahrt) ein, ab Zoomstufe 8. Ein Tipp auf die Karte fragt die Zonen an diesem Punkt ab (z. B. „Kontrollzone Frankfurt Main (EDDF) Zone 4 (691 ft MSL – 2500 ft MSL)“, „Vogelschutzgebiet Hessische Rhön“). Name und Notiz eingeben, **Merken**.
 
 - Gespeichert wird der Punkt samt der Zonen zum Zeitpunkt der Abfrage. Im Popup eines Ortes lassen sich die Zonen mit „Zonen prüfen“ aktualisieren.
 - **Navigation** öffnet `https://www.google.com/maps/dir/?api=1&destination=<lat>,<lon>`, auf dem Handy also direkt die Google-Maps-App mit Route.
@@ -103,9 +103,13 @@ aircraft: Neo      # optional: Name oder Seriennummer
 heatmap: true
 markers: true      # Startpunkte
 home: true         # Home-Punkte
-tiles: ha          # ha (HA-eigener OSM-Proxy, Default) | carto | satellite | topo
+tiles: ha          # Start-Ebene: ha (HA-eigener OSM-Proxy, Default) | carto | satellite (Esri) | topo
+tile_switch: true  # Umschalter „Karte | Satellit“ oben rechts; die Wahl merkt sich der Browser
+spot_on_click: false # Klick auf die Karte öffnet „Neuer Ort“ (im Panel immer an)
 height: 450
 ```
+
+Satellitenbilder kommen von Esri World Imagery (mit Orts- und Grenznamen darüber) und werden im Dark Mode nicht invertiert.
 
 Weitere Optionen: `dipul` (DIPUL-Geozonen einblenden, Default false), `spots` (gemerkte Orte anzeigen, Default true bei `mode: all`), `scan_button` (↻ im Titel, Default true), `limit`, `since` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
 
