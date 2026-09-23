@@ -1,6 +1,6 @@
 """Persistence for parsed flights.
 
-The index (summaries + file bookkeeping) lives in Home Assistant's ``Store``
+The index (summaries + file bookkeeping + saved spots) lives in Home Assistant's ``Store``
 so it is included in backups. Tracks are larger and rarely needed, so each
 one is a separate JSON file under ``<config>/.storage/dji_flightlog/tracks``.
 """
@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import STORAGE_KEY, STORAGE_SUBDIR, STORAGE_VERSION
+from .parser import clean_place
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,15 +32,23 @@ class FlightStore:
         self.flights: dict[str, dict[str, Any]] = {}
         # file path -> {"size", "mtime", "flight_id", "status"}
         self.files: dict[str, dict[str, Any]] = {}
+        # spot id -> spot (see spots.py)
+        self.spots: dict[str, dict[str, Any]] = {}
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
         self.flights = data.get("flights", {})
         self.files = data.get("files", {})
+        self.spots = data.get("spots", {})
+        # Flights imported before placeholders were filtered show "Map Loading".
+        for flight in self.flights.values():
+            for key in ("city", "street"):
+                if key in flight:
+                    flight[key] = clean_place(flight[key])
         await self._hass.async_add_executor_job(partial(self._tracks_dir.mkdir, parents=True, exist_ok=True))
 
     async def async_save(self) -> None:
-        await self._store.async_save({"flights": self.flights, "files": self.files})
+        await self._store.async_save({"flights": self.flights, "files": self.files, "spots": self.spots})
 
     # -- tracks -------------------------------------------------------------
 

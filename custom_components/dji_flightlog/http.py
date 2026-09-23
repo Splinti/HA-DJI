@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import voluptuous as vol
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
+from . import spots as spot_utils
 from .const import DOMAIN, EXPORT_FORMATS
 from .coordinator import FlightLogCoordinator
 from .parser import _downsample, track_to_geojson, track_to_gpx, track_to_kml
@@ -151,6 +153,72 @@ class ExportView(HomeAssistantView):
         )
 
 
+class SpotsView(HomeAssistantView):
+    """List saved spots or add one."""
+
+    url = f"{API_BASE}/spots"
+    name = f"api:{DOMAIN}:spots"
+    requires_auth = True
+
+    async def get(self, request: web.Request) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None:
+            return self.json_message("Integration not ready", status_code=503)
+        spots = spot_utils.sorted_spots(coordinator.store.spots)
+        return self.json({"spots": [spot_utils.public(s) for s in spots]})
+
+    async def post(self, request: web.Request) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None:
+            return self.json_message("Integration not ready", status_code=503)
+        try:
+            data = spot_utils.CREATE_SCHEMA(await request.json())
+        except (ValueError, vol.Invalid) as err:
+            return self.json_message(f"Invalid spot: {err}", status_code=400)
+        spot = spot_utils.new_spot(data)
+        coordinator.store.spots[spot["id"]] = spot
+        await _spots_changed(coordinator)
+        return self.json({"spot": spot_utils.public(spot)}, status_code=201)
+
+
+class SpotView(HomeAssistantView):
+    """Edit or delete one saved spot."""
+
+    url = f"{API_BASE}/spots/{{spot_id}}"
+    name = f"api:{DOMAIN}:spot"
+    requires_auth = True
+
+    async def patch(self, request: web.Request, spot_id: str) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None:
+            return self.json_message("Integration not ready", status_code=503)
+        spot = coordinator.store.spots.get(spot_id)
+        if spot is None:
+            return self.json_message("Unknown spot", status_code=404)
+        try:
+            data = spot_utils.UPDATE_SCHEMA(await request.json())
+        except (ValueError, vol.Invalid) as err:
+            return self.json_message(f"Invalid spot: {err}", status_code=400)
+        spot.update(data)
+        await _spots_changed(coordinator)
+        return self.json({"spot": spot_utils.public(spot)})
+
+    async def delete(self, request: web.Request, spot_id: str) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None:
+            return self.json_message("Integration not ready", status_code=503)
+        if coordinator.store.spots.pop(spot_id, None) is None:
+            return self.json_message("Unknown spot", status_code=404)
+        await _spots_changed(coordinator)
+        return self.json({"deleted": spot_id})
+
+
+async def _spots_changed(coordinator: FlightLogCoordinator) -> None:
+    await coordinator.store.async_save()
+    # Pushes the new list to the "saved spots" sensor, which the cards watch.
+    coordinator.async_update_listeners()
+
+
 def render_export(summary: dict[str, Any], track: dict[str, Any], fmt: str) -> tuple[str, str]:
     if fmt == "gpx":
         return track_to_gpx(summary, track), "application/gpx+xml"
@@ -160,5 +228,5 @@ def render_export(summary: dict[str, Any], track: dict[str, Any], fmt: str) -> t
 
 
 def async_register_views(hass: HomeAssistant) -> None:
-    for view in (FlightsView, TracksView, TrackView, ExportView):
+    for view in (FlightsView, TracksView, TrackView, ExportView, SpotsView, SpotView):
         hass.http.register_view(view())

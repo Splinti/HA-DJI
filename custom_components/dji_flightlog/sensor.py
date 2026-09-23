@@ -22,6 +22,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import AircraftStats, FlightData, FlightLogCoordinator
+from .spots import maps_url, sorted_spots
 
 TOTALS_ID = "totals"
 
@@ -218,6 +219,7 @@ async def async_setup_entry(
                 PendingFilesSensor(coordinator, entry),
                 UnsupportedFilesSensor(coordinator, entry),
                 AircraftCountSensor(coordinator, entry),
+                SavedSpotsSensor(coordinator, entry),
             ]
         for sn in data.aircraft:
             if sn in known:
@@ -384,6 +386,42 @@ class AircraftCountSensor(_BaseSensor):
             "aircraft": [
                 {"name": a.name, "sn": a.sn, "product_type": a.product_type, "flights": a.flights}
                 for a in self.coordinator.data.aircraft.values()
+            ]
+        }
+
+
+class SavedSpotsSensor(_BaseSensor):
+    """Places saved for a future flight; the list is in the ``spots`` attribute."""
+
+    _attr_translation_key = "saved_spots"
+    _attr_icon = "mdi:map-marker-star"
+    # The list can grow; keep it out of the recorder database.
+    _unrecorded_attributes = frozenset({"spots"})
+
+    def __init__(self, coordinator: FlightLogCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_{TOTALS_ID}_saved_spots"
+        self._attr_device_info = totals_device_info(entry)
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.store.spots)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "spots": [
+                {
+                    "id": s["id"],
+                    "name": s["name"],
+                    "latitude": s["lat"],
+                    "longitude": s["lon"],
+                    "note": s.get("note", ""),
+                    "zones": [z.get("name") or z.get("layer") for z in s.get("zones") or []],
+                    "created": s.get("created"),
+                    "maps_url": maps_url(s),
+                }
+                for s in sorted_spots(self.coordinator.store.spots)
             ]
         }
 

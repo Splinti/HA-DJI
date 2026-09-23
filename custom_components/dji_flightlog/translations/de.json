@@ -91,6 +91,9 @@
       },
       "unsupported_files": {
         "name": "Nicht unterstützte Dateien"
+      },
+      "saved_spots": {
+        "name": "Gemerkte Orte"
       }
     },
     "button": {

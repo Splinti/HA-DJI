@@ -140,7 +140,7 @@ def _iso(dt: datetime | None) -> str | None:
 _PLACE_PLACEHOLDERS = frozenset({"map loading", "loading", "unknown", "n/a", "--"})
 
 
-def _clean_place(value: str | None) -> str:
+def clean_place(value: str | None) -> str:
     text = (value or "").strip()
     return "" if text.lower() in _PLACE_PLACEHOLDERS else text
 
@@ -213,8 +213,8 @@ def parse_flight(
         "takeoff_lon": details.longitude if has_header_fix else None,
         "home_lat": None,
         "home_lon": None,
-        "city": _clean_place(details.city),
-        "street": _clean_place(details.street),
+        "city": clean_place(details.city),
+        "street": clean_place(details.street),
         "battery_start_pct": None,
         "battery_end_pct": None,
         "photo_num": int(details.capture_num or 0),

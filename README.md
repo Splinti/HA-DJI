@@ -17,13 +17,14 @@ RC 2 / Handy ──USB──▶ PC (Sync-Skript) ──SMB──▶ /share/dji/f
 
 - **Sensoren** – ein Gerät „DJI Flight Log" mit Gesamtwerten plus ein Gerät je Drohne (Seriennummer):
   Flüge, Flugzeit, Distanz, max. Höhe, max. Geschwindigkeit, erster/letzter Flug, letzter Flug: Dauer, Distanz, max. Höhe, max. Speed, Akku Ende / verbraucht.
-  Diagnose: letzter Import, ausstehende Dateien, Anzahl Drohnen. Button „Log-Ordner scannen“ für sofortigen Import.
+  „Gemerkte Orte“ (Anzahl, Liste im Attribut `spots`). Diagnose: letzter Import, ausstehende Dateien, Anzahl Drohnen. Button „Log-Ordner scannen“ für sofortigen Import.
 - **geo_location** *(optional, standardmäßig aus)* – Startpunkt jedes Flugs als Entity (`source: dji_flightlog`), nutzbar auf der eingebauten Map-Card und in Zonen-Automationen. Aus gutem Grund opt-in: HA hängt an das automatische „Übersicht"-Dashboard eine Karte an, sobald *irgendeine* `geo_location`-Entity existiert – die Flüge würden dann ungefragt auf der Standard-Karte landen.
 - **Eigenes Panel in der Seitenleiste** – Vollbild-Ansicht mit Statistik, Filtern, großer Karte und Flugliste zum Anklicken.
+- **Orte merken mit DIPUL-Zonen** – im Panel einen Punkt auf der Karte wählen und speichern, die [DIPUL](https://www.dipul.de)-Geozonen (Flughäfen, Kontrollzonen, Naturschutz, Wohngebiete, …) werden dabei eingeblendet und am Punkt abgefragt. Liste im Dashboard per `custom:dji-spots-card`, mit Google-Maps-Link zum Starten der Navigation.
 - **Karte** – `custom:dji-flight-map-card` (Leaflet, offline-fähig außer Kacheln): alle Tracks, Heatmap, Popups mit Kennzahlen und GPX/KML/GeoJSON-Download, Filter nach Zeitraum/Drohne, Modus „nur letzter Flug".
 - **Event** `dji_flightlog_flight_imported` bei jedem neuen Flug (Payload = Flugzusammenfassung) → Benachrichtigung, OneDrive-Upload, …
 - **Services** `dji_flightlog.scan`, `dji_flightlog.import_file`, `dji_flightlog.export_track` (GPX/KML/GeoJSON, in Datei oder als Response).
-- **HTTP-API** (HA-Auth): `/api/dji_flightlog/flights`, `/tracks`, `/flights/<id>/track`, `/flights/<id>/export/<gpx|kml|geojson>`.
+- **HTTP-API** (HA-Auth): `/api/dji_flightlog/flights`, `/tracks`, `/flights/<id>/track`, `/flights/<id>/export/<gpx|kml|geojson>`, `/spots` (GET/POST), `/spots/<id>` (PATCH/DELETE).
 
 ## Installation
 
@@ -57,9 +58,31 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 - Große Karte, die die volle Höhe nutzt
 - Flugliste rechts (auf dem Handy darunter), nach Tagen gruppiert; Klick auf einen Flug zoomt auf ihn und hebt ihn hervor, nochmal klicken hebt die Auswahl auf
 - ↻-Button oben rechts scannt den Log-Ordner sofort
+- Marker-Button oben rechts: **Ort merken** (siehe unten); Schalter „DIPUL-Zonen“ blendet die Geozonen auch ohne Planungsmodus ein
+- Tab „Orte“ in der Liste: gemerkte Orte mit Navigations-Link und Löschen; Klick zoomt auf den Ort
 - Hinweisleiste, wenn Flüge ohne GPS-Track importiert wurden (fehlender API-Key) oder nicht unterstützte Dateien im Ordner liegen
 
 Abschaltbar über *Integration → Konfigurieren → „In der Seitenleiste anzeigen"*. Die Position in der Seitenleiste lässt sich wie bei jedem Panel per Rechtsklick bzw. über *Profil → Seitenleiste bearbeiten* ändern.
+
+## Orte merken (DIPUL-Zonen)
+
+Im Panel auf den Marker-Button tippen: Die Karte blendet die Geozonen der [DIPUL](https://www.dipul.de) (DFS, Digitale Plattform Unbemannte Luftfahrt) ein, ab Zoomstufe 8. Ein Tipp auf die Karte fragt die Zonen an diesem Punkt ab (z. B. „Kontrollzone Frankfurt Main (EDDF) Zone 4 (691 ft MSL – 2500 ft MSL)“, „Vogelschutzgebiet Hessische Rhön“). Name und Notiz eingeben, **Merken**.
+
+- Gespeichert wird der Punkt samt der Zonen zum Zeitpunkt der Abfrage. Im Popup eines Ortes lassen sich die Zonen mit „Zonen prüfen“ aktualisieren.
+- **Navigation** öffnet `https://www.google.com/maps/dir/?api=1&destination=<lat>,<lon>`, auf dem Handy also direkt die Google-Maps-App mit Route.
+- Die Zonen dienen nur zur Orientierung und ersetzen keine Prüfung vor dem Flug (temporäre Beschränkungen ändern sich laufend). Die Abfrage geht direkt vom Browser an `uas-betrieb.de`. Daten: © DFS / dipul, CC BY-ND 4.0.
+
+Für das Dashboard gibt es eine Liste der gemerkten Orte (steckt in derselben Resource wie die Karte):
+
+```yaml
+type: custom:dji-spots-card
+title: Gemerkte Orte
+zones: true           # DIPUL-Zonen als Chips anzeigen
+limit: 10             # optional
+panel_path: /dji-flightlog   # Tipp auf einen Ort öffnet ihn im Panel; null = aus
+```
+
+Der Sensor `sensor.dji_flight_log_saved_spots` enthält dieselbe Liste im Attribut `spots` (inkl. `maps_url`), z. B. für eine Markdown-Card oder eine Benachrichtigung.
 
 ## Karte im Dashboard
 
@@ -84,7 +107,7 @@ tiles: ha          # ha (HA-eigener OSM-Proxy, Default) | carto | satellite | to
 height: 450
 ```
 
-Weitere Optionen: `scan_button` (↻ im Titel, Default true), `limit`, `since` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
+Weitere Optionen: `dipul` (DIPUL-Geozonen einblenden, Default false), `spots` (gemerkte Orte anzeigen, Default true bei `mode: all`), `scan_button` (↻ im Titel, Default true), `limit`, `since` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
 
 ### Flüge auf der Standard-Karte
 

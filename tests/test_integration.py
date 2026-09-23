@@ -307,6 +307,62 @@ async def test_http_api(hass: HomeAssistant, setup_entry, hass_client):
     assert "dji-flight-map-card" in await resp.text()
 
 
+async def test_saved_spots(hass: HomeAssistant, setup_entry, hass_client):
+    await setup_entry(1)
+    client = await hass_client()
+    assert hass.states.get("sensor.dji_flight_log_saved_spots").state == "0"
+
+    zones = [{"layer": "vogelschutzgebiete", "name": "Hessische Rhön", "lower": "0 m AGL", "upper": None}]
+    resp = await client.post(
+        f"/api/{DOMAIN}/spots",
+        json={
+            "name": " Wasserkuppe ",
+            "lat": 50.4979,
+            "lon": 9.9376,
+            "zones": zones,
+            "zones_checked": "2026-09-23T10:00:00Z",
+        },
+    )
+    assert resp.status == 201
+    spot = (await resp.json())["spot"]
+    assert spot["name"] == "Wasserkuppe"
+    assert spot["note"] == ""
+    assert spot["maps_url"] == "https://www.google.com/maps/dir/?api=1&destination=50.497900,9.937600"
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.dji_flight_log_saved_spots")
+    assert state.state == "1"
+    assert state.attributes["spots"][0]["zones"] == ["Hessische Rhön"]
+    assert state.attributes["spots"][0]["maps_url"] == spot["maps_url"]
+
+    resp = await client.patch(f"/api/{DOMAIN}/spots/{spot['id']}", json={"note": "Parken am Segelflugplatz"})
+    assert resp.status == 200
+    resp = await client.get(f"/api/{DOMAIN}/spots")
+    [listed] = (await resp.json())["spots"]
+    assert listed["note"] == "Parken am Segelflugplatz"
+    assert listed["zones"] == zones
+
+    # Invalid input is rejected, not stored.
+    for bad in ({"name": "", "lat": 50, "lon": 9}, {"name": "x", "lat": 91, "lon": 9}, {"name": "x"}):
+        resp = await client.post(f"/api/{DOMAIN}/spots", json=bad)
+        assert resp.status == 400, bad
+    resp = await client.patch(f"/api/{DOMAIN}/spots/nope", json={"note": ""})
+    assert resp.status == 404
+
+    # Survives a reload of the entry (persisted in the store).
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.dji_flight_log_saved_spots").state == "1"
+
+    resp = await client.delete(f"/api/{DOMAIN}/spots/{spot['id']}")
+    assert resp.status == 200
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.dji_flight_log_saved_spots").state == "0"
+    resp = await client.delete(f"/api/{DOMAIN}/spots/{spot['id']}")
+    assert resp.status == 404
+
+
 async def test_http_requires_auth(hass: HomeAssistant, setup_entry, hass_client_no_auth):
     await setup_entry(1)
     client = await hass_client_no_auth()
@@ -322,6 +378,23 @@ async def test_missing_dir_does_not_break_setup(hass: HomeAssistant, tmp_path: P
     assert hass.states.get("sensor.dji_flight_log_flights").state == "0"
     li = hass.states.get("sensor.dji_flight_log_last_import")
     assert li.attributes["log_dir_ok"] is False
+
+
+async def test_stored_place_placeholder_is_cleaned(hass: HomeAssistant, hass_storage, tmp_path: Path):
+    """Flights stored before the placeholder filter existed lose "Map Loading"."""
+    from custom_components.dji_flightlog.const import STORAGE_KEY, STORAGE_VERSION
+    from custom_components.dji_flightlog.storage import FlightStore
+
+    hass.config.config_dir = str(tmp_path)
+    hass_storage[STORAGE_KEY] = {
+        "version": STORAGE_VERSION,
+        "key": STORAGE_KEY,
+        "data": {"flights": {"a": {"city": "Map Loading", "street": "Hauptstr."}, "b": {"city": "Kiel"}}},
+    }
+    store = FlightStore(hass)
+    await store.async_load()
+    assert store.flights["a"] == {"city": "", "street": "Hauptstr."}
+    assert store.flights["b"]["city"] == "Kiel"
 
 
 async def test_config_flow(hass: HomeAssistant, log_dir: Path):

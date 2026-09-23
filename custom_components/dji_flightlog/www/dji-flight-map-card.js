@@ -12,11 +12,18 @@
  *   mode: all            # all | last | flight
  *   heatmap: true
  *   days: 365
+ *   dipul: true          # overlay the German UAS geo zones (DIPUL)
+ *   spots: true          # show saved spots (default in mode: all)
+ *
+ * The same module also defines custom:dji-spots-card, a list of the saved
+ * spots with a Google Maps navigation link each:
+ *   type: custom:dji-spots-card
+ *   title: Gemerkte Orte
  */
 
 const STATIC = "/dji_flightlog_static";
 const API = "dji_flightlog";
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.2.2";
 
 const PALETTE = [
   "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
@@ -55,6 +62,163 @@ const TILES = {
   },
 };
 TILES.osm = TILES.ha; // backwards compatible alias
+
+// DIPUL (Digitale Plattform Unbemannte Luftfahrt, run by DFS): the official
+// German UAS geo zones. The WMS sends CORS headers, so the browser queries it
+// directly. Licence CC BY-ND 4.0: tiles are shown unchanged and attributed.
+const DIPUL_WMS = "https://uas-betrieb.de/geoservices/dipul/wms";
+const DIPUL_ATTR =
+  'Geozonen &copy; <a href="https://www.dipul.de" target="_blank" rel="noopener">DFS / dipul</a> (CC BY-ND 4.0)';
+// Below this zoom a tile covers hundreds of km and takes seconds to render.
+const DIPUL_MIN_ZOOM = 8;
+const DIPUL_LAYERS = {
+  flughaefen: "Flughafen",
+  flugplaetze: "Flugplatz",
+  kontrollzonen: "Kontrollzone",
+  flugbeschraenkungsgebiete: "Flugbeschränkungsgebiet",
+  temporaere_betriebseinschraenkungen: "Temporäre Betriebseinschränkung",
+  modellflugplaetze: "Modellflugplatz",
+  haengegleiter: "Hängegleitergelände",
+  naturschutzgebiete: "Naturschutzgebiet",
+  nationalparks: "Nationalpark",
+  "ffh-gebiete": "FFH-Gebiet",
+  vogelschutzgebiete: "Vogelschutzgebiet",
+  wohngrundstuecke: "Wohngrundstück",
+  freibaeder: "Freibad / Badestrand",
+  industrieanlagen: "Industrieanlage",
+  kraftwerke: "Kraftwerk",
+  umspannwerke: "Umspannwerk",
+  stromleitungen: "Stromleitung",
+  windkraftanlagen: "Windkraftanlage",
+  bundesautobahnen: "Bundesautobahn",
+  bundesstrassen: "Bundesstraße",
+  bahnanlagen: "Bahnanlage",
+  binnenwasserstrassen: "Binnenwasserstraße",
+  seewasserstrassen: "Seewasserstraße",
+  schifffahrtsanlagen: "Schifffahrtsanlage",
+  krankenhaeuser: "Krankenhaus",
+  justizvollzugsanstalten: "Justizvollzugsanstalt",
+  militaerische_anlagen: "Militärische Anlage",
+  labore: "BSL-4-Labor",
+  behoerden: "Behörde / Verfassungsorgan",
+  diplomatische_vertretungen: "Diplomatische Vertretung",
+  internationale_organisationen: "Internationale Organisation",
+  polizei: "Polizei",
+  sicherheitsbehoerden: "Sicherheitsbehörde",
+};
+const DIPUL_QUERY = Object.keys(DIPUL_LAYERS)
+  .map((l) => `dipul:${l}`)
+  .join(",");
+
+/** DIPUL zones at one point. GetFeatureInfo refuses JSON, so this parses text/plain. */
+async function queryDipul(lat, lon) {
+  const d = 0.0003; // ~30 m; the point is the centre pixel of a 101 px image
+  const q = new URLSearchParams({
+    service: "WMS",
+    version: "1.3.0",
+    request: "GetFeatureInfo",
+    layers: DIPUL_QUERY,
+    query_layers: DIPUL_QUERY,
+    styles: "",
+    crs: "EPSG:4326",
+    // WMS 1.3.0 with EPSG:4326 uses lat,lon axis order.
+    bbox: [lat - d, lon - d, lat + d, lon + d].join(","),
+    width: "101",
+    height: "101",
+    i: "50",
+    j: "50",
+    info_format: "text/plain",
+    feature_count: "50",
+  });
+  const res = await fetch(`${DIPUL_WMS}?${q}`);
+  const text = await res.text();
+  if (!res.ok || text.includes("ServiceException")) throw new Error(`DIPUL-Abfrage fehlgeschlagen (${res.status})`);
+  return parseDipul(text);
+}
+
+function parseDipul(text) {
+  // Blocks look like:
+  //   Results for FeatureType 'de.dfs.dipul:kontrollzonen':
+  //   --------------------------------------------
+  //   name = Frankfurt Main (EDDF) Zone 4
+  //   lower_limit_altitude = 690.9
+  //   --------------------------------------------
+  const zones = [];
+  const seen = new Set();
+  let layer = null;
+  let cur = null;
+  const flush = () => {
+    if (!cur || !Object.keys(cur).length) return;
+    const zone = {
+      layer,
+      name: cur.generated_name_DE || cur.name || DIPUL_LAYERS[layer] || layer,
+      type: cur.type_code || null,
+      lower: fmtLimit(cur.lower_limit_altitude, cur.lower_limit_unit, cur.lower_limit_alt_ref),
+      upper: fmtLimit(cur.upper_limit_altitude, cur.upper_limit_unit, cur.upper_limit_alt_ref),
+      legal: cur.legal_ref || null,
+    };
+    const key = `${zone.layer}|${zone.name}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      zones.push(zone);
+    }
+    cur = null;
+  };
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    const head = line.match(/^Results for FeatureType '(?:.*:)?([^':]+)'/);
+    if (head) {
+      flush();
+      layer = head[1];
+    } else if (/^-{3,}$/.test(line)) {
+      flush();
+      cur = {};
+    } else if (cur) {
+      const kv = line.match(/^([\w-]+)\s*=\s*(.*)$/);
+      if (kv) cur[kv[1]] = kv[2];
+    }
+  }
+  flush();
+  return zones;
+}
+
+function fmtLimit(alt, unit, ref) {
+  if (alt == null || alt === "" || Number.isNaN(Number(alt))) return null;
+  return [String(Math.round(Number(alt))), unit, ref].filter(Boolean).join(" ");
+}
+
+const zoneLabel = (z) => DIPUL_LAYERS[z.layer] || z.type || z.layer || "Zone";
+
+function zoneLimits(z) {
+  if (z.upper) return ` (${z.lower || "?"} – ${z.upper})`;
+  if (z.lower && !/^0 /.test(z.lower)) return ` (ab ${z.lower})`;
+  return "";
+}
+
+function zonesHtml(zones, checked) {
+  if (zones == null) return `<div class="zones muted">DIPUL-Zonen nicht geprüft.</div>`;
+  const when = checked ? ` (Stand ${esc(fmtDate(checked))})` : "";
+  if (!zones.length) return `<div class="zones ok">Keine DIPUL-Zone an diesem Punkt${when}.</div>`;
+  return `<div class="zones"><div>DIPUL-Zonen${when}:</div><ul>${zones
+    .map((z) => `<li><b>${esc(zoneLabel(z))}</b>: ${esc(z.name)}${esc(zoneLimits(z))}</li>`)
+    .join("")}</ul></div>`;
+}
+
+const mapsUrl = (lat, lon) =>
+  `https://www.google.com/maps/dir/?api=1&destination=${lat.toFixed(6)},${lon.toFixed(6)}`;
+
+const PIN_PATH = "M12,2C8.13,2 5,5.13 5,9C5,14.25 12,22 12,22C12,22 19,14.25 19,9C19,5.13 15.87,2 12,2Z";
+const SPOT_COLOR = "#ff9800";
+const PLAN_COLOR = "#03a9f4";
+function spotIcon(L, color = SPOT_COLOR) {
+  return L.divIcon({
+    className: "dji-spot",
+    html: `<svg viewBox="0 0 24 24" width="32" height="32"><path d="${PIN_PATH}" fill="${color}" stroke="#fff" stroke-width="1.3"/><circle cx="12" cy="9" r="2.6" fill="#fff"/></svg>`,
+    iconSize: [32, 32],
+    iconAnchor: [16, 31],
+    popupAnchor: [0, -28],
+  });
+}
 
 // One token shared by all cards on the page.
 let tileToken = null;
@@ -131,6 +295,14 @@ class DjiFlightMapCard extends HTMLElement {
     this._pending = false;
     this._mapInit = null;
     this._timer = null;
+    this._spots = [];
+    this._spotsKey = null;
+    this._spotMarkers = {};
+    this._pendingSpot = null;
+    this._planning = false;
+    this._planMarker = null;
+    this._planSeq = 0;
+    this._hasFlights = false;
     // Callers set `hass`/`config` before this module is loaded (the panel
     // creates the card via innerHTML and imports it afterwards). Such an
     // assignment lands as an *own* property on the element and shadows the
@@ -169,20 +341,39 @@ class DjiFlightMapCard extends HTMLElement {
       refresh_entity: "sensor.dji_flight_log_last_import",
       refresh_seconds: 300,
       scan_button: true,
+      dipul: false,
+      // Saved spots only make sense on the overview map.
+      spots: (config.mode || "all") === "all",
+      spots_entity: "sensor.dji_flight_log_saved_spots",
       ...config,
     };
     this._render();
+    // The map was rebuilt: load everything again for it.
+    this._lastRefreshKey = null;
+    this._spotsKey = null;
+    if (this._hass) this.hass = this._hass;
   }
 
   set hass(hass) {
-    const first = !this._hass;
     this._hass = hass;
-    const ent = hass.states[this._config?.refresh_entity];
+    if (!this._config) return; // setConfig() loads once it has a config
+    const ent = hass.states[this._config.refresh_entity];
     const key = ent ? ent.state : "none";
-    if (first || key !== this._lastRefreshKey) {
+    if (key !== this._lastRefreshKey) {
       this._lastRefreshKey = key;
       this._refresh();
     }
+    // The saved-spots sensor changes whenever a spot is added, edited or removed.
+    const spotsEnt = hass.states[this._config.spots_entity];
+    const spotsKey = spotsEnt ? spotsEnt.last_updated : "none";
+    if (this._config.spots && spotsKey !== this._spotsKey) {
+      this._spotsKey = spotsKey;
+      this.reloadSpots();
+    }
+  }
+
+  get hass() {
+    return this._hass;
   }
 
   getCardSize() {
@@ -214,6 +405,11 @@ class DjiFlightMapCard extends HTMLElement {
     this._flightLayers = {};
     this._tileLayer = null;
     this._tileUrl = null;
+    this._spotLayer = null;
+    this._spotMarkers = {};
+    this._dipulLayer = null;
+    this._hintEl = null;
+    this._planMarker = null;
     tokenListeners.delete(this);
     this.shadowRoot.innerHTML = `
       <link rel="stylesheet" href="${STATIC}/leaflet.css">
@@ -236,6 +432,33 @@ class DjiFlightMapCard extends HTMLElement {
         .dark .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9); }
         .dark .leaflet-container { background: #111; }
         .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--card-background-color, #fff); color: var(--primary-text-color, #000); }
+        .leaflet-popup-content .zones { margin: 6px 0; }
+        .leaflet-popup-content .zones ul { margin: 2px 0 0; padding-left: 18px; }
+        .leaflet-popup-content .zones b { display: inline; margin: 0; }
+        .leaflet-popup-content .zones.ok { color: var(--success-color, #43a047); }
+        .leaflet-popup-content .muted, .leaflet-popup-content .small { color: var(--secondary-text-color); }
+        .leaflet-popup-content .small { font-size: 0.8em; margin-top: 6px; }
+        .leaflet-popup-content .err { color: var(--error-color, #db4437); }
+        .leaflet-popup-content .note { white-space: pre-wrap; margin: 4px 0; }
+        .leaflet-popup-content input, .leaflet-popup-content textarea {
+          width: 100%; box-sizing: border-box; font: inherit; margin: 3px 0; padding: 5px 7px;
+          border: 1px solid var(--divider-color, #ccc); border-radius: 6px;
+          background: var(--card-background-color, #fff); color: inherit;
+        }
+        .leaflet-popup-content .btns { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+        .leaflet-popup-content .btns button, .leaflet-popup-content .btns a {
+          font: inherit; font-size: 0.9em; padding: 5px 10px; border-radius: 6px; cursor: pointer; text-decoration: none;
+          border: 1px solid var(--primary-color, #03a9f4); background: none; color: var(--primary-color, #03a9f4); margin: 0;
+        }
+        .leaflet-popup-content .btns .primary { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
+        .leaflet-popup-content .btns button:disabled { opacity: 0.5; cursor: default; }
+        .dji-spot { background: none; border: none; }
+        .planning .leaflet-container { cursor: crosshair; }
+        .maphint {
+          background: var(--card-background-color, #fff); color: var(--primary-text-color, #000);
+          padding: 6px 10px; border-radius: 8px; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,.3);
+          max-width: 60vw;
+        }
       </style>
       <ha-card>
         ${c.title ? `<div class="header"><span>${esc(c.title)}</span><span class="actions"><span class="sub" id="sub"></span>${c.scan_button ? `<button id="scan" title="Log-Ordner jetzt scannen">&#x21bb;</button>` : ""}</span></div>` : ""}
@@ -297,6 +520,23 @@ class DjiFlightMapCard extends HTMLElement {
     tokenListeners.add(this);
     ensureTokenRefresh(this._hass, () => tokenListeners.forEach((c) => c._applyTiles(true)));
     this._applyTiles();
+    this._spotLayer = L.layerGroup().addTo(map);
+    // Own pane above the base tiles: outside .leaflet-tile-pane, so the dark
+    // mode filter does not invert the zone colours.
+    const pane = map.createPane("dipul");
+    pane.style.zIndex = 350;
+    pane.style.pointerEvents = "none";
+    const Hint = L.Control.extend({
+      onAdd: () => {
+        this._hintEl = L.DomUtil.create("div", "maphint");
+        this._hintEl.hidden = true;
+        return this._hintEl;
+      },
+    });
+    new Hint({ position: "topright" }).addTo(map);
+    map.on("click", (e) => this._onMapClick(e));
+    map.on("zoomend", () => this._updateHint());
+    this._applyDipul();
     // The card can be created while hidden (e.g. in a tab); Leaflet needs a size.
     new ResizeObserver(() => this._map && this._map.invalidateSize()).observe(el);
     return map;
@@ -373,6 +613,7 @@ class DjiFlightMapCard extends HTMLElement {
     this._applyTiles();
     this._layers.clearLayers();
     this._flightLayers = {};
+    this._hasFlights = flights.length > 0;
 
     const empty = this.shadowRoot.getElementById("empty");
     empty.hidden = flights.length > 0;
@@ -465,6 +706,228 @@ class DjiFlightMapCard extends HTMLElement {
     if (openPopup) (entry.line || entry.marker)?.openPopup();
   }
 
+  // -- DIPUL overlay and saved spots -------------------------------------
+
+  /** Show or hide the DIPUL geo zones. */
+  setDipul(on) {
+    this._config.dipul = !!on;
+    this._applyDipul();
+  }
+
+  /** Planning mode: DIPUL zones on, a click on the map picks a new spot. */
+  setPlanning(on) {
+    this._planning = !!on;
+    this.shadowRoot.querySelector("ha-card")?.classList.toggle("planning", this._planning);
+    if (!this._planning && this._planMarker) {
+      this._planMarker.remove();
+      this._planMarker = null;
+    }
+    this._ensureMap().then(() => this._applyDipul());
+  }
+
+  /** Zoom to a saved spot and open its popup (waits for the spots if needed). */
+  focusSpot(id) {
+    const marker = this._spotMarkers[id];
+    if (!marker || !this._map) {
+      this._pendingSpot = id;
+      return;
+    }
+    this._pendingSpot = null;
+    this._map.setView(marker.getLatLng(), Math.max(this._map.getZoom(), 14));
+    marker.openPopup();
+  }
+
+  async reloadSpots() {
+    if (!this._hass || !this._config?.spots) return;
+    try {
+      const res = await this._hass.callApi("GET", `${API}/spots`);
+      this._spots = res.spots || [];
+      await this._drawSpots();
+    } catch (err) {
+      console.error("dji-flight-map-card spots:", err);
+    }
+  }
+
+  _applyDipul() {
+    if (!this._map) return;
+    const on = !!(this._config.dipul || this._planning);
+    if (on && !this._dipulLayer) {
+      this._dipulLayer = window.L.tileLayer.wms(DIPUL_WMS, {
+        layers: DIPUL_QUERY,
+        styles: "",
+        format: "image/png",
+        transparent: true,
+        version: "1.3.0",
+        tileSize: 512,
+        opacity: 0.75,
+        pane: "dipul",
+        minZoom: DIPUL_MIN_ZOOM,
+        maxZoom: 20,
+        attribution: DIPUL_ATTR,
+      });
+    }
+    if (this._dipulLayer) {
+      if (on) this._dipulLayer.addTo(this._map);
+      else this._dipulLayer.remove();
+    }
+    this._updateHint();
+  }
+
+  _updateHint() {
+    if (!this._hintEl || !this._map) return;
+    const msgs = [];
+    if ((this._config.dipul || this._planning) && this._map.getZoom() < DIPUL_MIN_ZOOM) {
+      msgs.push("Für die DIPUL-Zonen hineinzoomen.");
+    }
+    if (this._planning) msgs.push("Auf die Karte tippen, um einen Ort zu merken.");
+    this._hintEl.textContent = msgs.join(" ");
+    this._hintEl.hidden = !msgs.length;
+  }
+
+  async _drawSpots() {
+    const map = await this._ensureMap();
+    if (!map) return;
+    const L = window.L;
+    this._spotLayer.clearLayers();
+    this._spotMarkers = {};
+    for (const s of this._spots) {
+      const marker = L.marker([s.lat, s.lon], { icon: spotIcon(L), title: s.name });
+      marker.bindPopup(() => this._spotPopup(s), { minWidth: 220, maxWidth: 320 });
+      this._spotLayer.addLayer(marker);
+      this._spotMarkers[s.id] = marker;
+    }
+    if (this._pendingSpot) {
+      this.focusSpot(this._pendingSpot);
+    } else if (!this._hasFlights && this._config.fit && this._spots.length && !this._spotsFitted) {
+      this._spotsFitted = true;
+      map.fitBounds(L.latLngBounds(this._spots.map((s) => [s.lat, s.lon])), { padding: [40, 40], maxZoom: 14 });
+    }
+  }
+
+  _spotsChanged() {
+    this.dispatchEvent(new CustomEvent("dji-spots-changed", { bubbles: true, composed: true }));
+    return this.reloadSpots();
+  }
+
+  _spotPopup(s) {
+    const el = document.createElement("div");
+    el.innerHTML = `
+      <b>${esc(s.name)}</b>
+      ${s.note ? `<div class="note">${esc(s.note)}</div>` : ""}
+      <div class="zwrap">${zonesHtml(s.zones, s.zones_checked)}</div>
+      <div class="btns">
+        <a class="primary" href="${esc(s.maps_url)}" target="_blank" rel="noopener">Navigation</a>
+        <button class="recheck">Zonen prüfen</button>
+        <button class="del">Löschen</button>
+      </div>
+      <div class="err" hidden></div>
+      <div class="small">Gemerkt am ${esc(fmtDate(s.created))} · ${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}</div>`;
+    const err = el.querySelector(".err");
+    const fail = (e) => {
+      err.textContent = e.body?.message || e.message || String(e);
+      err.hidden = false;
+    };
+    const recheck = el.querySelector(".recheck");
+    recheck.onclick = async () => {
+      recheck.disabled = true;
+      try {
+        const zones = await queryDipul(s.lat, s.lon);
+        await this._hass.callApi("PATCH", `${API}/spots/${s.id}`, { zones, zones_checked: new Date().toISOString() });
+        this._pendingSpot = s.id; // reopen the popup after the redraw
+        await this._spotsChanged();
+      } catch (e) {
+        recheck.disabled = false;
+        fail(e);
+      }
+    };
+    el.querySelector(".del").onclick = async () => {
+      if (!confirm(`„${s.name}“ löschen?`)) return;
+      try {
+        await this._hass.callApi("DELETE", `${API}/spots/${s.id}`);
+        await this._spotsChanged();
+      } catch (e) {
+        fail(e);
+      }
+    };
+    return el;
+  }
+
+  _onMapClick(e) {
+    if (!this._planning) return;
+    const L = window.L;
+    const { lat, lng } = e.latlng;
+    if (this._planMarker) this._planMarker.setLatLng(e.latlng);
+    else this._planMarker = L.marker(e.latlng, { icon: spotIcon(L, PLAN_COLOR), zIndexOffset: 1000 }).addTo(this._map);
+
+    const el = document.createElement("div");
+    el.innerHTML = `
+      <b>Neuer Ort</b>
+      <div class="zwrap"><div class="zones muted">Prüfe DIPUL-Zonen …</div></div>
+      <input class="name" placeholder="Name, z. B. Feld am Waldrand" maxlength="100">
+      <textarea class="note" rows="2" placeholder="Notiz (optional)" maxlength="1000"></textarea>
+      <div class="btns">
+        <button class="save primary">Merken</button>
+        <a href="${esc(mapsUrl(lat, lng))}" target="_blank" rel="noopener">Navigation</a>
+      </div>
+      <div class="err" hidden></div>
+      <div class="small">${lat.toFixed(5)}, ${lng.toFixed(5)} · Zonen nur zur Orientierung, vor dem Flug auf dipul.de prüfen.</div>`;
+    this._planMarker.unbindPopup().bindPopup(el, { minWidth: 240, maxWidth: 320 }).openPopup();
+
+    const seq = ++this._planSeq;
+    const popup = this._planMarker.getPopup();
+    const showZones = (html) => {
+      if (seq !== this._planSeq) return; // a newer click replaced this popup
+      el.querySelector(".zwrap").innerHTML = html;
+      popup.update();
+    };
+    const zonesP = queryDipul(lat, lng).then(
+      (zones) => {
+        const checked = new Date().toISOString();
+        showZones(zonesHtml(zones, checked));
+        return { zones, zones_checked: checked };
+      },
+      (err) => {
+        showZones(`<div class="zones muted">${esc(err.message || err)}. Der Ort kann trotzdem gemerkt werden.</div>`);
+        return { zones: null, zones_checked: null };
+      },
+    );
+
+    const name = el.querySelector(".name");
+    const save = el.querySelector(".save");
+    const submit = async () => {
+      if (!name.value.trim()) {
+        name.focus();
+        return;
+      }
+      save.disabled = true;
+      try {
+        const res = await this._hass.callApi("POST", `${API}/spots`, {
+          name: name.value.trim(),
+          lat,
+          lon: lng,
+          note: el.querySelector(".note").value,
+          ...(await zonesP),
+        });
+        this._planMarker?.remove();
+        this._planMarker = null;
+        this._pendingSpot = res.spot?.id || null;
+        await this._spotsChanged();
+      } catch (err) {
+        save.disabled = false;
+        const box = el.querySelector(".err");
+        box.textContent = err.body?.message || err.message || String(err);
+        box.hidden = false;
+      }
+    };
+    save.onclick = submit;
+    // Block body: an on* handler returning false would cancel every keystroke.
+    name.onkeydown = (ev) => {
+      if (ev.key === "Enter") submit();
+    };
+    setTimeout(() => name.focus(), 50);
+  }
+
+
   _colorFn(flights) {
     if (this._config.line_color) return () => this._config.line_color;
     const sns = [...new Set(flights.map((f) => f.aircraft_sn || "?"))];
@@ -519,8 +982,143 @@ class DjiFlightMapCard extends HTMLElement {
   }
 }
 
+/**
+ * List of saved spots for a dashboard: name, note, DIPUL zones and a Google
+ * Maps link that starts navigation on a phone. Tapping a spot opens it in
+ * the sidebar panel.
+ */
+class DjiSpotsCard extends HTMLElement {
+  static getStubConfig() {
+    return { title: "Gemerkte Orte" };
+  }
+
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._hass = null;
+    this._config = null;
+    this._spots = null;
+    this._key = null;
+  }
+
+  setConfig(config) {
+    this._config = {
+      title: "Gemerkte Orte",
+      entity: "sensor.dji_flight_log_saved_spots",
+      zones: true,
+      limit: null,
+      panel_path: "/dji-flightlog", // null: rows are not clickable
+      ...config,
+    };
+    this._render();
+    if (this._spots) this._renderList();
+  }
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    const ent = hass.states[this._config?.entity];
+    const key = ent ? ent.last_updated : "none";
+    if (first || key !== this._key) {
+      this._key = key;
+      this._load();
+    }
+  }
+
+  getCardSize() {
+    return 1 + Math.min(this._spots?.length || 1, 6);
+  }
+
+  _render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        .header { padding: 12px 16px 4px; font-size: 1.2em; font-weight: 500; }
+        .row { display: flex; align-items: center; gap: 12px; padding: 8px 16px; }
+        .row.link { cursor: pointer; }
+        .row.link:hover { background: var(--secondary-background-color, #f2f2f2); }
+        .pin { flex: 0 0 auto; color: ${SPOT_COLOR}; line-height: 0; }
+        .main { flex: 1; min-width: 0; }
+        .n { font-size: 14px; }
+        .d { font-size: 12px; color: var(--secondary-text-color); white-space: pre-wrap; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+        .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+        .chip { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--secondary-background-color, #eee); color: var(--primary-text-color); }
+        .chip.ok { background: none; color: var(--success-color, #43a047); padding-left: 0; }
+        .nav {
+          flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; text-decoration: none;
+          color: var(--primary-color, #03a9f4); font-size: 13px; padding: 6px 8px; border-radius: 8px;
+        }
+        .nav:hover { background: var(--secondary-background-color, #f2f2f2); }
+        .empty { padding: 8px 16px 16px; color: var(--secondary-text-color); font-size: 14px; }
+        .list { padding-bottom: 8px; }
+      </style>
+      <ha-card>
+        ${this._config.title ? `<div class="header">${esc(this._config.title)}</div>` : ""}
+        <div class="list" id="list"></div>
+      </ha-card>`;
+  }
+
+  async _load() {
+    if (!this._hass) return;
+    try {
+      const res = await this._hass.callApi("GET", `${API}/spots`);
+      this._spots = res.spots || [];
+    } catch (err) {
+      console.error("dji-spots-card:", err);
+      const msg = err.body?.message || err.message || err.error || err.status_code || err;
+      this.shadowRoot.getElementById("list").innerHTML = `<div class="empty">Fehler: ${esc(msg)}</div>`;
+      return;
+    }
+    this._renderList();
+  }
+
+  _renderList() {
+    const list = this.shadowRoot.getElementById("list");
+    let spots = this._spots || [];
+    if (this._config.limit) spots = spots.slice(0, Number(this._config.limit));
+    if (!spots.length) {
+      list.innerHTML = `<div class="empty">Noch keine Orte gemerkt. Im Panel „Drohnenflüge“ auf „Ort merken“ tippen und einen Punkt auf der Karte wählen.</div>`;
+      return;
+    }
+    const link = !!this._config.panel_path;
+    list.innerHTML = spots
+      .map(
+        (s) => `
+        <div class="row${link ? " link" : ""}" data-id="${esc(s.id)}">
+          <div class="pin"><svg viewBox="0 0 24 24" width="24" height="24"><path d="${PIN_PATH}" fill="currentColor"/><circle cx="12" cy="9" r="2.6" fill="#fff"/></svg></div>
+          <div class="main">
+            <div class="n">${esc(s.name)}</div>
+            ${s.note ? `<div class="d">${esc(s.note)}</div>` : ""}
+            ${this._config.zones ? zoneChips(s.zones) : ""}
+          </div>
+          <a class="nav" href="${esc(s.maps_url)}" target="_blank" rel="noopener" title="Navigation mit Google Maps starten">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12,2L4.5,20.29L5.21,21L12,18L18.79,21L19.5,20.29L12,2Z"/></svg>Route
+          </a>
+        </div>`,
+      )
+      .join("");
+    for (const a of list.querySelectorAll("a.nav")) a.onclick = (ev) => ev.stopPropagation();
+    if (!link) return;
+    for (const row of list.querySelectorAll(".row")) {
+      row.onclick = () => {
+        history.pushState(null, "", `${this._config.panel_path}?spot=${encodeURIComponent(row.dataset.id)}`);
+        window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+      };
+    }
+  }
+}
+
+function zoneChips(zones) {
+  if (zones == null) return "";
+  if (!zones.length) return `<div class="chips"><span class="chip ok">keine DIPUL-Zone</span></div>`;
+  const labels = [...new Set(zones.map(zoneLabel))];
+  return `<div class="chips">${labels.map((l) => `<span class="chip">${esc(l)}</span>`).join("")}</div>`;
+}
+
 if (!customElements.get("dji-flight-map-card")) {
   customElements.define("dji-flight-map-card", DjiFlightMapCard);
+}
+if (!customElements.get("dji-spots-card")) {
+  customElements.define("dji-spots-card", DjiSpotsCard);
 }
 window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === "dji-flight-map-card")) {
@@ -528,6 +1126,14 @@ if (!window.customCards.some((c) => c.type === "dji-flight-map-card")) {
     type: "dji-flight-map-card",
     name: "DJI Flight Map",
     description: "Tracks of imported DJI flights on a Leaflet map",
+    preview: false,
+  });
+}
+if (!window.customCards.some((c) => c.type === "dji-spots-card")) {
+  window.customCards.push({
+    type: "dji-spots-card",
+    name: "DJI Gemerkte Orte",
+    description: "Saved drone spots with DIPUL zones and a Google Maps navigation link",
     preview: false,
   });
 }

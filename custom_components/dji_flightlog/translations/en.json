@@ -91,6 +91,9 @@
       },
       "unsupported_files": {
         "name": "Unsupported files"
+      },
+      "saved_spots": {
+        "name": "Saved spots"
       }
     },
     "button": {

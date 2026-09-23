@@ -13,6 +13,10 @@ views:
         days: 365
         height: 480
 
+      # Gemerkte Orte mit Google-Maps-Navigation (anlegen im Panel „Drohnenflüge“ → Marker-Button)
+      - type: custom:dji-spots-card
+        title: Nächste Flüge
+
       - type: horizontal-stack
         cards:
           - type: statistic
