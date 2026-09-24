@@ -112,6 +112,37 @@ def test_downsample_keeps_ends():
     assert _downsample(pts[:5], 100) == pts[:5]
 
 
+def test_fly_time_continues_from_previous_flight():
+    """Landed and took off again without a battery swap: fly_time starts at 590 s."""
+    frames = make_frames(100)
+    for f in frames:
+        f.osd.fly_time += 590.8
+    summary, track = summarize_frames(frames, dict(BASE), max_track_points=1000)
+    assert summary.duration_s == 99.0
+    assert track.points[0][4] == 0.0
+    assert track.points[-1][4] == 99.0
+
+
+def test_video_time_and_photos_from_frames():
+    frames = make_frames(100)
+    for i, f in enumerate(frames):
+        # two clips: 10 s (frames 10-20) and 30 s (frames 50-80)
+        if 10 <= i <= 20 or 50 <= i <= 80:
+            f.camera.is_video = True
+            f.camera.record_time = i - 10 if i <= 20 else i - 50
+        f.camera.remain_photo_num = 500 - (i // 30)
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert summary.video_time_s == 40.0
+    assert summary.photo_num == 3
+
+
+def test_photo_count_unknown_keeps_header_value():
+    # Models like the Avata 360 always report remain_photo_num = 0.
+    summary, _ = summarize_frames(make_frames(10), dict(BASE, photo_num=2), max_track_points=100)
+    assert summary.photo_num == 2
+    assert summary.video_time_s == 0.0
+
+
 def test_fallback_duration_from_timestamps():
     frames = make_frames(10)
     for f in frames:
@@ -188,6 +219,7 @@ def test_parse_flight_header_only_without_key(tmp_path):
     assert summary.takeoff_lat == 48.2
     assert summary.city == "München"
     assert summary.photo_num == 3
+    assert summary.video_time_s is None  # the header value is not a duration
     assert len(summary.flight_id) == 16
 
 
@@ -233,9 +265,13 @@ def test_exports(frames):
     assert gpx.count("<trkpt") == 100
     assert "<time>2026-09-20T12:00:00+00:00</time>" in gpx
     assert "<time>2026-09-20T12:01:39+00:00</time>" in gpx
+    # Height above takeoff, not the log's (barometric) altitude of 500 m + height.
+    assert "<ele>0.0</ele>" in gpx and "<ele>60.0</ele>" in gpx and "<ele>560.0</ele>" not in gpx
+    assert gj["features"][0]["geometry"]["coordinates"][-1][2] == 60.0
 
     kml = track_to_kml(s, t)
-    assert "<coordinates>" in kml and "11.5,48.1,500.0" in kml
+    assert "<coordinates>" in kml and "11.5,48.1,0.0" in kml
+    assert "<altitudeMode>relativeToGround</altitudeMode>" in kml
 
 
 # --- file classification ----------------------------------------------------

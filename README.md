@@ -24,7 +24,7 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 - **Orte merken mit DIPUL-Zonen** – im Panel einen Punkt auf der Karte wählen und speichern, die [DIPUL](https://www.dipul.de)-Geozonen (Flughäfen, Kontrollzonen, Naturschutz, Wohngebiete, …) werden dabei eingeblendet und am Punkt abgefragt. Liste im Dashboard per `custom:dji-spots-card`, mit Google-Maps-Link zum Starten der Navigation.
 - **Karte** – `custom:dji-flight-map-card` (Leaflet, offline-fähig außer Kacheln): alle Tracks, Heatmap, Popups mit Kennzahlen und GPX/KML/GeoJSON-Download, Filter nach Zeitraum/Drohne, Modus „nur letzter Flug".
 - **Event** `dji_flightlog_flight_imported` bei jedem neuen Flug (Payload = Flugzusammenfassung) → Benachrichtigung, OneDrive-Upload, …
-- **Services** `dji_flightlog.scan`, `dji_flightlog.import_file`, `dji_flightlog.export_track` (GPX/KML/GeoJSON, in Datei oder als Response).
+- **Services** `dji_flightlog.scan`, `dji_flightlog.import_file`, `dji_flightlog.export_track` (GPX/KML/GeoJSON, in Datei oder als Response). Die Höhe in den Exporten ist die Höhe über dem Startpunkt (KML: `relativeToGround`). Die absolute Höhe im Log taugt nicht dafür: DJI rechnet eine barometrische Home-Höhe dazu, die von Tag zu Tag wandert und selbst auf Meereshöhe unter 0 m liegt.
 - **HTTP-API** (HA-Auth): `/api/dji_flightlog/flights`, `/tracks`, `/flights/<id>/track`, `/flights/<id>/export/<gpx|kml|geojson>`, `/spots` (GET/POST), `/spots/<id>` (PATCH/DELETE), `/upload` (POST, multipart-Feld `file`, nur Admins).
 
 ## Installation
@@ -176,6 +176,7 @@ Unter Windows fehlen `fcntl`/`resource`; `tests/conftest.py` enthält den nötig
 - Index (Zusammenfassungen, Datei-Bookkeeping): `/config/.storage/dji_flightlog.flights`
 - Tracks: `/config/.storage/dji_flightlog/tracks/<flight_id>.json`
 - Beides ist Teil des HA-Backups. Wird eine Rohdatei aus dem Ordner gelöscht, bleibt der Flug im Logbuch.
+- Liest eine neue Version der Integration mehr oder korrekter aus den Logs, werden bereits importierte Flüge beim nächsten Scan still neu eingelesen (kein erneutes `flight_imported`-Event). Das geht nur für Flüge, deren Rohdatei noch im Ordner liegt, und bei verschlüsselten Logs nur mit API-Key.
 
 ## Credits
 

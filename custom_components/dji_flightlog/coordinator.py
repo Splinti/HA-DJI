@@ -23,6 +23,7 @@ from .const import (
     DOMAIN,
     EVENT_FLIGHT_IMPORTED,
     LOG_FILE_SUFFIXES,
+    PARSER_VERSION,
     REASON_FC_DAT,
     REASON_SUPPORT_BUNDLE,
     REASON_TOO_LARGE,
@@ -135,6 +136,12 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             return True
         if entry.get("size") != stat.st_size or entry.get("mtime") != stat.st_mtime:
             return True
+        if entry.get("status") != STATUS_UNSUPPORTED and entry.get("parser", 1) < PARSER_VERSION:
+            # Without the key an encrypted log only yields its header; re-parsing
+            # would downgrade a full import, so it waits until a key is set.
+            flight = self.store.flights.get(entry.get("flight_id") or "") or {}
+            needs_key = flight.get("status") == STATUS_OK and flight.get("log_version", 0) >= 13
+            return bool(self.api_key) or not needs_key
         return bool(entry.get("status") in _RETRY_STATUSES and self.api_key)
 
     def _process_file(self, path: Path, *, check_age: bool = True) -> tuple[dict[str, Any] | None, bool]:
@@ -148,7 +155,13 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             _LOGGER.debug("Skipping %s, modified less than %s ago", path.name, _MIN_FILE_AGE)
             return None, False
 
-        record = {"size": stat.st_size, "mtime": stat.st_mtime, "flight_id": None, "status": None}
+        record = {
+            "size": stat.st_size,
+            "mtime": stat.st_mtime,
+            "flight_id": None,
+            "status": None,
+            "parser": PARSER_VERSION,
+        }
 
         reason = classify_log_file(path, stat.st_size)
         if reason is not None:

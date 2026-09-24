@@ -108,7 +108,7 @@ class FlightSummary:
     battery_start_pct: int | None
     battery_end_pct: int | None
     photo_num: int
-    video_time_s: float
+    video_time_s: float | None  # None: header-only import, the header value is unusable
     points: int
     bbox: list[float] | None  # [min_lon, min_lat, max_lon, max_lat]
     imported_at: str
@@ -218,7 +218,9 @@ def parse_flight(
         "battery_start_pct": None,
         "battery_end_pct": None,
         "photo_num": int(details.capture_num or 0),
-        "video_time_s": float(details.video_time or 0.0),
+        # The header's video_time has no consistent unit (65536 for a 4 min
+        # clip); only the frames give the real recording time.
+        "video_time_s": None,
         "points": 0,
         "bbox": None,
         "imported_at": _iso(now),
@@ -254,7 +256,11 @@ def summarize_frames(
     raw_points: list[list[float]] = []
     first_time: datetime | None = None
     last_time: datetime | None = None
-    max_fly_time = 0.0  # osd.fly_time is elapsed flight time, so its max is the duration
+    # osd.fly_time counts from power-on, not from takeoff: land and take off
+    # again without a battery swap and the next log starts where the last one
+    # ended. Offsets and duration are relative to the log's first frame.
+    fly_time_base = float(getattr(frames[0].osd, "fly_time", 0.0) or 0.0) if frames else 0.0
+    max_fly_time = 0.0
     home: list[float] | None = None
     battery_start: int | None = None
     battery_end: int | None = None
@@ -271,7 +277,7 @@ def summarize_frames(
         if ts is not None and ts.year > 2000:
             first_time = first_time or ts
             last_time = ts
-        fly_time = float(getattr(osd, "fly_time", 0.0) or 0.0)
+        fly_time = max(0.0, float(getattr(osd, "fly_time", 0.0) or 0.0) - fly_time_base)
         max_fly_time = max(max_fly_time, fly_time)
 
         level = fr.battery.charge_level
@@ -327,19 +333,51 @@ def summarize_frames(
         base["max_v_speed_ms"] = round(max_v_speed, 2)
     base["battery_start_pct"] = battery_start
     base["battery_end_pct"] = battery_end
+    base["video_time_s"] = _video_time(frames)
+    photos = _photo_count(frames)
+    if photos is not None:
+        base["photo_num"] = photos
     base["points"] = len(track.points)
 
     return FlightSummary(status=STATUS_OK, **base), track
 
 
+def _video_time(frames: list[Any]) -> float:
+    """Seconds of video recorded: the sum of each recording's longest record_time."""
+    total = 0
+    segment = 0
+    for fr in frames:
+        camera = getattr(fr, "camera", None)
+        if camera is not None and camera.is_video:
+            segment = max(segment, int(camera.record_time or 0))
+        elif segment:
+            total += segment
+            segment = 0
+    return float(total + segment)
+
+
+def _photo_count(frames: list[Any]) -> int | None:
+    """Photos taken, from the drop in remaining shots; None if the model never reports it."""
+    remaining = [
+        fr.camera.remain_photo_num
+        for fr in frames
+        if getattr(fr, "camera", None) is not None and fr.camera.remain_photo_num > 0
+    ]
+    return max(0, remaining[0] - remaining[-1]) if remaining else None
+
+
 # ---------------------------------------------------------------------------
 # Export helpers (pure functions, used by the service and the HTTP view)
+#
+# Elevations are the height above the takeoff point, not the log's altitude:
+# DJI adds a barometric home altitude to it that drifts from day to day and
+# sits below 0 m even at sea level, which buried exported tracks underground.
 # ---------------------------------------------------------------------------
 
 
 def track_to_geojson(summary: dict[str, Any], track: dict[str, Any]) -> dict[str, Any]:
     """GeoJSON FeatureCollection: LineString track + optional Home point."""
-    coords = [[p[0], p[1], p[2]] for p in track.get("points", [])]
+    coords = [[p[0], p[1], p[3]] for p in track.get("points", [])]
     props = {k: v for k, v in summary.items() if k != "file"}
     features: list[dict[str, Any]] = [
         {
@@ -365,7 +403,7 @@ def _flight_name(summary: dict[str, Any]) -> tuple[str, datetime]:
 
 
 def track_to_gpx(summary: dict[str, Any], track: dict[str, Any]) -> str:
-    """GPX 1.1 track with timestamps derived from the flight start."""
+    """GPX 1.1 track with timestamps derived from the flight start, ele = height above takeoff."""
     name, start = _flight_name(summary)
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -374,19 +412,19 @@ def track_to_gpx(summary: dict[str, Any], track: dict[str, Any]) -> str:
         f"  <metadata><name>{_xml(name)}</name><time>{start.isoformat()}</time></metadata>",
         f"  <trk><name>{_xml(name)}</name><trkseg>",
     ]
-    for lon, lat, alt, _height, t_off, _bat in track.get("points", []):
+    for lon, lat, _alt, height, t_off, _bat in track.get("points", []):
         ts = datetime.fromtimestamp(start.timestamp() + t_off, tz=UTC)
         lines.append(
-            f'    <trkpt lat="{lat}" lon="{lon}"><ele>{alt}</ele><time>{ts.isoformat()}</time></trkpt>'
+            f'    <trkpt lat="{lat}" lon="{lon}"><ele>{height}</ele><time>{ts.isoformat()}</time></trkpt>'
         )
     lines += ["  </trkseg></trk>", "</gpx>", ""]
     return "\n".join(lines)
 
 
 def track_to_kml(summary: dict[str, Any], track: dict[str, Any]) -> str:
-    """KML LineString with absolute altitude."""
+    """KML LineString, height relative to the ground."""
     name, _start = _flight_name(summary)
-    coords = " ".join(f"{lon},{lat},{alt}" for lon, lat, alt, *_ in track.get("points", []))
+    coords = " ".join(f"{lon},{lat},{height}" for lon, lat, _alt, height, *_ in track.get("points", []))
     return "\n".join(
         [
             '<?xml version="1.0" encoding="UTF-8"?>',
@@ -394,7 +432,7 @@ def track_to_kml(summary: dict[str, Any], track: dict[str, Any]) -> str:
             f"  <name>{_xml(name)}</name>",
             '  <Style id="track"><LineStyle><color>ff0000ff</color><width>3</width></LineStyle></Style>',
             f"  <Placemark><name>{_xml(name)}</name><styleUrl>#track</styleUrl>",
-            "    <LineString><altitudeMode>absolute</altitudeMode><coordinates>",
+            "    <LineString><altitudeMode>relativeToGround</altitudeMode><coordinates>",
             f"      {coords}",
             "    </coordinates></LineString></Placemark>",
             "</Document></kml>",

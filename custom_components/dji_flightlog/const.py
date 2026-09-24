@@ -20,6 +20,11 @@ DEFAULT_GEO_LOCATION_LIMIT = 0
 DEFAULT_SIDEBAR_PANEL = True
 
 STORAGE_VERSION = 1
+# Bump when parsing changes what a flight's summary or track contains: files
+# imported by an older parser are re-parsed on the next scan.
+# 2: duration/track offsets per log (not since power-on), video time from frames,
+#    exports use height above takeoff.
+PARSER_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}.flights"
 STORAGE_SUBDIR = DOMAIN  # <config>/.storage/dji_flightlog/tracks/<id>.json
 

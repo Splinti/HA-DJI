@@ -525,6 +525,50 @@ async def test_lovelace_resource_registered(hass: HomeAssistant, setup_entry):
     assert sum(u.startswith("/dji_flightlog_static/") for u in urls) == 1
 
 
+async def test_outdated_parser_reparses_without_event(hass: HomeAssistant, setup_entry):
+    """After a parser fix, flights imported earlier are parsed again, silently."""
+    from custom_components.dji_flightlog.const import PARSER_VERSION
+
+    entry = await setup_entry(2)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    for record in coordinator.store.files.values():
+        assert record["parser"] == PARSER_VERSION
+        record["parser"] = PARSER_VERSION - 1
+    coordinator.store.flights["flight0001"]["duration_s"] = 1040.5  # what the old parser stored
+
+    events = []
+    hass.bus.async_listen(EVENT_FLIGHT_IMPORTED, events.append)
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as parse:
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert parse.call_count == 2
+    assert coordinator.data.flights["flight0001"]["duration_s"] == 50.0
+    assert all(r["parser"] == PARSER_VERSION for r in coordinator.store.files.values())
+    assert events == []
+
+    # Up to date now: the next scan leaves the files alone.
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as parse:
+        await coordinator.async_refresh()
+    assert parse.call_count == 0
+
+
+async def test_outdated_parser_keeps_full_import_without_key(hass: HomeAssistant, setup_entry):
+    """Without a key an encrypted log only has its header; don't trade the track for that."""
+    from custom_components.dji_flightlog.const import PARSER_VERSION
+
+    entry = await setup_entry(1)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator.api_key = None
+    for record in coordinator.store.files.values():
+        record["parser"] = PARSER_VERSION - 1
+
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as parse:
+        await coordinator.async_refresh()
+    assert parse.call_count == 0
+    assert coordinator.data.flights["flight0000"]["status"] == STATUS_OK
+
+
 async def test_api_key_added_later_backfills_tracks(hass: HomeAssistant, log_dir: Path, tmp_path: Path):
     """Without a key only headers are imported; adding one must fill in the tracks."""
     from custom_components.dji_flightlog.const import STATUS_HEADER_ONLY

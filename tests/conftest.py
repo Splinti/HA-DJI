@@ -54,6 +54,13 @@ class Home:
 
 
 @dataclass
+class Camera:
+    is_video: bool = False
+    record_time: int = 0
+    remain_photo_num: int = 0
+
+
+@dataclass
 class Custom:
     date_time: datetime = field(default_factory=lambda: datetime(1970, 1, 1, tzinfo=UTC))
 
@@ -64,6 +71,7 @@ class Frame:
     battery: Battery = field(default_factory=Battery)
     home: Home = field(default_factory=Home)
     custom: Custom = field(default_factory=Custom)
+    camera: Camera = field(default_factory=Camera)
 
 
 def make_frames(n: int = 100, *, start: datetime | None = None) -> list[Frame]:
