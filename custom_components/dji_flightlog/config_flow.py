@@ -37,9 +37,16 @@ from .const import (
     ENTRY_TYPE_ONEDRIVE,
     ONEDRIVE_SCOPES,
 )
-from .onedrive import GraphError, GraphNotFound, OneDriveClient
+from .onedrive import GraphError, GraphNotFound, OneDriveClient, TokenProvider
 
 _LOGGER = logging.getLogger(__name__)
+
+CONF_CHANGE_FOLDER = "change_folder"
+# The picker is a menu; each entry is a step "dir_<choice>", where the choice
+# is "use", "up" or the index of a subfolder.
+PICK_STEP = "dir_"
+PICK_USE = "use"
+PICK_UP = "up"
 
 
 def _schema(defaults: dict[str, Any]) -> vol.Schema:
@@ -81,11 +88,9 @@ def _normalize(user_input: dict[str, Any]) -> dict[str, Any]:
 
 
 def _media_schema(defaults: Mapping[str, Any]) -> vol.Schema:
+    """Sync interval and matching tolerance; the folder has its own picker step."""
     return vol.Schema(
         {
-            vol.Required(
-                CONF_MEDIA_FOLDER, default=defaults.get(CONF_MEDIA_FOLDER, DEFAULT_MEDIA_FOLDER)
-            ): str,
             vol.Optional(
                 CONF_MEDIA_SCAN_INTERVAL,
                 default=defaults.get(CONF_MEDIA_SCAN_INTERVAL, DEFAULT_MEDIA_SCAN_INTERVAL),
@@ -98,37 +103,105 @@ def _media_schema(defaults: Mapping[str, Any]) -> vol.Schema:
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(min=0, max=3600, step=10, unit_of_measurement="s")
             ),
+            vol.Optional(CONF_CHANGE_FOLDER, default=False): selector.BooleanSelector(),
         }
     )
 
 
-def _normalize_media(user_input: dict[str, Any]) -> dict[str, Any]:
-    out = dict(user_input)
-    out[CONF_MEDIA_FOLDER] = out[CONF_MEDIA_FOLDER].strip().strip("/")
-    for key in (CONF_MEDIA_SCAN_INTERVAL, CONF_MATCH_TOLERANCE):
-        if key in out:
-            out[key] = int(out[key])
-    return out
+class FolderPicker:
+    """Walks the OneDrive folder tree, one level per menu.
+
+    Config flows have no tree widget, so each menu lists the subfolders of the
+    current folder plus "use this folder" and "up one level"; clicking a
+    subfolder shows the next level.
+    """
+
+    def __init__(self, hass: HomeAssistant, token: TokenProvider, start: str) -> None:
+        self._client = OneDriveClient(async_get_clientsession(hass), token)
+        self._german = (hass.config.language or "").startswith("de")
+        self._first = True
+        self._names: list[str] = []
+        self.path = start.strip().strip("/")
+
+    @property
+    def display(self) -> str:
+        return f"/{self.path}"
+
+    def choose(self, choice: str) -> str | None:
+        """Apply a menu choice; returns the folder once it was accepted."""
+        if choice == PICK_USE:
+            return self.path
+        if choice == PICK_UP:
+            self.path = self.path.rpartition("/")[0]
+        elif choice.isdigit() and int(choice) < len(self._names):
+            self.path = f"{self.path}/{self._names[int(choice)]}".strip("/")
+        return None
+
+    async def async_menu(self) -> tuple[dict[str, str], str]:
+        """Menu options (step id -> label) for the current folder, plus a notice for the description."""
+        first, self._first = self._first, False
+        notice = ""
+        try:
+            try:
+                self._names = await self._client.async_list_subfolders(self.path)
+            except GraphNotFound:
+                if not self.path:
+                    raise
+                # The start folder does not exist (yet), or was removed meanwhile.
+                if not first:
+                    notice = "folder_not_found"
+                self.path = ""
+                self._names = await self._client.async_list_subfolders(self.path)
+        except (GraphError, aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.warning("Listing OneDrive folder %s failed: %s", self.display, err)
+            notice = "cannot_connect"
+            self._names = []
+
+        if self._german:
+            use, up = "✓ „{}“ verwenden", "⬆ Eine Ebene höher"
+            notices = {
+                "folder_not_found": "Ordner in OneDrive nicht gefunden",
+                "cannot_connect": "OneDrive nicht erreichbar",
+            }
+        else:
+            use, up = '✓ Use "{}"', "⬆ Up one level"
+            notices = {
+                "folder_not_found": "Folder not found in OneDrive",
+                "cannot_connect": "Could not reach OneDrive",
+            }
+        options = {f"{PICK_STEP}{PICK_USE}": use.format(self.display)}
+        if self.path:
+            options[f"{PICK_STEP}{PICK_UP}"] = up
+        options.update({f"{PICK_STEP}{i}": f"📁 {name}" for i, name in enumerate(self._names)})
+        return options, f"\n\n⚠️ {notices[notice]}" if notice else ""
 
 
-async def _async_check_folder(hass: HomeAssistant, token: str, folder: str) -> str | None:
-    """Return an error key, or None if the folder exists."""
+class _FolderMenu:
+    """Routes the picker's menu steps (``async_step_dir_*``) to ``_async_picked``."""
 
+    async def _async_picked(self, choice: str) -> ConfigFlowResult:
+        raise NotImplementedError
+
+    def __getattr__(self, name: str) -> Any:
+        prefix = f"async_step_{PICK_STEP}"
+        if not name.startswith(prefix):
+            raise AttributeError(name)
+        choice = name.removeprefix(prefix)
+
+        async def _step(user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+            return await self._async_picked(choice)
+
+        return _step
+
+
+def _static_token(token: str) -> TokenProvider:
     async def _token() -> str:
         return token
 
-    client = OneDriveClient(async_get_clientsession(hass), _token)
-    try:
-        await client.async_get_folder(folder)
-    except GraphNotFound:
-        return "folder_not_found"
-    except (GraphError, aiohttp.ClientError, TimeoutError) as err:
-        _LOGGER.warning("OneDrive folder check failed: %s", err)
-        return "cannot_connect"
-    return None
+    return _token
 
 
-class DjiFlightLogConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN):
+class DjiFlightLogConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, _FolderMenu, domain=DOMAIN):
     """Flight log (single instance) and OneDrive accounts for the recordings.
 
     The first "Add integration" sets up the flight log; once that exists,
@@ -142,6 +215,7 @@ class DjiFlightLogConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler,
         super().__init__()
         self._oauth_data: dict[str, Any] | None = None
         self._account = ""
+        self._picker: FolderPicker | None = None
 
     @property
     def logger(self) -> logging.Logger:
@@ -203,23 +277,33 @@ class DjiFlightLogConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler,
 
     async def async_step_onedrive_folder(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         assert self._oauth_data is not None
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            options = _normalize_media(user_input)
-            error = await _async_check_folder(
-                self.hass, self._oauth_data["token"]["access_token"], options[CONF_MEDIA_FOLDER]
-            )
-            if error:
-                errors[CONF_MEDIA_FOLDER] = error
-            else:
-                return self.async_create_entry(
-                    title=f"OneDrive ({self._account})", data=self._oauth_data, options=options
-                )
-        return self.async_show_form(
+        if self._picker is None:
+            token = _static_token(self._oauth_data["token"]["access_token"])
+            self._picker = FolderPicker(self.hass, token, DEFAULT_MEDIA_FOLDER)
+        options, notice = await self._picker.async_menu()
+        return self.async_show_menu(
             step_id="onedrive_folder",
-            data_schema=_media_schema(user_input or {}),
-            errors=errors,
-            description_placeholders={"account": self._account},
+            menu_options=options,
+            description_placeholders={
+                "account": self._account,
+                "path": self._picker.display,
+                "notice": notice,
+            },
+        )
+
+    async def _async_picked(self, choice: str) -> ConfigFlowResult:
+        assert self._picker is not None and self._oauth_data is not None
+        folder = self._picker.choose(choice)
+        if folder is None:
+            return await self.async_step_onedrive_folder()
+        return self.async_create_entry(
+            title=f"OneDrive ({self._account})",
+            data=self._oauth_data,
+            options={
+                CONF_MEDIA_FOLDER: folder,
+                CONF_MEDIA_SCAN_INTERVAL: DEFAULT_MEDIA_SCAN_INTERVAL,
+                CONF_MATCH_TOLERANCE: DEFAULT_MATCH_TOLERANCE,
+            },
         )
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
@@ -254,29 +338,60 @@ class DjiFlightLogOptionsFlow(OptionsFlow):
         return self.async_show_form(step_id="init", data_schema=_schema(defaults), errors=errors)
 
 
-class OneDriveOptionsFlow(OptionsFlow):
-    """Folder, sync interval and matching tolerance of a OneDrive entry."""
+class OneDriveOptionsFlow(OptionsFlow, _FolderMenu):
+    """Sync interval and matching tolerance of a OneDrive entry; the folder via the picker."""
+
+    def __init__(self) -> None:
+        self._options: dict[str, Any] = {}
+        self._picker: FolderPicker | None = None
+
+    @property
+    def _folder(self) -> str:
+        return str(self.config_entry.options.get(CONF_MEDIA_FOLDER, DEFAULT_MEDIA_FOLDER)).strip("/")
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        errors: dict[str, str] = {}
+        # Own step id: the translations for "init" are the flight log's options.
+        return await self.async_step_media()
+
+    async def async_step_media(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
-            options = _normalize_media(user_input)
+            self._options = {
+                **self.config_entry.options,
+                CONF_MEDIA_FOLDER: self._folder,
+                CONF_MEDIA_SCAN_INTERVAL: int(user_input[CONF_MEDIA_SCAN_INTERVAL]),
+                CONF_MATCH_TOLERANCE: int(user_input[CONF_MATCH_TOLERANCE]),
+            }
+            if user_input.get(CONF_CHANGE_FOLDER):
+                return await self.async_step_folder()
+            return self.async_create_entry(title="", data=self._options)
+        return self.async_show_form(
+            step_id="media",
+            data_schema=_media_schema(self.config_entry.options),
+            description_placeholders={"path": f"/{self._folder}"},
+        )
+
+    async def async_step_folder(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if self._picker is None:
             implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(
                 self.hass, self.config_entry
             )
             session = config_entry_oauth2_flow.OAuth2Session(self.hass, self.config_entry, implementation)
-            try:
-                await session.async_ensure_token_valid()
-            except aiohttp.ClientError:
-                errors["base"] = "cannot_connect"
-            else:
-                error = await _async_check_folder(
-                    self.hass, session.token["access_token"], options[CONF_MEDIA_FOLDER]
-                )
-                if error:
-                    errors[CONF_MEDIA_FOLDER] = error
-                else:
-                    return self.async_create_entry(title="", data=options)
 
-        defaults = {**self.config_entry.options, **(user_input or {})}
-        return self.async_show_form(step_id="init", data_schema=_media_schema(defaults), errors=errors)
+            async def _token() -> str:
+                await session.async_ensure_token_valid()
+                return session.token["access_token"]
+
+            self._picker = FolderPicker(self.hass, _token, self._folder)
+        options, notice = await self._picker.async_menu()
+        return self.async_show_menu(
+            step_id="folder",
+            menu_options=options,
+            description_placeholders={"path": self._picker.display, "notice": notice},
+        )
+
+    async def _async_picked(self, choice: str) -> ConfigFlowResult:
+        assert self._picker is not None
+        folder = self._picker.choose(choice)
+        if folder is None:
+            return await self.async_step_folder()
+        return self.async_create_entry(title="", data={**self._options, CONF_MEDIA_FOLDER: folder})

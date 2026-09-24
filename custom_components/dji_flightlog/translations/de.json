@@ -15,12 +15,7 @@
       },
       "onedrive_folder": {
         "title": "OneDrive-Ordner mit Aufnahmen",
-        "description": "Angemeldet als {account}. Ordner (relativ zum OneDrive-Stamm), in dem die Drohnenvideos und -fotos liegen, Unterordner inklusive. Eine Aufnahme wird einem Flug zugeordnet, wenn sich Aufnahme- und Flugzeit überschneiden.",
-        "data": {
-          "media_folder": "Ordner",
-          "media_scan_interval": "Sync-Intervall",
-          "match_tolerance": "Toleranz um einen Flug"
-        }
+        "description": "Angemeldet als {account}. Aktueller Ordner: **{path}**{notice}\n\nUnterordner per Klick öffnen, eine Ebene höher gehen oder den aktuellen Ordner übernehmen. Unterordner werden mitgelesen. Eine Aufnahme wird einem Flug zugeordnet, wenn sich Aufnahme- und Flugzeit überschneiden."
       },
       "reauth_confirm": {
         "title": "Erneut bei OneDrive anmelden",
@@ -61,11 +56,21 @@
           "scan_interval": "Scan-Intervall",
           "max_track_points": "Max. gespeicherte Punkte pro Track",
           "geo_location_limit": "Flüge als geo_location-Entities (0 = keine; sobald welche existieren, ergänzt Home Assistant das Standard-Dashboard um eine Karte)",
-          "sidebar_panel": "In der Seitenleiste anzeigen",
-          "media_folder": "OneDrive-Ordner",
-          "media_scan_interval": "Sync-Intervall",
-          "match_tolerance": "Toleranz um einen Flug"
+          "sidebar_panel": "In der Seitenleiste anzeigen"
         }
+      },
+      "media": {
+        "title": "OneDrive-Aufnahmen",
+        "description": "Ordner: **{path}**",
+        "data": {
+          "media_scan_interval": "Sync-Intervall",
+          "match_tolerance": "Toleranz um einen Flug",
+          "change_folder": "Anderen Ordner wählen"
+        }
+      },
+      "folder": {
+        "title": "OneDrive-Ordner mit Aufnahmen",
+        "description": "Aktueller Ordner: **{path}**{notice}\n\nUnterordner per Klick öffnen, eine Ebene höher gehen oder den aktuellen Ordner übernehmen. Unterordner werden mitgelesen."
       }
     },
     "error": {

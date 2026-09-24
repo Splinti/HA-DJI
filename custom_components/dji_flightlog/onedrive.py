@@ -47,11 +47,15 @@ class OneDriveClient:
         self._session = session
         self._token = token
 
-    async def _request(self, url: str, params: dict[str, str] | None = None) -> aiohttp.ClientResponse:
+    async def _request(
+        self, url: str, params: dict[str, str] | None = None, *, allow_redirects: bool = True
+    ) -> aiohttp.ClientResponse:
         if not url.startswith("http"):
             url = f"{GRAPH_URL}{url}"
         headers = {"Authorization": f"Bearer {await self._token()}"}
-        resp = await self._session.get(url, headers=headers, params=params, timeout=_TIMEOUT)
+        resp = await self._session.get(
+            url, headers=headers, params=params, timeout=_TIMEOUT, allow_redirects=allow_redirects
+        )
         if resp.status < 400:
             return resp
         try:
@@ -88,6 +92,19 @@ class OneDriveClient:
         if "folder" not in item:
             raise GraphNotFound(404, f"{path} is not a folder")
         return item
+
+    async def async_list_subfolders(self, path: str) -> list[str]:
+        """Names of the folders directly inside ``path`` ('' = root), sorted."""
+        folder = await self.async_get_folder(path)
+        names: list[str] = []
+        next_url: str | None = f"/me/drive/items/{folder['id']}/children"
+        params: dict[str, str] | None = {"$select": "id,name,folder", "$top": "999"}
+        while next_url:
+            page = await self._json(next_url, params)
+            params = None  # nextLink already carries the query
+            names.extend(child["name"] for child in page.get("value", []) if "folder" in child)
+            next_url = page.get("@odata.nextLink")
+        return sorted(names, key=str.casefold)
 
     # -- enumeration -------------------------------------------------------
 
@@ -165,9 +182,15 @@ class OneDriveClient:
             return await resp.read()
 
     async def async_download_url(self, item_id: str) -> str | None:
-        """Short-lived pre-authenticated URL of the file content (about 1 h)."""
-        item = await self._json(f"/me/drive/items/{item_id}", {"$select": "id,@microsoft.graph.downloadUrl"})
-        return item.get("@microsoft.graph.downloadUrl")
+        """Short-lived pre-authenticated URL of the file content (about 1 h).
+
+        Graph answers ``/content`` with a redirect to it. Asking for
+        ``@microsoft.graph.downloadUrl`` via ``$select`` returns nothing on a
+        personal OneDrive.
+        """
+        resp = await self._request(f"/me/drive/items/{item_id}/content", allow_redirects=False)
+        resp.release()
+        return resp.headers.get("Location")
 
 
 def normalize_item(raw: dict[str, Any]) -> dict[str, Any] | None:

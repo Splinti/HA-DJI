@@ -47,13 +47,13 @@ Zusammengehörige Dateien (gleicher Name ohne Endung, im selben Ordner) werden z
 1. *Einstellungen → Geräte & Dienste → Integration hinzufügen → DJI Flight Log*. Da das Flugbuch schon eingerichtet ist, startet jetzt die OneDrive-Anmeldung.
 2. Beim ersten Mal fragt HA nach den *Anwendungsanmeldedaten*: Client-ID und geheimen Schlüssel aus Schritt 1 eintragen.
 3. Bei Microsoft anmelden und den Lesezugriff bestätigen.
-4. Ordner angeben (relativ zum OneDrive-Stamm, Standard `Drohne/Medien`); Unterordner werden mitgelesen.
+4. Ordner wählen: Die Auswahl zeigt die Unterordner des aktuellen Ordners, ein Klick öffnet einen, „⬆ Eine Ebene höher“ geht zurück, „✓ … verwenden“ übernimmt den aktuellen Ordner. Sie startet in `Drohne/Medien`, falls es den Ordner gibt, sonst im OneDrive-Stamm. Unterordner werden mitgelesen.
 
 Optionen (später unter *Konfigurieren* änderbar):
 
 | Option | Default | Bedeutung |
 |---|---|---|
-| Ordner | `Drohne/Medien` | Wird rekursiv gelesen |
+| Ordner | `Drohne/Medien` | Wird rekursiv gelesen; ändern über „Anderen Ordner wählen“ |
 | Sync-Intervall | 900 s | Abgleich per Delta-Abfrage, d. h. nach dem ersten Mal werden nur Änderungen geladen |
 | Toleranz um einen Flug | 120 s | Aufnahmen, die kurz vor dem Start/nach der Landung beginnen, zählen noch zum Flug |
 

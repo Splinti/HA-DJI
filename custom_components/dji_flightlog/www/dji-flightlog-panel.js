@@ -503,6 +503,7 @@ class DjiFlightLogPanel extends HTMLElement {
 
   disconnectedCallback() {
     this._closePlayer();
+    this._details?.pause?.();
   }
 
   get _card() {
@@ -579,6 +580,7 @@ class DjiFlightLogPanel extends HTMLElement {
     saveView(view);
     for (const b of this.shadowRoot.querySelectorAll("nav.views button")) b.classList.toggle("on", b.dataset.view === view);
     for (const v of VIEWS) this.shadowRoot.getElementById(`v-${v}`).hidden = v !== view;
+    if (view !== "flight") this._details?.pause?.(); // a hidden video would keep playing
     if (view === "plan") {
       this._setupPlanCard();
       this._renderSpots();

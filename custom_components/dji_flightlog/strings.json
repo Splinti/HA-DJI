@@ -15,12 +15,7 @@
       },
       "onedrive_folder": {
         "title": "OneDrive folder with recordings",
-        "description": "Signed in as {account}. Folder (relative to the OneDrive root) that holds the drone videos and photos, subfolders included. Recordings are linked to a flight when their recording time overlaps the flight.",
-        "data": {
-          "media_folder": "Folder",
-          "media_scan_interval": "Sync interval",
-          "match_tolerance": "Tolerance around a flight"
-        }
+        "description": "Signed in as {account}. Current folder: **{path}**{notice}\n\nClick a subfolder to open it, go up one level or use the current folder. Subfolders are read as well. Recordings are linked to a flight when their recording time overlaps the flight."
       },
       "reauth_confirm": {
         "title": "Sign in to OneDrive again",
@@ -61,11 +56,21 @@
           "scan_interval": "Scan interval",
           "max_track_points": "Max. stored points per track",
           "geo_location_limit": "Flights exposed as geo_location entities (0 = none; any of them makes Home Assistant add a map to the auto-generated Overview dashboard)",
-          "sidebar_panel": "Show in sidebar",
-          "media_folder": "OneDrive folder",
-          "media_scan_interval": "Sync interval",
-          "match_tolerance": "Tolerance around a flight"
+          "sidebar_panel": "Show in sidebar"
         }
+      },
+      "media": {
+        "title": "OneDrive recordings",
+        "description": "Folder: **{path}**",
+        "data": {
+          "media_scan_interval": "Sync interval",
+          "match_tolerance": "Tolerance around a flight",
+          "change_folder": "Choose a different folder"
+        }
+      },
+      "folder": {
+        "title": "OneDrive folder with recordings",
+        "description": "Current folder: **{path}**{notice}\n\nClick a subfolder to open it, go up one level or use the current folder. Subfolders are read as well."
       }
     },
     "error": {
