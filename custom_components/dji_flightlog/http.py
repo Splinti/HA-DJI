@@ -79,6 +79,7 @@ class FlightsView(HomeAssistantView):
                 "flights": _filter_flights(coordinator, request.query),
                 "aircraft": {sn: a.as_dict() for sn, a in data.aircraft.items()},
                 "totals": data.totals.as_dict(),
+                "attention": data.attention,
                 "last_import": data.last_import,
                 "last_scan": data.last_scan,
             }
@@ -221,6 +222,26 @@ class SpotView(HomeAssistantView):
         return self.json({"deleted": spot_id})
 
 
+class AttentionDismissView(HomeAssistantView):
+    """Mark pre-flight notices as done: ``{"keys": [...]}``."""
+
+    url = f"{API_BASE}/attention/dismiss"
+    name = f"api:{DOMAIN}:attention_dismiss"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None or coordinator.data is None:
+            return self.json_message("Integration not ready", status_code=503)
+        try:
+            body = await request.json()
+            keys = [str(k) for k in body["keys"]]
+        except (ValueError, KeyError, TypeError):
+            return self.json_message('Expected {"keys": [...]}', status_code=400)
+        await coordinator.async_dismiss(keys)
+        return self.json({"attention": coordinator.data.attention})
+
+
 _UNSAFE_CHARS = re.compile(r"[^\w.()\[\] -]")
 
 
@@ -301,5 +322,6 @@ def async_register_views(hass: HomeAssistant) -> None:
         SpotsView,
         SpotView,
         UploadView,
+        AttentionDismissView,
     ):
         hass.http.register_view(view())

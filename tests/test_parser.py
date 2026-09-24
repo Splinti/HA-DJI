@@ -208,13 +208,14 @@ class Camera(SimpleNamespace):
     """Stand-in for pydjirecord's Camera record; _sd_card goes by the class name."""
 
 
-def _cam(total: int, free: int, state: str = "NORMAL", card: bool = True):
+def _cam(total: int, free: int, state: str = "NORMAL", card: bool = True, video_left: int = 0):
     return SimpleNamespace(
         data=Camera(
             has_sd_card=card,
             sd_card_total_capacity=total,
             sd_card_remain_capacity=free,
             sd_card_state=SimpleNamespace(name=state),
+            remain_video_timer=video_left,
         )
     )
 
@@ -227,8 +228,21 @@ def test_sd_card_from_records():
         _cam(42958, 5, "FULL"),
         _cam(42958, 5, "NORMAL"),
     ]
-    assert _sd_card(records) == {"sd_total_mb": 42958, "sd_free_mb": 5, "sd_full": True}
-    assert _sd_card([_cam(0, 0, card=False)]) == {}
+    assert _sd_card(records) == {"sd_total_mb": 42958, "sd_free_mb": 5, "sd_full": True, "sd_video_left_s": 0}
+    assert _sd_card([_cam(42958, 8492, video_left=547)])["sd_video_left_s"] == 547
+
+
+def test_sd_card_faults():
+    # Start-up states are no fault; a card that needs formatting or is too slow is.
+    records = [
+        _cam(0, 0, "INITIALIZE"),
+        _cam(30000, 20000, "SUGGEST_FORMAT"),
+        _cam(30000, 19000, "LOW_SPEED"),
+    ]
+    assert _sd_card(records)["sd_problems"] == ["SUGGEST_FORMAT", "LOW_SPEED"]
+    # Camera records, but never a card.
+    assert _sd_card([_cam(0, 0, card=False), _cam(0, 0, card=False)]) == {"sd_problems": ["NO_CARD"]}
+    assert _sd_card([SimpleNamespace(data=b"no camera at all")]) == {}
 
 
 def test_timeline_profile_modes_events():

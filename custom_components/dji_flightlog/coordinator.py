@@ -14,6 +14,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    ATTENTION_BATTERY_TEMP_C,
+    ATTENTION_BATTERY_WORN_PCT,
+    ATTENTION_CELL_DEVIATION_V,
+    ATTENTION_CELL_MIN_V,
+    ATTENTION_SD_VIDEO_LEFT_S,
     CONF_API_KEY,
     CONF_LOG_DIR,
     CONF_MAX_TRACK_POINTS,
@@ -35,7 +40,7 @@ from .const import (
     UPLOAD_IMPORTED,
     UPLOAD_RETRY,
 )
-from .parser import KeychainError, classify_log_file, parse_flight
+from .parser import INCIDENT_CRITICAL, INCIDENT_WARNING, KeychainError, classify_log_file, parse_flight
 from .storage import FlightStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -121,6 +126,8 @@ class FlightData:
     pending_files: int = 0
     unsupported: list[dict[str, Any]] = field(default_factory=list)
     log_dir_ok: bool = False
+    # Things to look at before the next flight, not yet marked as done.
+    attention: list[dict[str, Any]] = field(default_factory=list)
 
 
 class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
@@ -312,13 +319,25 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             self._fire_imported(result["flight"])
         # Publish without a rescan: the panel uploads file by file, and the
         # flight list (served from self.data) should grow with each one.
+        self._publish()
+        return result
+
+    def _publish(self) -> None:
+        """Push freshly aggregated data to the entities without scanning the folder."""
         data = self._aggregate()
         if self.data is not None:
             data.pending_files = self.data.pending_files
             data.last_scan = self.data.last_scan
         data.log_dir_ok = True
         self.async_set_updated_data(data)
-        return result
+
+    async def async_dismiss(self, keys: list[str]) -> None:
+        """Mark pre-flight notices as done; they stay hidden until a newer flight reports again."""
+        current = {item["key"] for item in attention_items(self._aggregate(include_dismissed=True))}
+        # Keys of notices that no longer exist are dropped, so the list stays short.
+        self.store.dismissed = sorted(current & (set(self.store.dismissed) | set(keys)))
+        await self.store.async_save()
+        self._publish()
 
     async def async_remove_flight(self, flight_id: str) -> bool:
         if flight_id not in self.store.flights:
@@ -358,7 +377,7 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         data.last_scan = datetime.now(UTC).isoformat()
         return data
 
-    def _aggregate(self) -> FlightData:
+    def _aggregate(self, *, include_dismissed: bool = False) -> FlightData:
         data = FlightData(flights=dict(self.store.flights))
         ordered = sorted(data.flights.values(), key=lambda f: f["start_time"])
         for f in ordered:
@@ -381,7 +400,7 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             # Prefer the latest known name for the aircraft.
             if f.get("aircraft_name"):
                 stats.name = f["aircraft_name"]
-            if f.get("sd_total_mb"):
+            if f.get("sd_total_mb") or f.get("sd_problems"):
                 stats.sd_flight = f
             if f.get("battery_sn"):
                 _add_battery_flight(data.batteries, f)
@@ -392,6 +411,8 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             for path, rec in sorted(self.store.files.items())
             if rec.get("status") == STATUS_UNSUPPORTED
         ]
+        dismissed = set() if include_dismissed else set(self.store.dismissed)
+        data.attention = [item for item in attention_items(data) if item["key"] not in dismissed]
         return data
 
 
@@ -415,3 +436,68 @@ def _add_battery_flight(batteries: dict[str, BatteryStats], f: dict[str, Any]) -
     ):
         if f.get(key) is not None:
             setattr(bat, attr, f[key])
+
+
+_LEVEL_ORDER = {"critical": 0, "warning": 1, "info": 2}
+
+
+def attention_items(data: FlightData) -> list[dict[str, Any]]:
+    """What to look at before the next flight.
+
+    Based on each aircraft's latest flight (incident, SD card) and each
+    battery's latest flight (temperature, cells, wear). An item's ``key``
+    names the notice and the flight it comes from, so a notice marked as done
+    comes back only when a newer flight reports it again.
+    """
+    items: list[dict[str, Any]] = []
+
+    def add(level: str, code: str, f: dict[str, Any], **extra: Any) -> None:
+        key = f"{code}:{f['flight_id']}" + (f":{extra['battery_sn']}" if extra.get("battery_sn") else "")
+        items.append(
+            {
+                "key": key,
+                "level": level,
+                "code": code,
+                "flight_id": f["flight_id"],
+                "start_time": f["start_time"],
+                "aircraft_name": f.get("aircraft_name") or "",
+                **extra,
+            }
+        )
+
+    for stats in data.aircraft.values():
+        f = stats.last
+        if f and f.get("incident") in (INCIDENT_WARNING, INCIDENT_CRITICAL):
+            add(f["incident"], "incident", f, actions=f.get("incident_actions") or [])
+        sd = stats.sd_flight
+        if not sd:
+            continue
+        if sd.get("sd_problems"):
+            add("warning", "sd_problem", sd, states=sd["sd_problems"])
+        left = sd.get("sd_video_left_s")
+        free = sd.get("sd_free_mb")
+        if sd.get("sd_full"):
+            add("warning", "sd_full", sd, free_mb=free, total_mb=sd.get("sd_total_mb"))
+        elif (left and left < ATTENTION_SD_VIDEO_LEFT_S) or (not left and free is not None and free < 2048):
+            add("info", "sd_low", sd, video_left_s=left, free_mb=free, total_mb=sd.get("sd_total_mb"))
+
+    for bat in data.batteries.values():
+        f = bat.last
+        if not f:
+            continue
+        sn = {"battery_sn": bat.sn}
+        temp = f.get("battery_temp_max_c")
+        if temp is not None and temp > ATTENTION_BATTERY_TEMP_C:
+            add("warning", "battery_hot", f, temp_c=temp, **sn)
+        low = f.get("battery_cell_min_v")
+        if low is not None and low < ATTENTION_CELL_MIN_V:
+            add("warning", "battery_deep_discharge", f, cell_min_v=low, **sn)
+        dev = f.get("battery_cell_dev_max_v")
+        if dev is not None and dev > ATTENTION_CELL_DEVIATION_V:
+            add("warning", "battery_cells", f, cell_dev_v=dev, **sn)
+        worn = [v for v in (bat.capacity_pct, bat.life_pct) if v is not None]
+        if worn and min(worn) < ATTENTION_BATTERY_WORN_PCT:
+            add("info", "battery_worn", f, capacity_pct=bat.capacity_pct, life_pct=bat.life_pct, **sn)
+
+    items.sort(key=lambda i: (_LEVEL_ORDER[i["level"]], i["start_time"]))
+    return items

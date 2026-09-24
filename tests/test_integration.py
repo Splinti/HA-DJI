@@ -549,6 +549,49 @@ async def test_incident_and_sd_card(hass: HomeAssistant, setup_entry):
     assert hass.states.get("sensor.dji_flight_log_sd_card_free") is None  # not on the totals
 
 
+async def test_pre_flight_notices(hass: HomeAssistant, setup_entry, hass_client):
+    """The latest flight's SD card and battery problems show up until marked as done."""
+    entry = await setup_entry(3)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert coordinator.data.attention == []  # the fake flights are all fine
+
+    flights = coordinator.store.flights
+    flights["flight0000"]["sd_full"] = True  # Neo, but superseded by its newer flight0002
+    flights["flight0002"].update(
+        sd_video_left_s=300,
+        battery_temp_max_c=63.6,
+        incident="warning",
+        incident_actions=["SMART_POWER_GO_HOME"],
+    )
+    coordinator._publish()
+    await hass.async_block_till_done()
+    codes = [(i["code"], i["flight_id"]) for i in coordinator.data.attention]
+    assert codes == [
+        ("incident", "flight0002"),
+        ("battery_hot", "flight0002"),
+        ("sd_low", "flight0002"),
+    ]
+    state = hass.states.get("sensor.dji_flight_log_pre_flight_notices")
+    assert state.state == "3" and state.attributes["worst"] == "warning"
+    assert state.attributes["items"][1]["battery_sn"] == "BAT0000"
+
+    client = await hass_client()
+    resp = await client.get(f"/api/{DOMAIN}/flights")
+    assert len((await resp.json())["attention"]) == 3
+
+    sd_key = coordinator.data.attention[2]["key"]
+    resp = await client.post(f"/api/{DOMAIN}/attention/dismiss", json={"keys": [sd_key, "gone:flight9999"]})
+    assert resp.status == 200
+    assert [i["code"] for i in (await resp.json())["attention"]] == ["incident", "battery_hot"]
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.dji_flight_log_pre_flight_notices").state == "2"
+    # Unknown keys are not kept.
+    assert coordinator.store.dismissed == [sd_key]
+
+    resp = await client.post(f"/api/{DOMAIN}/attention/dismiss", json={"nope": 1})
+    assert resp.status == 400
+
+
 async def test_battery_devices(hass: HomeAssistant, setup_entry):
     from homeassistant.helpers import device_registry as dr
     from homeassistant.helpers import entity_registry as er

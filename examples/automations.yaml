@@ -101,7 +101,7 @@
     problems: >-
       {% set p = [] %}
       {% if (f.battery_temp_max_c or 0) > 60 %}{% set p = p + ['max. ' ~ f.battery_temp_max_c ~ ' °C'] %}{% endif %}
-      {% if (f.battery_cell_dev_max_v or 0) > 0.1 %}{% set p = p + ['Zellabweichung ' ~ f.battery_cell_dev_max_v ~ ' V'] %}{% endif %}
+      {% if (f.battery_cell_dev_max_v or 0) > 0.2 %}{% set p = p + ['Zellabweichung ' ~ f.battery_cell_dev_max_v ~ ' V'] %}{% endif %}
       {% if f.battery_cell_min_v is not none and f.battery_cell_min_v < 3.0 %}{% set p = p + ['Zelle bis ' ~ f.battery_cell_min_v ~ ' V'] %}{% endif %}
       {{ p | join(', ') }}
   condition:

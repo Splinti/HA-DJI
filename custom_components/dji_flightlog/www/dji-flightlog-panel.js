@@ -26,6 +26,12 @@ function loadCard() {
   cardPromise ??= import(`${STATIC}/dji-flight-map-card.js${VERSION_QUERY}`);
   return cardPromise;
 }
+// The card module also holds the labels for flight controller actions.
+let cardModulePromise = null;
+function loadCardModule() {
+  cardModulePromise ??= import(`${STATIC}/dji-flight-map-card.js${VERSION_QUERY}`).catch(() => null);
+  return cardModulePromise;
+}
 let detailsPromise = null;
 function loadDetails() {
   detailsPromise ??= import(`${STATIC}/dji-flight-details.js${VERSION_QUERY}`);
@@ -278,6 +284,30 @@ class DjiFlightLogPanel extends HTMLElement {
         }
         .note a { color: inherit; }
 
+        #attention {
+          margin: 12px 16px 0; border-radius: var(--ha-card-border-radius, 12px); overflow: hidden;
+          background: var(--card-background-color, #fff);
+          box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,.08));
+        }
+        #attention[hidden] { display: none; }
+        #attention .ahead { display: flex; align-items: center; gap: 8px; padding: 10px 16px 4px; font-size: 14px; font-weight: 500; }
+        #attention .ahead span { flex: 1; }
+        #attention .item { display: flex; gap: 12px; align-items: flex-start; padding: 8px 16px; border-left: 4px solid var(--info-color, #039be5); }
+        #attention .item.warning { border-left-color: var(--warning-color, #ffa600); }
+        #attention .item.critical { border-left-color: var(--error-color, #db4437); }
+        #attention .item .ic { line-height: 0; color: var(--info-color, #039be5); padding-top: 1px; }
+        #attention .item.warning .ic { color: var(--warning-color, #ffa600); }
+        #attention .item.critical .ic { color: var(--error-color, #db4437); }
+        #attention .item .txt { flex: 1; min-width: 0; font-size: 14px; }
+        #attention .item .sub { font-size: 12px; color: var(--secondary-text-color); margin-top: 2px; }
+        #attention .item .sub a { color: var(--primary-color); cursor: pointer; }
+        #attention button.done {
+          flex: 0 0 auto; font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+          border: 1px solid var(--divider-color, #e0e0e0); background: none; color: var(--primary-text-color);
+        }
+        #attention button.done:hover { background: var(--secondary-background-color, #f2f2f2); }
+        #attention .item + .item { border-top: 1px solid var(--divider-color, #e0e0e0); }
+
         #upbar {
           margin: 12px 16px 0; padding: 10px 14px; border-radius: 8px; font-size: 13px;
           background: var(--card-background-color, #fff);
@@ -326,6 +356,7 @@ class DjiFlightLogPanel extends HTMLElement {
         <div id="note" hidden></div>
 
         <section class="view" id="v-flights" hidden>
+          <div id="attention" hidden></div>
           <div class="stats" id="stats"></div>
           <div class="filters">
             <label>Zeitraum
@@ -639,6 +670,7 @@ class DjiFlightLogPanel extends HTMLElement {
       this._renderStats();
       this._renderList();
       this._renderNote();
+      this._renderAttention();
       if (this._view === "flight") this._showDetails();
       else this._details?.setFlights(this._data.flights || []);
     } catch (err) {
@@ -883,6 +915,56 @@ class DjiFlightLogPanel extends HTMLElement {
     el.innerHTML = msgs.map((m) => `<div>${esc(m)}</div>`).join("");
   }
 
+  /** "Vor dem nächsten Flug": problems from each aircraft's and battery's latest flight. */
+  async _renderAttention() {
+    const box = this.shadowRoot.getElementById("attention");
+    const items = this._data?.attention || [];
+    box.hidden = !items.length;
+    if (!items.length) {
+      box.innerHTML = "";
+      return;
+    }
+    const labels = await loadCardModule();
+    const icon = {
+      critical: "M13,14H11V9H13M13,18H11V16H13M1,21H23L12,2L1,21Z",
+      warning: "M13,14H11V9H13M13,18H11V16H13M1,21H23L12,2L1,21Z",
+      info: "M13,9H11V7H13M13,17H11V11H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z",
+    };
+    box.innerHTML = `
+      <div class="ahead"><span>Vor dem nächsten Flug</span>${
+        items.length > 1 ? `<button class="done" data-all>Alle erledigt</button>` : ""
+      }</div>
+      ${items
+        .map(
+          (i) => `
+        <div class="item ${esc(i.level)}" data-key="${esc(i.key)}">
+          <div class="ic">${svg(icon[i.level] || icon.info)}</div>
+          <div class="txt">
+            <div>${esc(attentionText(i, labels))}</div>
+            <div class="sub">${esc(i.aircraft_name || "DJI")} · Flug ${esc(
+              fmtDate(i.start_time, { dateStyle: "short", timeStyle: "short" }),
+            )} · <a data-flight="${esc(i.flight_id)}">Details</a></div>
+          </div>
+          <button class="done" title="Als erledigt markieren: bleibt ausgeblendet, bis ein neuer Flug das Problem wieder meldet">Erledigt</button>
+        </div>`,
+        )
+        .join("")}`;
+    for (const a of box.querySelectorAll("a[data-flight]")) a.onclick = () => this._openDetails(a.dataset.flight);
+    for (const b of box.querySelectorAll(".item button.done")) b.onclick = () => this._dismiss([b.closest(".item").dataset.key]);
+    const all = box.querySelector("button[data-all]");
+    if (all) all.onclick = () => this._dismiss(items.map((i) => i.key));
+  }
+
+  async _dismiss(keys) {
+    try {
+      await this._hass.callApi("POST", `${API}/attention/dismiss`, { keys });
+    } catch (err) {
+      console.error("dji-flightlog-panel dismiss:", err);
+      return;
+    }
+    this._load();
+  }
+
   _renderStats() {
     const flights = this._data?.flights || [];
     const sum = (key) => flights.reduce((a, f) => a + (f[key] || 0), 0);
@@ -966,6 +1048,51 @@ class DjiFlightLogPanel extends HTMLElement {
       };
     }
   }
+}
+
+const SD_STATES = {
+  NO_CARD: "keine SD-Karte eingelegt",
+  INVALID_CARD: "Karte ungültig",
+  WRITE_PROTECTED: "Karte schreibgeschützt",
+  UNFORMATTED: "Karte nicht formatiert",
+  ILLEGAL_FILE_SYS: "falsches Dateisystem",
+  LOW_SPEED: "Karte zu langsam für die Aufnahme",
+  INDEX_MAX: "maximale Dateianzahl erreicht",
+  SUGGEST_FORMAT: "Formatieren empfohlen",
+  REPAIRING: "Karte wurde repariert",
+};
+const num = (v, digits = 0) =>
+  Number(v).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+function attentionText(i, labels) {
+  const bat = `Akku …${String(i.battery_sn || "").slice(-4)}`;
+  switch (i.code) {
+    case "incident": {
+      const what = (i.actions || []).map((a) => labels?.actionLabel?.(a) || a).join(", ");
+      return `${i.level === "critical" ? "Kritischer Vorfall" : "Warnung"} beim letzten Flug: ${what}.`;
+    }
+    case "sd_full":
+      return "SD-Karte war voll: leeren oder tauschen, sonst wird beim nächsten Flug nichts aufgezeichnet.";
+    case "sd_low":
+      return i.video_left_s
+        ? `SD-Karte fast voll: noch etwa ${Math.floor(i.video_left_s / 60)} min Video (${num(i.free_mb / 1024, 1)} GB frei).`
+        : `SD-Karte fast voll: ${num(i.free_mb / 1024, 1)} GB frei.`;
+    case "sd_problem":
+      return `SD-Karte: ${(i.states || []).map((st) => SD_STATES[st] || st).join(", ")}. Karte prüfen oder in der Drohne formatieren.`;
+    case "battery_hot":
+      return `${bat} wurde ${num(i.temp_c, 1)} °C heiß. Vor dem Laden abkühlen lassen.`;
+    case "battery_deep_discharge":
+      return `${bat}: eine Zelle fiel auf ${num(i.cell_min_v, 2)} V (tiefentladen). Bald laden und beim nächsten Flug früher landen.`;
+    case "battery_cells":
+      return `${bat}: die Zellen lagen bis ${num(i.cell_dev_v, 3)} V auseinander. Beim nächsten Laden beobachten.`;
+    case "battery_worn": {
+      const parts = [];
+      if (i.capacity_pct != null) parts.push(`Kapazität ${num(i.capacity_pct)} %`);
+      if (i.life_pct != null) parts.push(`Lebensdauer ${num(i.life_pct)} %`);
+      return `${bat} lässt nach: ${parts.join(", ")}.`;
+    }
+  }
+  return i.code;
 }
 
 /** Let a map card fill its flex area instead of using the card's fixed height. */

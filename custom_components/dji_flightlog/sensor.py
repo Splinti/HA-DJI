@@ -369,6 +369,7 @@ async def async_setup_entry(
                 UnsupportedFilesSensor(coordinator, entry),
                 AircraftCountSensor(coordinator, entry),
                 SavedSpotsSensor(coordinator, entry),
+                AttentionSensor(coordinator, entry),
             ]
         for sn in data.aircraft:
             if sn in known:
@@ -579,6 +580,35 @@ class AircraftCountSensor(_BaseSensor):
                 {"name": a.name, "sn": a.sn, "product_type": a.product_type, "flights": a.flights}
                 for a in self.coordinator.data.aircraft.values()
             ]
+        }
+
+
+class AttentionSensor(_BaseSensor):
+    """Pre-flight notices (SD card, battery, incidents) not yet marked as done; list in ``items``."""
+
+    _attr_translation_key = "attention"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _unrecorded_attributes = frozenset({"items"})
+
+    def __init__(self, coordinator: FlightLogCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_{TOTALS_ID}_attention"
+        self._attr_device_info = totals_device_info(entry)
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.data.attention)
+
+    @property
+    def icon(self) -> str:
+        return "mdi:alert-outline" if self.coordinator.data.attention else "mdi:check-circle-outline"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        items = self.coordinator.data.attention
+        return {
+            "items": items,
+            "worst": items[0]["level"] if items else None,
         }
 
 

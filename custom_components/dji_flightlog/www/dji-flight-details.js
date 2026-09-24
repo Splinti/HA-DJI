@@ -394,7 +394,7 @@ class DjiFlightDetails extends HTMLElement {
       f.battery_temp_max_c != null ? `${fmtNum(f.battery_temp_start_c, 1)} → max. ${fmtNum(f.battery_temp_max_c, 1, "°C")}` : "–";
     const hot = f.battery_temp_max_c != null && f.battery_temp_max_c > 60;
     const low = f.battery_cell_min_v != null && f.battery_cell_min_v < 3.0;
-    const drift = f.battery_cell_dev_max_v != null && f.battery_cell_dev_max_v > 0.1;
+    const drift = f.battery_cell_dev_max_v != null && f.battery_cell_dev_max_v > 0.2;
     const rows = [
       ["Seriennummer", f.battery_sn || "–"],
       ["Ladung", f.battery_start_pct != null ? `${f.battery_start_pct} → ${f.battery_end_pct} %` : "–"],

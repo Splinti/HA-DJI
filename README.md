@@ -57,6 +57,7 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge"** in der HA-Seitenleiste – kein Lovelace-Dashboard, sondern eine eigene Seite mit drei Ansichten. Die zuletzt gewählte merkt sich der Browser.
 
 **Flüge**
+- **Vor dem nächsten Flug**: oben eine Liste mit allem, was der letzte Flug jeder Drohne bzw. jedes Akkus gemeldet hat. Das sind Vorfälle (z. B. Smart-RTH), eine volle oder fast volle SD-Karte (weniger als 10 min Video), Kartenfehler (keine Karte, schreibgeschützt, zu langsam, Formatieren empfohlen, …) und Akkus, die über 60 °C warm wurden, unter 3,0 V pro Zelle entladen wurden, deren Zellen mehr als 0,2 V auseinanderlagen oder die unter 80 % Kapazität bzw. Lebensdauer liegen. „Erledigt“ blendet einen Hinweis aus, bis ein neuerer Flug ihn wieder meldet. Dieselbe Liste steht im Sensor „Hinweise vor dem nächsten Flug“ (Anzahl, Attribut `items`), z. B. für eine Benachrichtigung
 - Statistik-Kacheln (Flüge, Flugzeit, Strecke, max. Höhe/Speed, letzter Flug) über den gefilterten Zeitraum
 - Filter: Zeitraum (7 Tage … alles), Drohne (ab zwei Drohnen), Heatmap an/aus, DIPUL-Zonen an/aus
 - Große Karte, die die volle Höhe nutzt
@@ -150,7 +151,7 @@ Beispiele in [`examples/automations.yaml`](examples/automations.yaml):
 - Benachrichtigung bei neuem Flug
 - Rohdatei + GPX nach **OneDrive** hochladen (native `onedrive.upload`-Action)
 - GPX lokal unter `/share/dji/exports` ablegen
-- Akku-Warnung, wenn ein Akku über 60 °C warm wurde, die Zellen mehr als 0,1 V auseinanderlagen oder eine Zelle unter 3,0 V fiel
+- Akku-Warnung, wenn ein Akku über 60 °C warm wurde, die Zellen mehr als 0,2 V auseinanderlagen oder eine Zelle unter 3,0 V fiel
 
 Für `export_track` mit `path` muss der Zielordner in `allowlist_external_dirs` stehen:
 

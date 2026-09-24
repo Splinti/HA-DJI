@@ -128,6 +128,9 @@
       },
       "sd_free": {
         "name": "SD-Karte frei"
+      },
+      "attention": {
+        "name": "Hinweise vor dem nächsten Flug"
       }
     },
     "button": {

@@ -183,6 +183,8 @@ class FlightSummary:
     sd_total_mb: int | None = None
     sd_free_mb: int | None = None
     sd_full: bool | None = None
+    sd_video_left_s: int | None = None  # the camera's estimate of the recording time left
+    sd_problems: list[str] = field(default_factory=list)  # card states other than normal / full
     max_distance_m: float | None = None  # farthest point from home (or the takeoff)
     mode_time_s: dict[str, float] = field(default_factory=dict)  # seconds per flight mode
 
@@ -562,20 +564,41 @@ def _incident(frames: list[Any]) -> dict[str, Any]:
     return {"incident": level, "incident_actions": actions}
 
 
+# Card states that need no attention: fine, full (reported on its own) or
+# passing while the camera starts up or formats.
+_SD_OK_STATES = frozenset({"NORMAL", "FULL", "INITIALIZE", "FORMATTING"})
+
+
 def _sd_card(records: list[Any]) -> dict[str, Any]:
-    """SD card capacity and fill state from the last camera record that reports a card."""
+    """SD card capacity, fill state and faults from the camera records."""
     out: dict[str, Any] = {}
+    problems: list[str] = []
+    cameras = 0
+    card_seen = False
     for rec in records:
         cam = getattr(rec, "data", None)
-        if type(cam).__name__ != "Camera" or not cam.has_sd_card or not cam.sd_card_total_capacity:
+        if type(cam).__name__ != "Camera":
             continue
-        state = getattr(cam.sd_card_state, "name", "")
+        cameras += 1
+        if not cam.has_sd_card:
+            continue
+        card_seen = True
+        state = getattr(cam.sd_card_state, "name", "") or ""
+        if state and state not in _SD_OK_STATES and state not in problems:
+            problems.append(state)
+        if not cam.sd_card_total_capacity:
+            continue
         out = {
             "sd_total_mb": int(cam.sd_card_total_capacity),
             "sd_free_mb": int(cam.sd_card_remain_capacity),
+            "sd_video_left_s": int(getattr(cam, "remain_video_timer", 0) or 0),
             # Once full, stay full for this flight even if a later record says otherwise.
             "sd_full": out.get("sd_full", False) or state == "FULL",
         }
+    if cameras and not card_seen:
+        problems.append("NO_CARD")
+    if problems:
+        out["sd_problems"] = problems
     return out
 
 
