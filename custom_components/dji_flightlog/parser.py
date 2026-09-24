@@ -602,6 +602,12 @@ def _sd_card(records: list[Any]) -> dict[str, Any]:
     return out
 
 
+# A LiPo cell reading outside this range is not a reading: pydjirecord sizes the
+# cell list by the model's usual cell count and leaves missing cells at 0 V
+# (seen on a DJI Neo 2), which made its own deviation "3.66 V".
+_CELL_PLAUSIBLE_V = (2.0, 4.6)
+
+
 def _battery_health(frames: list[Any]) -> dict[str, Any]:
     """Smart battery figures for the flight; empty if the log carries none."""
     out: dict[str, Any] = {}
@@ -622,10 +628,11 @@ def _battery_health(frames: list[Any]) -> dict[str, Any]:
             out["battery_full_mah"] = int(bat.full_capacity) or None
             out["battery_design_mah"] = int(bat.design_capacity)
         if not bat.is_cell_voltage_estimated:
-            cells = [v for v in bat.cell_voltages if v > 0]
+            lo, hi = _CELL_PLAUSIBLE_V
+            cells = [v for v in bat.cell_voltages if lo <= v <= hi]
             if cells:
                 cell_min = min(cell_min, *cells)
-            dev_max = max(dev_max, float(bat.cell_voltage_deviation))
+                dev_max = max(dev_max, max(cells) - min(cells))
     if sn:
         out["battery_sn"] = sn
     if temps:

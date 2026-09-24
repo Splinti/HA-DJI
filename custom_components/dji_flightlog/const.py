@@ -28,7 +28,8 @@ STORAGE_VERSION = 1
 # 4: incident level and actions, SD card capacity.
 # 5: per-second profile, flight modes and events for the detail view; max distance.
 # 6: SD card faults and recording time left.
-PARSER_VERSION = 6
+# 7: cell deviation from plausible cell readings only (empty cells read 0 V).
+PARSER_VERSION = 7
 
 # "Before the next flight" checks on each aircraft's and battery's latest flight.
 ATTENTION_SD_VIDEO_LEFT_S = 600  # less recording time left than this
