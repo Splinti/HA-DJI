@@ -169,9 +169,30 @@ class DjiFlightLogPanel extends HTMLElement {
           background: var(--card-background-color, #fff); color: inherit;
           border: 1px solid var(--divider-color, #e0e0e0);
         }
+        .search { position: relative; flex: 1 1 240px; max-width: 420px; }
+        .search input {
+          width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 7px 10px;
+          border-radius: 8px; border: 1px solid var(--divider-color, #e0e0e0);
+          background: var(--card-background-color, #fff); color: inherit;
+        }
+        .search.busy input { opacity: 0.6; }
+        #results {
+          position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 5;
+          background: var(--card-background-color, #fff); border-radius: 8px; overflow: hidden;
+          box-shadow: 0 4px 12px rgba(0,0,0,.2); font-size: 13px;
+        }
+        #results[hidden] { display: none; }
+        #results button {
+          display: block; width: 100%; text-align: left; font: inherit; color: inherit;
+          background: none; border: none; padding: 8px 12px; cursor: pointer;
+        }
+        #results button:hover, #results button:focus { background: var(--secondary-background-color, #f2f2f2); outline: none; }
+        #results .msg, #results .src { padding: 8px 12px; color: var(--secondary-text-color); }
+        #results .src { font-size: 11px; padding-top: 4px; border-top: 1px solid var(--divider-color, #e0e0e0); }
 
         .body { flex: 1 1 auto; display: flex; gap: 12px; padding: 12px 16px 16px; min-height: 0; box-sizing: border-box; }
-        .mapwrap { flex: 1 1 auto; min-width: 0; min-height: 260px; display: flex; }
+        /* isolate: keeps Leaflet's pane z-indices (400+) below the search results. */
+        .mapwrap { flex: 1 1 auto; min-width: 0; min-height: 260px; display: flex; isolation: isolate; }
         .mapwrap dji-flight-map-card { flex: 1 1 auto; display: block; min-width: 0; min-height: 0; }
         aside {
           flex: 0 0 320px; display: flex; flex-direction: column; overflow: hidden;
@@ -261,6 +282,11 @@ class DjiFlightLogPanel extends HTMLElement {
         <div class="stats" id="stats"></div>
 
         <div class="filters">
+          <form class="search" id="search" role="search">
+            <input type="search" id="q" placeholder="PLZ, Ort, Adresse oder Koordinaten" autocomplete="off"
+              title="z. B. 80331, Marienplatz München, 48.13743, 11.57549 oder 48°08'14.7&quot;N 11°34'31.8&quot;E">
+            <div id="results" hidden></div>
+          </form>
           <label>Zeitraum
             <select id="range">${RANGES.map((r) => `<option value="${r.value}">${r.label}</option>`).join("")}</select>
           </label>
@@ -310,6 +336,7 @@ class DjiFlightLogPanel extends HTMLElement {
       this._filters.dipul = e.target.checked;
       this._card?.setDipul(e.target.checked);
     };
+    this._setupSearch();
     this.shadowRoot.getElementById("plan").onclick = () => this._setPlanning(!this._planning);
     for (const tab of this.shadowRoot.querySelectorAll(".tabs button")) {
       tab.onclick = () => this._setTab(tab.dataset.tab);
@@ -529,6 +556,92 @@ class DjiFlightLogPanel extends HTMLElement {
     }
   }
 
+  // -- search ---------------------------------------------------------------
+
+  _setupSearch() {
+    const form = this.shadowRoot.getElementById("search");
+    const input = this.shadowRoot.getElementById("q");
+    const results = this.shadowRoot.getElementById("results");
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      this._search(input.value);
+    };
+    input.oninput = () => {
+      results.hidden = true;
+      if (!input.value.trim()) this._card?.clearPlace?.(); // also the × of the field
+    };
+    const move = (e, from) => {
+      const items = [...results.querySelectorAll("button")];
+      if (e.key === "Escape") {
+        results.hidden = true;
+        input.focus();
+      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (results.hidden || !items.length) return;
+        e.preventDefault();
+        const i = items.indexOf(from) + (e.key === "ArrowDown" ? 1 : -1);
+        (i < 0 ? input : items[Math.min(i, items.length - 1)]).focus();
+      }
+    };
+    input.onkeydown = (e) => move(e, input);
+    results.onkeydown = (e) => move(e, e.target);
+    // A tap anywhere else closes the result list.
+    this.shadowRoot.addEventListener("pointerdown", (e) => {
+      if (!form.contains(e.target)) results.hidden = true;
+    });
+  }
+
+  async _search(text) {
+    text = text.trim();
+    const form = this.shadowRoot.getElementById("search");
+    if (!text || form.classList.contains("busy")) return;
+    const coords = parseCoords(text);
+    if (coords) {
+      this._showResults(null);
+      this._showPlace(coords);
+      return;
+    }
+    form.classList.add("busy");
+    try {
+      const places = await geocode(text, this._hass);
+      if (places.length === 1) {
+        this._showResults(null);
+        this._showPlace(places[0]);
+      } else {
+        this._showResults(places);
+      }
+    } catch (err) {
+      console.error("dji-flightlog-panel search:", err);
+      this._showResults([], `Suche fehlgeschlagen: ${err.message || err}`);
+    } finally {
+      form.classList.remove("busy");
+    }
+  }
+
+  _showResults(places, msg = null) {
+    const box = this.shadowRoot.getElementById("results");
+    if (!places) {
+      box.hidden = true;
+      return;
+    }
+    box.innerHTML = places.length
+      ? places.map((p, i) => `<button type="button" data-i="${i}">${esc(p.label)}</button>`).join("") +
+        `<div class="src">Suche: © OpenStreetMap-Mitwirkende (Nominatim)</div>`
+      : `<div class="msg">${esc(msg || "Nichts gefunden.")}</div>`;
+    for (const b of box.querySelectorAll("button")) {
+      b.onclick = () => {
+        box.hidden = true;
+        this._showPlace(places[Number(b.dataset.i)]);
+      };
+    }
+    box.hidden = false;
+  }
+
+  _showPlace(place) {
+    this._card?.showPlace?.(place);
+    // Phone: the map sits below the filters and may be scrolled out of view.
+    if (this._narrow) this.shadowRoot.querySelector(".mapwrap").scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
   // -- upload ---------------------------------------------------------------
 
   _setupDrop() {
@@ -730,6 +843,98 @@ function colorFor(flight, flights) {
     return PALETTE[flights.findIndex((f) => f.flight_id === flight.flight_id) % PALETTE.length];
   }
   return PALETTE[sns.indexOf(flight.aircraft_sn || "?") % PALETTE.length];
+}
+
+// Coordinates typed or pasted into the search: "48.13743, 11.57549",
+// "48,13743 11,57549", "N 48.13743 E 11.57549", "48°08'14.7"N 11°34'31.8"E"
+// (Google Maps) or a map link containing "@48.13743,11.57549". Returns
+// { lat, lon }, or null for anything else, which then goes to the geocoder.
+function parseCoords(text) {
+  const link = text.match(/[@=:](-?\d{1,2}\.\d+),\s*(-?\d{1,3}\.\d+)/);
+  if (link) return checkCoords(Number(link[1]), Number(link[2]));
+  const s = text.trim().toUpperCase().replace(/[′’‘´]/g, "'").replace(/[″”“]|''/g, '"');
+  const tokens = s.match(/[NSEWO]|[-+]?\d+(?:[.,]\d+)?|[°'"]|[\s,;/]+|./g) || [];
+  const parts = [];
+  let hemi = null; // a leading N/S/E/W/O, for the next number
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const cur = parts[parts.length - 1];
+    if (/^[\s,;/]+$/.test(t) || /^[°'"]$/.test(t)) continue; // units are read with their number
+    if (/^[NSEWO]$/.test(t)) {
+      if (hemi) return null;
+      if (cur && !cur.hemi) cur.hemi = t; // trailing: 48.1N
+      else hemi = t; // leading: N 48.1
+      continue;
+    }
+    if (!/\d/.test(t)) return null; // letters etc.: a place name
+    const n = Math.abs(Number(t.replace(",", ".")));
+    let j = i + 1;
+    while (/^\s+$/.test(tokens[j] || "")) j++;
+    const unit = { "'": 1, '"': 2 }[tokens[j]];
+    if (unit) {
+      // Minutes or seconds of the current degree value.
+      if (!cur || !cur.deg || cur.vals.length !== unit) return null;
+      cur.vals.push(n);
+    } else {
+      parts.push({ hemi, neg: t.startsWith("-"), deg: tokens[j] === "°", vals: [n] });
+      hemi = null;
+    }
+  }
+  if (hemi || parts.length !== 2) return null;
+  const value = (p) => {
+    const [d, m = 0, sec = 0] = p.vals;
+    if (m >= 60 || sec >= 60) return NaN;
+    const v = d + m / 60 + sec / 3600;
+    return p.neg || p.hemi === "S" || p.hemi === "W" ? -v : v;
+  };
+  const isLat = (p) => p.hemi === "N" || p.hemi === "S";
+  const isLon = (p) => !!p.hemi && !isLat(p);
+  let [a, b] = parts;
+  if (isLon(a) || isLat(b)) [a, b] = [b, a]; // "E 11.5 N 48.1"
+  if (isLon(a) || isLat(b)) return null; // two latitudes or two longitudes
+  return checkCoords(value(a), value(b));
+}
+
+function checkCoords(lat, lon) {
+  return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180
+    ? { lat, lon }
+    : null;
+}
+
+// OpenStreetMap's geocoder, queried from the browser like the DIPUL zones.
+// Its usage policy allows no search-as-you-type, so this only runs on Enter.
+const NOMINATIM = "https://nominatim.openstreetmap.org/search";
+
+async function geocode(text, hass) {
+  const base = { format: "jsonv2", limit: "5" };
+  if (hass?.language) base["accept-language"] = hass.language;
+  const queries = [];
+  // A bare postcode also matches house numbers and postcodes abroad, so ask
+  // for it as a postcode in HA's country first.
+  if (/^\d{4,5}$/.test(text)) {
+    queries.push({ postalcode: text, countrycodes: (hass?.config?.country || "de").toLowerCase() });
+  }
+  queries.push({ q: text });
+  for (const q of queries) {
+    const res = await fetch(`${NOMINATIM}?${new URLSearchParams({ ...base, ...q })}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const hits = await res.json();
+    if (hits.length) return hits.map(toPlace);
+  }
+  return [];
+}
+
+function toPlace(hit) {
+  const parts = String(hit.display_name || "").split(", ");
+  // Postcodes and house numbers make poor spot names: "80331 Altstadt-Lehel".
+  const name = hit.name && !/^\d+$/.test(hit.name) ? hit.name : parts.slice(0, 2).join(" ");
+  return {
+    lat: Number(hit.lat),
+    lon: Number(hit.lon),
+    label: hit.display_name,
+    name,
+    bbox: hit.boundingbox?.map(Number) || null, // [south, north, west, east]
+  };
 }
 
 function uploadProblem(r) {

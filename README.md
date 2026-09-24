@@ -56,6 +56,7 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 
 - Statistik-Kacheln (Flüge, Flugzeit, Strecke, max. Höhe/Speed, letzter Flug) über den gefilterten Zeitraum
 - Filter: Zeitraum (7 Tage … alles), Drohne (ab zwei Drohnen), Heatmap an/aus
+- **Suche** über der Karte: Postleitzahl, Ort, Adresse oder Koordinaten eingeben, Enter. Die Karte springt hin und setzt einen Marker, dessen Popup „Ort merken“ (Name schon vorbelegt) und Navigation anbietet. Koordinaten gehen in allen üblichen Schreibweisen: `48.13743, 11.57549`, `48,13743 11,57549`, `N 48.13743 E 11.57549`, `48°08'14.7"N 11°34'31.8"E` (so kopiert man sie aus Google Maps) oder ein Google-Maps-Link mit `@48.13743,11.57549`. Koordinaten werden lokal erkannt; alles andere fragt der Browser bei [Nominatim](https://nominatim.org) (OpenStreetMap) an, eine reine PLZ zuerst als Postleitzahl im Land der HA-Instanz
 - Große Karte, die die volle Höhe nutzt
 - Flugliste rechts (auf dem Handy darunter), nach Tagen gruppiert; Klick auf einen Flug zoomt auf ihn und hebt ihn hervor, nochmal klicken hebt die Auswahl auf
 - ↻-Button oben rechts scannt den Log-Ordner sofort
@@ -106,7 +107,7 @@ heatmap: true
 markers: true      # Startpunkte
 home: true         # Home-Punkte
 tiles: ha          # Start-Ebene: ha (HA-eigener OSM-Proxy, Default) | carto | satellite (Esri) | topo
-tile_switch: true  # Umschalter „Karte | Satellit“ oben rechts; die Wahl merkt sich der Browser
+tile_switch: true  # Umschalter „Karte | Satellit“ oben rechts; die Wahl merkt sich der Browser
 spot_on_click: false # Klick auf die Karte öffnet „Neuer Ort“ (im Panel immer an)
 height: 450
 ```

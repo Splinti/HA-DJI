@@ -218,6 +218,7 @@ const mapsUrl = (lat, lon) =>
 const PIN_PATH = "M12,2C8.13,2 5,5.13 5,9C5,14.25 12,22 12,22C12,22 19,14.25 19,9C19,5.13 15.87,2 12,2Z";
 const SPOT_COLOR = "#ff9800";
 const PLAN_COLOR = "#03a9f4";
+const SEARCH_COLOR = "#9c27b0";
 function spotIcon(L, color = SPOT_COLOR) {
   return L.divIcon({
     className: "dji-spot",
@@ -328,6 +329,7 @@ class DjiFlightMapCard extends HTMLElement {
     this._planning = false;
     this._planMarker = null;
     this._planSeq = 0;
+    this._placeMarker = null;
     this._hasFlights = false;
     // Callers set `hass`/`config` before this module is loaded (the panel
     // creates the card via innerHTML and imports it afterwards). Such an
@@ -441,6 +443,7 @@ class DjiFlightMapCard extends HTMLElement {
     this._dipulLayer = null;
     this._hintEl = null;
     this._planMarker = null;
+    this._placeMarker = null;
     tokenListeners.delete(this);
     this.shadowRoot.innerHTML = `
       <link rel="stylesheet" href="${STATIC}/leaflet.css">
@@ -830,6 +833,46 @@ class DjiFlightMapCard extends HTMLElement {
     marker.openPopup();
   }
 
+  /**
+   * Mark a search result on the map and zoom to it (``bbox`` is
+   * [south, north, west, east], as Nominatim returns it). The popup offers
+   * "Ort merken" with the name prefilled.
+   */
+  async showPlace({ lat, lon, label = "", name = "", bbox = null }) {
+    const map = await this._ensureMap();
+    if (!map) return;
+    const L = window.L;
+    this.clearPlace();
+    const bounds = bbox && L.latLngBounds([bbox[0], bbox[2]], [bbox[1], bbox[3]]);
+    if (bounds?.isValid() && !bounds.getNorthEast().equals(bounds.getSouthWest())) {
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
+    } else {
+      map.setView([lat, lon], Math.max(map.getZoom(), 16));
+    }
+    const marker = L.marker([lat, lon], { icon: spotIcon(L, SEARCH_COLOR), title: label, zIndexOffset: 500 });
+    const el = document.createElement("div");
+    el.innerHTML = `
+      ${label ? `<b>${esc(label)}</b>` : ""}
+      <div class="btns">
+        ${this._config.spots ? `<button class="save primary">Ort merken</button>` : ""}
+        <a href="${esc(mapsUrl(lat, lon))}" target="_blank" rel="noopener">Navigation</a>
+      </div>
+      <div class="small">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>`;
+    el.querySelector(".save")?.addEventListener("click", () => {
+      this.clearPlace(); // the "Neuer Ort" pin takes its place
+      this._openPlan({ latlng: L.latLng(lat, lon) }, { name });
+    });
+    marker.bindPopup(el, { minWidth: 200, maxWidth: 320 });
+    this._placeMarker = marker.addTo(map);
+    marker.openPopup();
+  }
+
+  /** Remove the search result marker. */
+  clearPlace() {
+    this._placeMarker?.remove();
+    this._placeMarker = null;
+  }
+
   async reloadSpots() {
     if (!this._hass || !this._config?.spots) return;
     try {
@@ -960,7 +1003,7 @@ class DjiFlightMapCard extends HTMLElement {
     this._clickTimer = setTimeout(() => this._openPlan(e), 250);
   }
 
-  _openPlan(e) {
+  _openPlan(e, { name: presetName = "" } = {}) {
     if (!this._map) return;
     const L = window.L;
     const { lat, lng } = e.latlng;
@@ -1007,6 +1050,7 @@ class DjiFlightMapCard extends HTMLElement {
     );
 
     const name = el.querySelector(".name");
+    name.value = presetName;
     const save = el.querySelector(".save");
     const submit = async () => {
       if (!name.value.trim()) {
