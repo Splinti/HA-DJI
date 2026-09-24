@@ -26,7 +26,8 @@ STORAGE_VERSION = 1
 #    exports use height above takeoff.
 # 3: smart battery serial, cycles, capacity, temperature and cell voltages.
 # 4: incident level and actions, SD card capacity.
-PARSER_VERSION = 4
+# 5: per-second profile, flight modes and events for the detail view; max distance.
+PARSER_VERSION = 5
 STORAGE_KEY = f"{DOMAIN}.flights"
 STORAGE_SUBDIR = DOMAIN  # <config>/.storage/dji_flightlog/tracks/<id>.json
 

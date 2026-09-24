@@ -41,6 +41,7 @@ class OSD:
     cumulative_distance: float = 0.0
     gps_level: int = 5
     flight_action: str | None = None
+    flyc_state: str | None = None
     is_motor_blocked: bool = False
 
 

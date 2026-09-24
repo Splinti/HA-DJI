@@ -99,19 +99,37 @@ def classify_log_file(path: Path, size: int) -> str | None:
     return None
 
 
+# The flight detail charts get one sample per second, and at most this many.
+_PROFILE_STEP_S = 1.0
+_PROFILE_MAX_SAMPLES = 1800
+
+
 @dataclass
 class FlightTrack:
-    """Downsampled GPS track of a single flight.
+    """Downsampled GPS track of a single flight, plus what the detail view charts.
 
     ``points`` are ``[lon, lat, altitude_m, height_m, t_offset_s, battery_pct]``
     so the JSON stays compact and directly usable by the map card.
+    ``profile`` holds equally long columns (``t``, ``height``, ``speed``,
+    ``dist``, ``battery``, ``temp``, ``lat``, ``lon``; ``None`` where a frame
+    had no reading), ``modes`` the flight mode segments ``[t_start, t_end,
+    mode]`` and ``events`` the flight controller actions ``[t, action]``.
     """
 
     points: list[list[float]] = field(default_factory=list)
     home: list[float] | None = None  # [lon, lat]
+    profile: dict[str, list[Any]] | None = None
+    modes: list[list[Any]] = field(default_factory=list)
+    events: list[list[Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
-        return {"points": self.points, "home": self.home}
+        return {
+            "points": self.points,
+            "home": self.home,
+            "profile": self.profile,
+            "modes": self.modes,
+            "events": self.events,
+        }
 
 
 @dataclass
@@ -165,6 +183,8 @@ class FlightSummary:
     sd_total_mb: int | None = None
     sd_free_mb: int | None = None
     sd_full: bool | None = None
+    max_distance_m: float | None = None  # farthest point from home (or the takeoff)
+    mode_time_s: dict[str, float] = field(default_factory=dict)  # seconds per flight mode
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -369,6 +389,10 @@ def summarize_frames(
         )
 
     track = FlightTrack(points=_downsample(raw_points, max_track_points), home=home)
+    timeline = _timeline(frames, fly_time_base if max_fly_time > 0 else None, first_time, home)
+    track.profile, track.modes, track.events = timeline["profile"], timeline["modes"], timeline["events"]
+    base["max_distance_m"] = timeline["max_distance_m"]
+    base["mode_time_s"] = timeline["mode_time_s"]
 
     if raw_points:
         base["takeoff_lon"], base["takeoff_lat"] = raw_points[0][0], raw_points[0][1]
@@ -401,6 +425,117 @@ def summarize_frames(
     base["points"] = len(track.points)
 
     return FlightSummary(status=STATUS_OK, **base), track
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlon / 2) ** 2
+    return 2 * 6371000.0 * math.asin(math.sqrt(a))
+
+
+def _name(value: Any) -> str | None:
+    """Enum member or plain string (test stand-ins) to its name."""
+    name = getattr(value, "name", value)
+    return name if isinstance(name, str) and name else None
+
+
+def _timeline(
+    frames: list[Any], fly_time_base: float | None, first_time: datetime | None, home: list[float] | None
+) -> dict[str, Any]:
+    """Per-second profile, flight mode segments, events and distance from home.
+
+    ``fly_time_base`` is None when the frames carry no flight time; the wall
+    clock timestamps are used then.
+    """
+    rows: list[tuple[Any, ...]] = []
+    for fr in frames:
+        osd = fr.osd
+        if fly_time_base is not None:
+            t = max(0.0, float(getattr(osd, "fly_time", 0.0) or 0.0) - fly_time_base)
+        else:
+            ts = getattr(fr.custom, "date_time", None)
+            if ts is None or ts.year <= 2000 or first_time is None:
+                continue
+            t = (ts - first_time).total_seconds()
+        fix = osd.gps_level >= _MIN_GPS_LEVEL and _valid_fix(osd.latitude, osd.longitude)
+        bat = fr.battery
+        has_bat = bool(getattr(bat, "voltage", 0.0))
+        rows.append(
+            (
+                t,
+                float(osd.height or 0.0),
+                float(osd.h_speed or 0.0),
+                osd.latitude if fix else None,
+                osd.longitude if fix else None,
+                int(bat.charge_level) if bat.charge_level else None,
+                float(bat.temperature) if has_bat else None,
+                _name(getattr(osd, "flyc_state", None)),
+                _name(getattr(osd, "flight_action", None)),
+            )
+        )
+
+    ref = (home[1], home[0]) if home else next(((r[3], r[4]) for r in rows if r[3] is not None), None)
+    dists = [
+        _haversine_m(ref[0], ref[1], r[3], r[4]) if ref is not None and r[3] is not None else None
+        for r in rows
+    ]
+
+    modes: list[list[Any]] = []
+    events: list[list[Any]] = []
+    prev_action: str | None = None
+    for r in rows:
+        t, mode, action = r[0], r[7], r[8]
+        if mode is not None:
+            if modes and modes[-1][2] == mode:
+                modes[-1][1] = t
+            else:
+                if modes:
+                    modes[-1][1] = t  # the previous mode lasts until this one starts
+                modes.append([t, t, mode])
+        if action and action != "NONE" and action != prev_action:
+            events.append([round(t, 1), action])
+        prev_action = action
+    mode_time: dict[str, float] = {}
+    for t0, t1, mode in modes:
+        mode_time[mode] = mode_time.get(mode, 0.0) + (t1 - t0)
+
+    picked: list[int] = []
+    next_t = -math.inf
+    for i, r in enumerate(rows):
+        if r[0] >= next_t:
+            picked.append(i)
+            next_t = r[0] + _PROFILE_STEP_S
+    if rows and picked[-1] != len(rows) - 1:
+        picked.append(len(rows) - 1)
+    picked = _downsample(picked, _PROFILE_MAX_SAMPLES)
+
+    def col(values: list[Any], digits: int | None) -> list[Any]:
+        return [None if v is None else (round(v, digits) if digits is not None else v) for v in values]
+
+    sel = [rows[i] for i in picked]
+    profile = (
+        {
+            "t": col([r[0] for r in sel], 1),
+            "height": col([r[1] for r in sel], 1),
+            "speed": col([r[2] for r in sel], 1),
+            "dist": col([dists[i] for i in picked], 0),
+            "battery": [r[5] for r in sel],
+            "temp": col([r[6] for r in sel], 1),
+            "lat": col([r[3] for r in sel], 6),
+            "lon": col([r[4] for r in sel], 6),
+        }
+        if sel
+        else None
+    )
+    known = [d for d in dists if d is not None]
+    return {
+        "profile": profile,
+        "modes": [[round(t0, 1), round(t1, 1), m] for t0, t1, m in modes],
+        "events": events,
+        "max_distance_m": round(max(known), 1) if known else None,
+        "mode_time_s": {m: round(s, 1) for m, s in mode_time.items()},
+    }
 
 
 def _incident(frames: list[Any]) -> dict[str, Any]:

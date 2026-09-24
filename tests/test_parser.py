@@ -231,6 +231,47 @@ def test_sd_card_from_records():
     assert _sd_card([_cam(0, 0, card=False)]) == {}
 
 
+def test_timeline_profile_modes_events():
+    frames = make_frames(100)
+    for i, f in enumerate(frames):
+        f.osd.flyc_state = "ASSISTED_TAKEOFF" if i < 5 else "GPS_SPORT" if 40 <= i < 60 else "GPS_GENTLE"
+        f.battery.voltage, f.battery.temperature = 16.0, 30.0 + i / 10
+    frames[70].osd.flight_action = "RC_ONEKEY_GO_HOME"
+    frames[71].osd.flight_action = "RC_ONEKEY_GO_HOME"  # still the same event
+    frames[90].osd.flight_action = "VERT_LOW_LIMIT_LANDING"
+    summary, track = summarize_frames(frames, dict(BASE), max_track_points=1000)
+
+    assert track.modes == [
+        [0.0, 5.0, "ASSISTED_TAKEOFF"],
+        [5.0, 40.0, "GPS_GENTLE"],
+        [40.0, 60.0, "GPS_SPORT"],
+        [60.0, 99.0, "GPS_GENTLE"],
+    ]
+    assert summary.mode_time_s == {"ASSISTED_TAKEOFF": 5.0, "GPS_GENTLE": 74.0, "GPS_SPORT": 20.0}
+    assert track.events == [[70.0, "RC_ONEKEY_GO_HOME"], [90.0, "VERT_LOW_LIMIT_LANDING"]]
+    # 0.0001° of latitude per second from the home point: ~11.1 m/s.
+    assert summary.max_distance_m == pytest.approx(99 * 11.12, rel=0.01)
+
+    p = track.profile
+    assert len(p["t"]) == 100  # 1 frame/s, so every frame is a sample
+    assert {len(v) for v in p.values()} == {100}
+    assert p["t"][:3] == [0.0, 1.0, 2.0]
+    assert p["height"][-1] == 60.0 and p["speed"][50] == 10.0
+    assert p["battery"][0] == 95 and p["temp"][10] == 31.0
+    assert p["dist"][0] == 0.0 and p["lat"][0] == pytest.approx(48.1)
+
+
+def test_timeline_samples_once_per_second():
+    frames = make_frames(300)
+    for i, f in enumerate(frames):
+        f.osd.fly_time = i / 10  # 10 Hz, like the real logs
+    _, track = summarize_frames(frames, dict(BASE), max_track_points=1000)
+    t = track.profile["t"]
+    assert len(t) == 31 and t[-1] == 29.9  # 0, 1, ..., 29 plus the last frame
+    # No battery record: no temperature, and no dist without GPS.
+    assert set(track.profile["temp"]) == {None}
+
+
 def test_fallback_duration_from_timestamps():
     frames = make_frames(10)
     for f in frames:
