@@ -169,6 +169,20 @@ def test_battery_health_from_frames():
     assert summary.battery_cell_dev_max_v == pytest.approx(0.196)
 
 
+def test_battery_health_ignores_empty_cells():
+    # Two real cells in a list sized for four: the empty ones read 0 V.
+    frames = make_frames(5)
+    for f in frames:
+        b = f.battery
+        b.voltage, b.design_capacity = 7.3, 1000
+        b.is_cell_voltage_estimated = False
+        b.cell_voltages = [3.66, 3.64, 0.0, 0.0]
+        b.cell_voltage_deviation = 3.66  # what pydjirecord reports for this
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert summary.battery_cell_dev_max_v == pytest.approx(0.02)
+    assert summary.battery_cell_min_v == 3.64
+
+
 def test_battery_health_absent():
     summary, _ = summarize_frames(make_frames(10), dict(BASE, battery_sn="HDR"), max_track_points=100)
     assert summary.battery_sn == "HDR"  # the header's serial survives

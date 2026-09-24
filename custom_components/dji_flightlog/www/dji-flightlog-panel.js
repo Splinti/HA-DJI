@@ -284,8 +284,11 @@ class DjiFlightLogPanel extends HTMLElement {
         }
         .note a { color: inherit; }
 
+        /* flex: none, or the column squeezes the box to make room for the map.
+           Many notices scroll inside the box instead of pushing the map away. */
         #attention {
-          margin: 12px 16px 0; border-radius: var(--ha-card-border-radius, 12px); overflow: hidden;
+          flex: 0 0 auto; max-height: 40vh; overflow-y: auto;
+          margin: 12px 16px 0; border-radius: var(--ha-card-border-radius, 12px);
           background: var(--card-background-color, #fff);
           box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,.08));
         }
