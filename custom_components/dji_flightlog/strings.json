@@ -117,6 +117,17 @@
       },
       "last_flight_cell_deviation": {
         "name": "Last flight max cell deviation"
+      },
+      "last_flight_incident": {
+        "name": "Last flight status",
+        "state": {
+          "ok": "OK",
+          "warning": "Warning",
+          "critical": "Critical"
+        }
+      },
+      "sd_free": {
+        "name": "SD card free"
       }
     },
     "button": {

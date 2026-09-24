@@ -18,6 +18,7 @@ from homeassistant.const import (
     PERCENTAGE,
     EntityCategory,
     UnitOfElectricPotential,
+    UnitOfInformation,
     UnitOfLength,
     UnitOfSpeed,
     UnitOfTemperature,
@@ -30,6 +31,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import AircraftStats, BatteryStats, FlightData, FlightLogCoordinator
+from .parser import INCIDENT_CRITICAL, INCIDENT_OK, INCIDENT_WARNING
 from .spots import maps_url, sorted_spots
 
 TOTALS_ID = "totals"
@@ -70,6 +72,8 @@ def _last_flight_attrs(stats: AircraftStats) -> dict[str, Any]:
         "battery_start_pct": f.get("battery_start_pct"),
         "battery_end_pct": f.get("battery_end_pct"),
         "battery_sn": f.get("battery_sn"),
+        "incident": f.get("incident"),
+        "incident_actions": f.get("incident_actions"),
         "photo_num": f.get("photo_num"),
         "video_time_s": f.get("video_time_s"),
         "track_points": f.get("points"),
@@ -205,6 +209,38 @@ STATS_SENSORS: tuple[FlightSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         value_fn=_battery_used,
     ),
+    FlightSensorDescription(
+        key="last_flight_incident",
+        translation_key="last_flight_incident",
+        icon="mdi:alert-circle-outline",
+        device_class=SensorDeviceClass.ENUM,
+        options=[INCIDENT_OK, INCIDENT_WARNING, INCIDENT_CRITICAL],
+        value_fn=lambda s: _last(s, "incident"),
+        attrs_fn=lambda s: {"actions": _last(s, "incident_actions") or []},
+    ),
+)
+
+
+def _sd_attrs(stats: AircraftStats) -> dict[str, Any]:
+    f = stats.sd_flight
+    if not f:
+        return {}
+    return {"total_mb": f.get("sd_total_mb"), "full": f.get("sd_full"), "as_of": f.get("end_time")}
+
+
+# Only on the aircraft devices: the totals would mix several drones' cards.
+AIRCRAFT_SENSORS: tuple[FlightSensorDescription, ...] = (
+    FlightSensorDescription(
+        key="sd_free",
+        translation_key="sd_free",
+        icon="mdi:micro-sd",
+        device_class=SensorDeviceClass.DATA_SIZE,
+        native_unit_of_measurement=UnitOfInformation.MEGABYTES,
+        suggested_unit_of_measurement=UnitOfInformation.GIGABYTES,
+        suggested_display_precision=1,
+        value_fn=lambda s: s.sd_flight.get("sd_free_mb") if s.sd_flight else None,
+        attrs_fn=_sd_attrs,
+    ),
 )
 
 
@@ -338,7 +374,7 @@ async def async_setup_entry(
             if sn in known:
                 continue
             known.add(sn)
-            new += [AircraftSensor(coordinator, entry, sn, d) for d in STATS_SENSORS]
+            new += [AircraftSensor(coordinator, entry, sn, d) for d in STATS_SENSORS + AIRCRAFT_SENSORS]
         for sn in data.batteries:
             key = f"battery_{sn}"
             if key in known:

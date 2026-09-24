@@ -30,6 +30,41 @@ _LOGGER = logging.getLogger(__name__)
 # Minimum GPS quality for a frame to count as a valid fix.
 _MIN_GPS_LEVEL = 3
 
+# Flight controller actions that mean something went wrong, by severity. Same
+# split as pydjirecord's anomaly check, whose other rules are left out: it
+# rates a descent faster than 10 m/s as critical, which is an ordinary dive
+# for an FPV drone.
+INCIDENT_CRITICAL = "critical"
+INCIDENT_WARNING = "warning"
+INCIDENT_OK = "ok"
+_CRITICAL_ACTIONS = frozenset(
+    {
+        "OUT_OF_CONTROL_GO_HOME",
+        "BATTERY_FORCE_LANDING",
+        "SERIOUS_LOW_VOLTAGE_LANDING",
+        "MOTORBLOCK_LANDING",
+        "FAKE_BATTERY_LANDING",
+        "RTH_COMING_OBSTACLE_LANDING",
+        "IMU_ERROR_RTH",
+        "MC_PROTECT_GO_HOME",
+    }
+)
+_WARNING_ACTIONS = frozenset(
+    {
+        "WARNING_POWER_GO_HOME",
+        "WARNING_POWER_LANDING",
+        "SMART_POWER_GO_HOME",
+        "SMART_POWER_LANDING",
+        "LOW_VOLTAGE_LANDING",
+        "LOW_VOLTAGE_GO_HOME",
+        "AVOID_GROUND_LANDING",
+        "AIRPORT_AVOID_LANDING",
+        "TOO_CLOSE_GO_HOME_LANDING",
+        "TOO_FAR_GO_HOME_LANDING",
+        "APP_REQUEST_FORCE_LANDING",
+    }
+)
+
 
 class KeychainError(Exception):
     """Fetching the DJI decryption keychain failed (network / API key)."""
@@ -123,6 +158,13 @@ class FlightSummary:
     battery_temp_max_c: float | None = None
     battery_cell_min_v: float | None = None
     battery_cell_dev_max_v: float | None = None
+    # ok / warning / critical, plus the flight controller actions behind it
+    incident: str | None = None
+    incident_actions: list[str] = field(default_factory=list)
+    # SD card at the end of the flight (MB, as the camera reports it)
+    sd_total_mb: int | None = None
+    sd_free_mb: int | None = None
+    sd_full: bool | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -251,12 +293,18 @@ def parse_flight(
         except Exception as err:
             raise KeychainError(f"keychain fetch failed for {path.name}: {err}") from err
 
+    from pydjirecord.frame.builder import records_to_frames
+
     try:
-        frames = log.frames(keychains)
+        # Records, not log.frames(): the SD card's capacity is only in the raw
+        # camera records, and decrypting the log twice would double the work.
+        records = log.records(keychains)
+        frames = records_to_frames(records, details)
     except Exception as err:
         _LOGGER.warning("Frame decoding failed for %s: %s", path.name, err)
         return FlightSummary(status=STATUS_FAILED, error=str(err), **base), None
 
+    base.update(_sd_card(records))
     return summarize_frames(frames, base, max_track_points)
 
 
@@ -345,6 +393,7 @@ def summarize_frames(
     base["battery_start_pct"] = battery_start
     base["battery_end_pct"] = battery_end
     base.update(_battery_health(frames))
+    base.update(_incident(frames))
     base["video_time_s"] = _video_time(frames)
     photos = _photo_count(frames)
     if photos is not None:
@@ -352,6 +401,47 @@ def summarize_frames(
     base["points"] = len(track.points)
 
     return FlightSummary(status=STATUS_OK, **base), track
+
+
+def _incident(frames: list[Any]) -> dict[str, Any]:
+    """Worst flight controller action of the flight (RTH on low battery, forced landing, ...)."""
+    actions: list[str] = []
+    motor_blocked = False
+    for fr in frames:
+        osd = fr.osd
+        action = getattr(osd, "flight_action", None)
+        name = getattr(action, "name", action)
+        if name and (name in _CRITICAL_ACTIONS or name in _WARNING_ACTIONS) and name not in actions:
+            actions.append(name)
+        # In the air only; a blocked motor on the ground is a failed start.
+        if getattr(osd, "is_motor_blocked", False) and float(osd.height or 0.0) > 1.0:
+            motor_blocked = True
+    if motor_blocked and "MOTOR_BLOCKED" not in actions:
+        actions.append("MOTOR_BLOCKED")
+    if motor_blocked or any(a in _CRITICAL_ACTIONS for a in actions):
+        level = INCIDENT_CRITICAL
+    elif actions:
+        level = INCIDENT_WARNING
+    else:
+        level = INCIDENT_OK
+    return {"incident": level, "incident_actions": actions}
+
+
+def _sd_card(records: list[Any]) -> dict[str, Any]:
+    """SD card capacity and fill state from the last camera record that reports a card."""
+    out: dict[str, Any] = {}
+    for rec in records:
+        cam = getattr(rec, "data", None)
+        if type(cam).__name__ != "Camera" or not cam.has_sd_card or not cam.sd_card_total_capacity:
+            continue
+        state = getattr(cam.sd_card_state, "name", "")
+        out = {
+            "sd_total_mb": int(cam.sd_card_total_capacity),
+            "sd_free_mb": int(cam.sd_card_remain_capacity),
+            # Once full, stay full for this flight even if a later record says otherwise.
+            "sd_full": out.get("sd_full", False) or state == "FULL",
+        }
+    return out
 
 
 def _battery_health(frames: list[Any]) -> dict[str, Any]:

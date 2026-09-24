@@ -50,6 +50,9 @@ def _fake_parse(path: Path, *, api_key, max_track_points, now=None):
         battery_temp_max_c=50.0 + idx,
         battery_cell_min_v=3.4,
         battery_cell_dev_max_v=0.05,
+        sd_total_mb=42958,
+        sd_free_mb=10000 - idx * 1000,
+        sd_full=False,
     )
     return summarize_frames(make_frames(50 + idx, start=start), base, max_track_points)
 
@@ -532,6 +535,18 @@ async def test_lovelace_resource_registered(hass: HomeAssistant, setup_entry):
         await hass.async_block_till_done()
     urls = [r["url"] for r in resources.async_items()]
     assert sum(u.startswith("/dji_flightlog_static/") for u in urls) == 1
+
+
+async def test_incident_and_sd_card(hass: HomeAssistant, setup_entry):
+    await setup_entry(3)
+    incident = hass.states.get("sensor.dji_flight_log_last_flight_status")
+    assert incident.state == "ok" and incident.attributes["actions"] == []
+    assert incident.attributes["options"] == ["ok", "warning", "critical"]
+    # The Neo flew flights 0 and 2; its card reading is the one from flight 2.
+    sd = hass.states.get("sensor.neo_sd_card_free")
+    assert float(sd.state) == pytest.approx(8.0)  # 8000 MB shown in GB
+    assert sd.attributes["total_mb"] == 42958
+    assert hass.states.get("sensor.dji_flight_log_sd_card_free") is None  # not on the totals
 
 
 async def test_battery_devices(hass: HomeAssistant, setup_entry):

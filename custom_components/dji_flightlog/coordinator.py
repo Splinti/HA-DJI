@@ -74,6 +74,8 @@ class AircraftStats:
     max_h_speed_ms: float = 0.0
     last: dict[str, Any] | None = None
     first_flight: str | None = None
+    # Latest flight that reported an SD card (per aircraft only).
+    sd_flight: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -379,6 +381,8 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             # Prefer the latest known name for the aircraft.
             if f.get("aircraft_name"):
                 stats.name = f["aircraft_name"]
+            if f.get("sd_total_mb"):
+                stats.sd_flight = f
             if f.get("battery_sn"):
                 _add_battery_flight(data.batteries, f)
         imported = [f["imported_at"] for f in data.flights.values() if f.get("imported_at")]

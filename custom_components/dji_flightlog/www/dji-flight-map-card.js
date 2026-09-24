@@ -301,6 +301,31 @@ const fmtDur = (s) => {
 const fmtDist = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m || 0)} m`);
 const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+// Flight controller actions behind a flight's "incident" (see parser.py).
+const INCIDENT_LABELS = {
+  OUT_OF_CONTROL_GO_HOME: "RTH nach Verbindungsverlust",
+  BATTERY_FORCE_LANDING: "Zwangslandung (Akku)",
+  SERIOUS_LOW_VOLTAGE_LANDING: "Landung, Spannung kritisch",
+  MOTORBLOCK_LANDING: "Landung, Motor blockiert",
+  FAKE_BATTERY_LANDING: "Landung, Akku nicht erkannt",
+  RTH_COMING_OBSTACLE_LANDING: "Landung, Hindernis beim RTH",
+  IMU_ERROR_RTH: "RTH wegen IMU-Fehler",
+  MC_PROTECT_GO_HOME: "RTH (Schutzfunktion)",
+  WARNING_POWER_GO_HOME: "RTH, Akku niedrig",
+  WARNING_POWER_LANDING: "Landung, Akku niedrig",
+  SMART_POWER_GO_HOME: "Smart-RTH (Akku)",
+  SMART_POWER_LANDING: "Smart-Landung (Akku)",
+  LOW_VOLTAGE_LANDING: "Landung, Spannung niedrig",
+  LOW_VOLTAGE_GO_HOME: "RTH, Spannung niedrig",
+  AVOID_GROUND_LANDING: "Landung (Bodenschutz)",
+  AIRPORT_AVOID_LANDING: "Landung (Flughafennähe)",
+  TOO_CLOSE_GO_HOME_LANDING: "Landung statt RTH (zu nah)",
+  TOO_FAR_GO_HOME_LANDING: "Landung statt RTH (zu weit)",
+  APP_REQUEST_FORCE_LANDING: "Zwangslandung (App)",
+  MOTOR_BLOCKED: "Motor blockiert",
+};
+const incidentText = (f) => (f.incident_actions || []).map((a) => INCIDENT_LABELS[a] || a).join(", ");
+
 class DjiFlightMapCard extends HTMLElement {
   static getStubConfig() {
     return { mode: "all", heatmap: false, days: 365 };
@@ -1105,6 +1130,9 @@ class DjiFlightMapCard extends HTMLElement {
       ["Max. Speed", `${((f.max_h_speed_ms || 0) * 3.6).toFixed(1)} km/h`],
     ];
     if (f.battery_start_pct != null && f.battery_end_pct != null) rows.push(["Akku", `${f.battery_start_pct}% → ${f.battery_end_pct}%`]);
+    if (f.battery_temp_max_c != null) rows.push(["Akku-Temp.", `max. ${Math.round(f.battery_temp_max_c)} °C`]);
+    if (f.incident && f.incident !== "ok") rows.push([f.incident === "critical" ? "Kritisch" : "Warnung", incidentText(f)]);
+    if (f.sd_full) rows.push(["SD-Karte", "voll"]);
     if (f.city) rows.push(["Ort", f.city]);
     const exports = f.points
       ? `<div class="links">${["gpx", "kml", "geojson"].map((x) => `<a data-fmt="${x}">${x.toUpperCase()}</a>`).join("")}</div>`

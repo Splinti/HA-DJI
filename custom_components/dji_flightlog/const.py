@@ -25,7 +25,8 @@ STORAGE_VERSION = 1
 # 2: duration/track offsets per log (not since power-on), video time from frames,
 #    exports use height above takeoff.
 # 3: smart battery serial, cycles, capacity, temperature and cell voltages.
-PARSER_VERSION = 3
+# 4: incident level and actions, SD card capacity.
+PARSER_VERSION = 4
 STORAGE_KEY = f"{DOMAIN}.flights"
 STORAGE_SUBDIR = DOMAIN  # <config>/.storage/dji_flightlog/tracks/<id>.json
 

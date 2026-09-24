@@ -20,6 +20,7 @@ from custom_components.dji_flightlog.const import (
 from custom_components.dji_flightlog.parser import (
     KeychainError,
     _downsample,
+    _sd_card,
     classify_log_file,
     parse_flight,
     summarize_frames,
@@ -176,6 +177,60 @@ def test_battery_health_absent():
     assert summary.battery_cell_min_v is None
 
 
+def test_incident_levels():
+    summary, _ = summarize_frames(make_frames(10), dict(BASE), max_track_points=100)
+    assert (summary.incident, summary.incident_actions) == ("ok", [])
+
+    frames = make_frames(10)
+    frames[3].osd.flight_action = "RC_ONEKEY_GO_HOME"  # pilot pressed RTH: no incident
+    frames[5].osd.flight_action = "SMART_POWER_GO_HOME"
+    frames[6].osd.flight_action = "SMART_POWER_GO_HOME"
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert (summary.incident, summary.incident_actions) == ("warning", ["SMART_POWER_GO_HOME"])
+
+    frames[8].osd.flight_action = "BATTERY_FORCE_LANDING"
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert summary.incident == "critical"
+    assert summary.incident_actions == ["SMART_POWER_GO_HOME", "BATTERY_FORCE_LANDING"]
+
+
+def test_incident_motor_blocked_only_in_the_air():
+    frames = make_frames(10)
+    frames[0].osd.is_motor_blocked = True  # height 0: failed start, not an incident
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert summary.incident == "ok"
+    frames[5].osd.is_motor_blocked = True
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert (summary.incident, summary.incident_actions) == ("critical", ["MOTOR_BLOCKED"])
+
+
+class Camera(SimpleNamespace):
+    """Stand-in for pydjirecord's Camera record; _sd_card goes by the class name."""
+
+
+def _cam(total: int, free: int, state: str = "NORMAL", card: bool = True):
+    return SimpleNamespace(
+        data=Camera(
+            has_sd_card=card,
+            sd_card_total_capacity=total,
+            sd_card_remain_capacity=free,
+            sd_card_state=SimpleNamespace(name=state),
+        )
+    )
+
+
+def test_sd_card_from_records():
+    records = [
+        SimpleNamespace(data=b"unparsed"),
+        _cam(0, 0, card=False),
+        _cam(42958, 8492),
+        _cam(42958, 5, "FULL"),
+        _cam(42958, 5, "NORMAL"),
+    ]
+    assert _sd_card(records) == {"sd_total_mb": 42958, "sd_free_mb": 5, "sd_full": True}
+    assert _sd_card([_cam(0, 0, card=False)]) == {}
+
+
 def test_fallback_duration_from_timestamps():
     frames = make_frames(10)
     for f in frames:
@@ -189,9 +244,13 @@ class _FakeDetails(SimpleNamespace):
 
 
 def _patched(fake):
-    """Swap in a stub pydjirecord module exposing only ``DJILog.from_bytes``."""
+    """Swap in a stub pydjirecord: ``DJILog.from_bytes`` and a pass-through frame builder."""
     return patch.dict(
-        "sys.modules", {"pydjirecord": SimpleNamespace(DJILog=SimpleNamespace(from_bytes=lambda b: fake()))}
+        "sys.modules",
+        {
+            "pydjirecord": SimpleNamespace(DJILog=SimpleNamespace(from_bytes=lambda b: fake())),
+            "pydjirecord.frame.builder": SimpleNamespace(records_to_frames=lambda records, details: records),
+        },
     )
 
 
@@ -227,7 +286,8 @@ def _fake_log(version: int, frames: list[Frame] | None = None, fail_keychain: bo
             assert api_key == "KEY"
             return [["kc"]]
 
-        def frames(self, keychains):
+        def records(self, keychains):
+            # The stub builder passes records through, so these double as frames.
             if version >= 13:
                 assert keychains == [["kc"]]
             return frames or []
@@ -254,6 +314,7 @@ def test_parse_flight_header_only_without_key(tmp_path):
     assert summary.city == "München"
     assert summary.photo_num == 3
     assert summary.video_time_s is None  # the header value is not a duration
+    assert summary.incident is None  # unknown without the frames
     assert summary.battery_sn == "A4SPNBJDA101JD"  # readable without the key
     assert len(summary.flight_id) == 16
 

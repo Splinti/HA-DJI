@@ -222,6 +222,7 @@ class DjiFlightLogPanel extends HTMLElement {
         .row .t { font-size: 14px; }
         .row .d { font-size: 12px; color: var(--secondary-text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .row .warn { font-size: 11px; color: var(--warning-color, #ffa600); }
+        .row .warn.crit { color: var(--error-color, #db4437); }
         .row .pin { flex: 0 0 auto; color: #ff9800; line-height: 0; }
         .row .act { flex: 0 0 auto; display: inline-flex; color: var(--secondary-text-color); padding: 6px; border-radius: 50%; background: none; border: none; cursor: pointer; line-height: 0; }
         .row .act:hover { background: var(--divider-color, #e0e0e0); color: var(--primary-text-color); }
@@ -817,6 +818,14 @@ class DjiFlightLogPanel extends HTMLElement {
               f.city ? ` · ${esc(f.city)}` : ""
             }</div>
             ${f.status === "header_only" ? `<div class="warn">kein GPS-Track</div>` : ""}
+            ${
+              f.incident === "critical" || f.incident === "warning"
+                ? `<div class="warn${f.incident === "critical" ? " crit" : ""}" title="${esc((f.incident_actions || []).join(", "))}">${
+                    f.incident === "critical" ? "Kritischer Vorfall" : "Warnung"
+                  }</div>`
+                : ""
+            }
+            ${f.sd_full ? `<div class="warn">SD-Karte voll</div>` : ""}
           </div>
         </div>`;
     }
