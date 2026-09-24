@@ -1,4 +1,4 @@
-"""Sensors: totals for the whole logbook and per-aircraft statistics."""
+"""Sensors: totals for the whole logbook, per-aircraft and per-battery statistics."""
 
 from __future__ import annotations
 
@@ -14,14 +14,22 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfLength, UnitOfSpeed, UnitOfTime
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfElectricPotential,
+    UnitOfLength,
+    UnitOfSpeed,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import AircraftStats, FlightData, FlightLogCoordinator
+from .coordinator import AircraftStats, BatteryStats, FlightData, FlightLogCoordinator
 from .spots import maps_url, sorted_spots
 
 TOTALS_ID = "totals"
@@ -61,6 +69,7 @@ def _last_flight_attrs(stats: AircraftStats) -> dict[str, Any]:
         "city": f.get("city"),
         "battery_start_pct": f.get("battery_start_pct"),
         "battery_end_pct": f.get("battery_end_pct"),
+        "battery_sn": f.get("battery_sn"),
         "photo_num": f.get("photo_num"),
         "video_time_s": f.get("video_time_s"),
         "track_points": f.get("points"),
@@ -199,6 +208,110 @@ STATS_SENSORS: tuple[FlightSensorDescription, ...] = (
 )
 
 
+def _bat_last(bat: BatteryStats, key: str) -> Any:
+    return bat.last.get(key) if bat.last else None
+
+
+def _battery_last_flight_attrs(bat: BatteryStats) -> dict[str, Any]:
+    if not bat.last:
+        return {}
+    f = bat.last
+    return {
+        "flight_id": f["flight_id"],
+        "aircraft_name": f.get("aircraft_name"),
+        "aircraft_sn": f.get("aircraft_sn"),
+        "duration_s": f.get("duration_s"),
+        "battery_start_pct": f.get("battery_start_pct"),
+        "battery_end_pct": f.get("battery_end_pct"),
+    }
+
+
+@dataclass(frozen=True, kw_only=True)
+class BatterySensorDescription(SensorEntityDescription):
+    value_fn: Callable[[BatteryStats], Any]
+    attrs_fn: Callable[[BatteryStats], dict[str, Any]] | None = None
+
+
+BATTERY_SENSORS: tuple[BatterySensorDescription, ...] = (
+    BatterySensorDescription(
+        key="battery_cycles",
+        translation_key="battery_cycles",
+        icon="mdi:battery-sync",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        value_fn=lambda b: b.cycles,
+    ),
+    BatterySensorDescription(
+        key="battery_life",
+        translation_key="battery_life",
+        icon="mdi:battery-heart-variant",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda b: b.life_pct,
+    ),
+    BatterySensorDescription(
+        key="battery_capacity",
+        translation_key="battery_capacity",
+        icon="mdi:battery-high",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda b: b.capacity_pct,
+        attrs_fn=lambda b: {"full_capacity_mah": b.full_mah, "design_capacity_mah": b.design_mah},
+    ),
+    BatterySensorDescription(
+        key="flights",
+        translation_key="flights",
+        icon="mdi:quadcopter",
+        state_class=SensorStateClass.TOTAL,
+        value_fn=lambda b: b.flights,
+    ),
+    BatterySensorDescription(
+        key="flight_time",
+        translation_key="flight_time",
+        icon="mdi:timer-outline",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        suggested_unit_of_measurement=UnitOfTime.HOURS,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=1,
+        value_fn=lambda b: round(b.total_time_s, 1),
+    ),
+    BatterySensorDescription(
+        key="last_flight",
+        translation_key="last_flight",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda b: _ts(_bat_last(b, "start_time")),
+        attrs_fn=_battery_last_flight_attrs,
+    ),
+    BatterySensorDescription(
+        key="last_flight_battery_temp",
+        translation_key="last_flight_battery_temp",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        suggested_display_precision=1,
+        value_fn=lambda b: _bat_last(b, "battery_temp_max_c"),
+        attrs_fn=lambda b: {"start_temperature": _bat_last(b, "battery_temp_start_c")},
+    ),
+    BatterySensorDescription(
+        key="last_flight_cell_min",
+        translation_key="last_flight_cell_min",
+        device_class=SensorDeviceClass.VOLTAGE,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        suggested_display_precision=2,
+        value_fn=lambda b: _bat_last(b, "battery_cell_min_v"),
+    ),
+    BatterySensorDescription(
+        key="last_flight_cell_deviation",
+        translation_key="last_flight_cell_deviation",
+        icon="mdi:scale-unbalanced",
+        device_class=SensorDeviceClass.VOLTAGE,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        suggested_display_precision=3,
+        value_fn=lambda b: _bat_last(b, "battery_cell_dev_max_v"),
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -226,6 +339,12 @@ async def async_setup_entry(
                 continue
             known.add(sn)
             new += [AircraftSensor(coordinator, entry, sn, d) for d in STATS_SENSORS]
+        for sn in data.batteries:
+            key = f"battery_{sn}"
+            if key in known:
+                continue
+            known.add(key)
+            new += [BatterySensor(coordinator, entry, sn, d) for d in BATTERY_SENSORS]
         if new:
             async_add_entities(new)
 
@@ -282,6 +401,43 @@ class AircraftSensor(_BaseSensor):
     @property
     def _stats(self) -> AircraftStats | None:
         return self.coordinator.data.aircraft.get(self._sn)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._stats is not None
+
+    @property
+    def native_value(self) -> Any:
+        stats = self._stats
+        return self.entity_description.value_fn(stats) if stats else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        stats = self._stats
+        if stats and self.entity_description.attrs_fn:
+            return self.entity_description.attrs_fn(stats)
+        return None
+
+
+class BatterySensor(_BaseSensor):
+    entity_description: BatterySensorDescription
+
+    def __init__(
+        self,
+        coordinator: FlightLogCoordinator,
+        entry: ConfigEntry,
+        sn: str,
+        description: BatterySensorDescription,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._sn = sn
+        self.entity_description = description
+        self._attr_unique_id = f"{entry.entry_id}_battery_{sn}_{description.key}"
+        self._attr_device_info = battery_device_info(entry, coordinator.data.batteries[sn])
+
+    @property
+    def _stats(self) -> BatteryStats | None:
+        return self.coordinator.data.batteries.get(self._sn)
 
     @property
     def available(self) -> bool:
@@ -451,4 +607,15 @@ def aircraft_device_info(entry: ConfigEntry, stats: AircraftStats) -> DeviceInfo
         manufacturer="DJI",
         model=_model(stats),
         serial_number=stats.sn if stats.sn != "unknown" else None,
+    )
+
+
+def battery_device_info(entry: ConfigEntry, bat: BatteryStats) -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(DOMAIN, f"{entry.entry_id}_battery_{bat.sn}")},
+        translation_key="battery",
+        translation_placeholders={"aircraft": bat.aircraft_name or "DJI", "sn": bat.sn[-4:]},
+        manufacturer="DJI",
+        model="Intelligent Flight Battery",
+        serial_number=bat.sn,
     )

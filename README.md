@@ -19,6 +19,7 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 - **Sensoren** – ein Gerät „DJI Flight Log" mit Gesamtwerten plus ein Gerät je Drohne (Seriennummer):
   Flüge, Flugzeit, Distanz, max. Höhe, max. Geschwindigkeit, erster/letzter Flug, letzter Flug: Dauer, Distanz, max. Höhe, max. Speed, Akku Ende / verbraucht.
   „Gemerkte Orte“ (Anzahl, Liste im Attribut `spots`). Diagnose: letzter Import, ausstehende Dateien, Anzahl Drohnen. Button „Log-Ordner scannen“ für sofortigen Import.
+- **Akkus** – ein Gerät je Flugakku (erkannt an der Seriennummer im Log): Ladezyklen, Lebensdauer und Kapazität (volle gegenüber Nenn-Kapazität, laut Akku-Elektronik), Flüge und Flugzeit mit diesem Akku, dazu aus dem letzten Flug die höchste Temperatur (Starttemperatur im Attribut), die niedrigste Zellspannung und die größte Abweichung zwischen den Zellen. Ohne API-Key kennt die Integration nur die Seriennummer, also nur Flüge und Flugzeit. Beispiel-Automation für eine Akku-Warnung in [`examples/automations.yaml`](examples/automations.yaml).
 - **geo_location** *(optional, standardmäßig aus)* – Startpunkt jedes Flugs als Entity (`source: dji_flightlog`), nutzbar auf der eingebauten Map-Card und in Zonen-Automationen. Aus gutem Grund opt-in: HA hängt an das automatische „Übersicht"-Dashboard eine Karte an, sobald *irgendeine* `geo_location`-Entity existiert – die Flüge würden dann ungefragt auf der Standard-Karte landen.
 - **Eigenes Panel in der Seitenleiste** – Vollbild-Ansicht mit Statistik, Filtern, großer Karte und Flugliste zum Anklicken. Flugaufzeichnungen lassen sich dort direkt **hochladen** (Button oder Drag & Drop).
 - **Orte merken mit DIPUL-Zonen** – im Panel einen Punkt auf der Karte wählen und speichern, die [DIPUL](https://www.dipul.de)-Geozonen (Flughäfen, Kontrollzonen, Naturschutz, Wohngebiete, …) werden dabei eingeblendet und am Punkt abgefragt. Liste im Dashboard per `custom:dji-spots-card`, mit Google-Maps-Link zum Starten der Navigation.
@@ -136,6 +137,7 @@ Beispiele in [`examples/automations.yaml`](examples/automations.yaml):
 - Benachrichtigung bei neuem Flug
 - Rohdatei + GPX nach **OneDrive** hochladen (native `onedrive.upload`-Action)
 - GPX lokal unter `/share/dji/exports` ablegen
+- Akku-Warnung, wenn ein Akku über 60 °C warm wurde, die Zellen mehr als 0,1 V auseinanderlagen oder eine Zelle unter 3,0 V fiel
 
 Für `export_track` mit `path` muss der Zielordner in `allowlist_external_dirs` stehen:
 

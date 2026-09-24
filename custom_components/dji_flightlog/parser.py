@@ -113,6 +113,16 @@ class FlightSummary:
     bbox: list[float] | None  # [min_lon, min_lat, max_lon, max_lat]
     imported_at: str
     error: str | None = None
+    # Smart battery; everything but the serial needs the decoded frames.
+    battery_sn: str = ""
+    battery_cycles: int | None = None
+    battery_life_pct: int | None = None  # DJI's "lifetime remaining"
+    battery_full_mah: int | None = None
+    battery_design_mah: int | None = None
+    battery_temp_start_c: float | None = None
+    battery_temp_max_c: float | None = None
+    battery_cell_min_v: float | None = None
+    battery_cell_dev_max_v: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -224,6 +234,7 @@ def parse_flight(
         "points": 0,
         "bbox": None,
         "imported_at": _iso(now),
+        "battery_sn": getattr(details, "battery_sn", "") or "",
     }
 
     keychains = None
@@ -333,6 +344,7 @@ def summarize_frames(
         base["max_v_speed_ms"] = round(max_v_speed, 2)
     base["battery_start_pct"] = battery_start
     base["battery_end_pct"] = battery_end
+    base.update(_battery_health(frames))
     base["video_time_s"] = _video_time(frames)
     photos = _photo_count(frames)
     if photos is not None:
@@ -340,6 +352,41 @@ def summarize_frames(
     base["points"] = len(track.points)
 
     return FlightSummary(status=STATUS_OK, **base), track
+
+
+def _battery_health(frames: list[Any]) -> dict[str, Any]:
+    """Smart battery figures for the flight; empty if the log carries none."""
+    out: dict[str, Any] = {}
+    temps: list[float] = []
+    cell_min = math.inf
+    dev_max = 0.0
+    sn = ""
+    for fr in frames:
+        sn = max(sn, getattr(getattr(fr, "recover", None), "battery_sn", "") or "", key=len)
+        bat = fr.battery
+        # Frames before the first battery record carry zeros, not readings.
+        if not getattr(bat, "voltage", 0.0):
+            continue
+        temps.append(float(bat.temperature))
+        if bat.design_capacity:
+            out["battery_cycles"] = int(bat.number_of_discharges)
+            out["battery_life_pct"] = int(bat.lifetime_remaining) or None
+            out["battery_full_mah"] = int(bat.full_capacity) or None
+            out["battery_design_mah"] = int(bat.design_capacity)
+        if not bat.is_cell_voltage_estimated:
+            cells = [v for v in bat.cell_voltages if v > 0]
+            if cells:
+                cell_min = min(cell_min, *cells)
+            dev_max = max(dev_max, float(bat.cell_voltage_deviation))
+    if sn:
+        out["battery_sn"] = sn
+    if temps:
+        out["battery_temp_start_c"] = round(temps[0], 1)
+        out["battery_temp_max_c"] = round(max(temps), 1)
+    if cell_min < math.inf:
+        out["battery_cell_min_v"] = round(cell_min, 3)
+        out["battery_cell_dev_max_v"] = round(dev_max, 3)
+    return out
 
 
 def _video_time(frames: list[Any]) -> float:

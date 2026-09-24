@@ -24,7 +24,8 @@ STORAGE_VERSION = 1
 # imported by an older parser are re-parsed on the next scan.
 # 2: duration/track offsets per log (not since power-on), video time from frames,
 #    exports use height above takeoff.
-PARSER_VERSION = 2
+# 3: smart battery serial, cycles, capacity, temperature and cell voltages.
+PARSER_VERSION = 3
 STORAGE_KEY = f"{DOMAIN}.flights"
 STORAGE_SUBDIR = DOMAIN  # <config>/.storage/dji_flightlog/tracks/<id>.json
 

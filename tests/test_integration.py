@@ -41,6 +41,15 @@ def _fake_parse(path: Path, *, api_key, max_track_points, now=None):
         aircraft_name="Neo" if idx % 2 == 0 else "Avata 2",
         product_type="NEO" if idx % 2 == 0 else "AVATA_2",
         imported_at=datetime.now(UTC).isoformat(),
+        battery_sn=f"BAT{idx % 2:04d}",
+        battery_cycles=idx,
+        battery_life_pct=99,
+        battery_full_mah=2736,
+        battery_design_mah=2880,
+        battery_temp_start_c=30.0,
+        battery_temp_max_c=50.0 + idx,
+        battery_cell_min_v=3.4,
+        battery_cell_dev_max_v=0.05,
     )
     return summarize_frames(make_frames(50 + idx, start=start), base, max_track_points)
 
@@ -523,6 +532,39 @@ async def test_lovelace_resource_registered(hass: HomeAssistant, setup_entry):
         await hass.async_block_till_done()
     urls = [r["url"] for r in resources.async_items()]
     assert sum(u.startswith("/dji_flightlog_static/") for u in urls) == 1
+
+
+async def test_battery_devices(hass: HomeAssistant, setup_entry):
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    entry = await setup_entry(3)  # flights 0 and 2 on BAT0000 (Neo), flight 1 on BAT0001 (Avata 2)
+    ent_reg, dev_reg = er.async_get(hass), dr.async_get(hass)
+
+    def state(sn: str, key: str):
+        entity_id = ent_reg.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_battery_{sn}_{key}")
+        assert entity_id is not None, key
+        return hass.states.get(entity_id)
+
+    assert state("BAT0000", "flights").state == "2"
+    assert state("BAT0001", "flights").state == "1"
+    assert state("BAT0000", "battery_cycles").state == "2"  # latest value wins
+    assert state("BAT0000", "battery_life").state == "99"
+    cap = state("BAT0000", "battery_capacity")
+    assert float(cap.state) == 95.0
+    assert cap.attributes["full_capacity_mah"] == 2736
+    temp = state("BAT0000", "last_flight_battery_temp")
+    assert float(temp.state) == 52.0 and temp.attributes["start_temperature"] == 30.0
+    assert float(state("BAT0000", "last_flight_cell_deviation").state) == 0.05
+    assert state("BAT0000", "last_flight").state == "2026-09-03T10:00:00+00:00"
+
+    assert state("BAT0000", "last_flight").attributes["aircraft_sn"] == "SN-NEO"
+
+    entity = ent_reg.async_get(state("BAT0000", "flights").entity_id)
+    battery = dev_reg.async_get(entity.device_id)
+    assert battery is not None
+    assert battery.serial_number == "BAT0000"
+    assert battery.name == "Neo battery 0000"
 
 
 async def test_outdated_parser_reparses_without_event(hass: HomeAssistant, setup_entry):

@@ -80,11 +80,39 @@ class AircraftStats:
 
 
 @dataclass
+class BatteryStats:
+    """One smart battery (keyed by serial number) across all its flights.
+
+    Cycles, lifetime and capacity are the latest values the battery reported;
+    the per-flight readings (temperature, cell voltages) are in ``last``.
+    """
+
+    sn: str
+    aircraft_sn: str = ""
+    aircraft_name: str = ""
+    flights: int = 0
+    total_time_s: float = 0.0
+    first_flight: str | None = None
+    last: dict[str, Any] | None = None
+    cycles: int | None = None
+    life_pct: int | None = None
+    full_mah: int | None = None
+    design_mah: int | None = None
+
+    @property
+    def capacity_pct(self) -> float | None:
+        if not self.full_mah or not self.design_mah:
+            return None
+        return round(100.0 * self.full_mah / self.design_mah, 1)
+
+
+@dataclass
 class FlightData:
     """Coordinator payload consumed by the entities and the HTTP views."""
 
     flights: dict[str, dict[str, Any]] = field(default_factory=dict)
     aircraft: dict[str, AircraftStats] = field(default_factory=dict)
+    batteries: dict[str, BatteryStats] = field(default_factory=dict)
     totals: AircraftStats = field(default_factory=lambda: AircraftStats("", "All", ""))
     last_import: str | None = None
     last_scan: str | None = None
@@ -351,6 +379,8 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             # Prefer the latest known name for the aircraft.
             if f.get("aircraft_name"):
                 stats.name = f["aircraft_name"]
+            if f.get("battery_sn"):
+                _add_battery_flight(data.batteries, f)
         imported = [f["imported_at"] for f in data.flights.values() if f.get("imported_at")]
         data.last_import = max(imported) if imported else None
         data.unsupported = [
@@ -359,3 +389,25 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             if rec.get("status") == STATUS_UNSUPPORTED
         ]
         return data
+
+
+def _add_battery_flight(batteries: dict[str, BatteryStats], f: dict[str, Any]) -> None:
+    """Fold one flight into its battery's stats; flights must come in start_time order."""
+    bat = batteries.get(f["battery_sn"])
+    if bat is None:
+        bat = batteries[f["battery_sn"]] = BatteryStats(sn=f["battery_sn"])
+    bat.flights += 1
+    bat.total_time_s += float(f.get("duration_s") or 0.0)
+    bat.first_flight = bat.first_flight or f["start_time"]
+    bat.last = f
+    bat.aircraft_sn = f.get("aircraft_sn") or bat.aircraft_sn
+    bat.aircraft_name = f.get("aircraft_name") or bat.aircraft_name
+    # Header-only imports know the serial but none of the readings.
+    for attr, key in (
+        ("cycles", "battery_cycles"),
+        ("life_pct", "battery_life_pct"),
+        ("full_mah", "battery_full_mah"),
+        ("design_mah", "battery_design_mah"),
+    ):
+        if f.get(key) is not None:
+            setattr(bat, attr, f[key])

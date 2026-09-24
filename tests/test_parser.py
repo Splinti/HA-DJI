@@ -143,6 +143,39 @@ def test_photo_count_unknown_keeps_header_value():
     assert summary.video_time_s == 0.0
 
 
+def test_battery_health_from_frames():
+    frames = make_frames(100)
+    for i, f in enumerate(frames):
+        f.recover.battery_sn = "A4SPNBJDA101JD" if i > 2 else ""
+        if i < 5:
+            continue  # no battery record yet: zeros must not count as readings
+        b = f.battery
+        b.voltage = 16.8 - i * 0.03
+        b.temperature = 30.0 + i * 0.2
+        b.design_capacity, b.full_capacity = 2880, 2743
+        b.number_of_discharges, b.lifetime_remaining = 1, 99
+        b.is_cell_voltage_estimated = i == 99  # estimated values are skipped
+        b.cell_voltages = [4.2 - i * 0.01, 4.2 - i * 0.012, 4.2 - i * 0.01, 4.2 - i * 0.01]
+        b.cell_voltage_deviation = round(i * 0.002, 3)
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert summary.battery_sn == "A4SPNBJDA101JD"
+    assert summary.battery_cycles == 1
+    assert summary.battery_life_pct == 99
+    assert (summary.battery_full_mah, summary.battery_design_mah) == (2743, 2880)
+    assert summary.battery_temp_start_c == 31.0
+    assert summary.battery_temp_max_c == pytest.approx(49.8)
+    assert summary.battery_cell_min_v == pytest.approx(4.2 - 98 * 0.012)
+    assert summary.battery_cell_dev_max_v == pytest.approx(0.196)
+
+
+def test_battery_health_absent():
+    summary, _ = summarize_frames(make_frames(10), dict(BASE, battery_sn="HDR"), max_track_points=100)
+    assert summary.battery_sn == "HDR"  # the header's serial survives
+    assert summary.battery_cycles is None
+    assert summary.battery_temp_max_c is None
+    assert summary.battery_cell_min_v is None
+
+
 def test_fallback_duration_from_timestamps():
     frames = make_frames(10)
     for f in frames:
@@ -180,6 +213,7 @@ def _fake_log(version: int, frames: list[Frame] | None = None, fail_keychain: bo
         street="",
         capture_num=3,
         video_time=30.0,
+        battery_sn="A4SPNBJDA101JD",
     )
 
     class Log:
@@ -220,6 +254,7 @@ def test_parse_flight_header_only_without_key(tmp_path):
     assert summary.city == "München"
     assert summary.photo_num == 3
     assert summary.video_time_s is None  # the header value is not a duration
+    assert summary.battery_sn == "A4SPNBJDA101JD"  # readable without the key
     assert len(summary.flight_id) == 16
 
 
