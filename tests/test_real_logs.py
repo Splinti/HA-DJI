@@ -3,12 +3,18 @@
 The folder is gitignored: drop your own DJIFlightRecord/FlightRecord *.txt
 there and run `pytest tests/test_real_logs.py -s` to see what HA makes of them.
 Set DJI_API_KEY to also decode the GPS tracks.
+
+``test_real_logs_decoded`` checks the parser against the full telemetry. It
+needs no API key: it uses the keychains that ``scripts/decode_flightrecords.py``
+saved in ``flightrecords/decoded``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -19,7 +25,9 @@ from custom_components.dji_flightlog.const import (
     CONF_GEO_LOCATION_LIMIT,
     CONF_LOG_DIR,
     DOMAIN,
+    STATUS_OK,
 )
+from custom_components.dji_flightlog.parser import parse_flight, track_to_gpx
 
 REAL_DIR = Path(__file__).parent.parent / "flightrecords"
 pytestmark = pytest.mark.skipif(
@@ -78,3 +86,38 @@ async def test_real_logs(hass: HomeAssistant, tmp_path: Path) -> None:
         assert f["takeoff_lat"] is not None and f["takeoff_lon"] is not None
         assert f["aircraft_sn"]
     assert len(geo) == len(files)
+
+
+def _saved_keychains(path: Path):
+    from pydjirecord import KeychainFeaturePoint
+
+    saved = REAL_DIR / "decoded" / f"{path.stem}.keychains.json"
+    if not saved.is_file():
+        return None
+    return [[KeychainFeaturePoint(**fp) for fp in group] for group in json.loads(saved.read_text())]
+
+
+def test_real_logs_decoded() -> None:
+    from pydjirecord import DJILog
+
+    files = [p for p in sorted(REAL_DIR.glob("*.txt")) if _saved_keychains(p) is not None]
+    if not files:
+        pytest.skip("no saved keychains; run scripts/decode_flightrecords.py first")
+
+    for path in files:
+        keychains = _saved_keychains(path)
+        with patch.object(DJILog, "fetch_keychains", lambda self, key, kc=keychains: kc):
+            summary, track = parse_flight(path, api_key="saved", max_track_points=1500)
+        header = DJILog.from_bytes(path.read_bytes()).details
+        print(
+            f"  {path.name}: {summary.duration_s:6.1f}s (header {header.total_time:.0f}s)  "
+            f"video {summary.video_time_s}s  photos {summary.photo_num}"
+        )
+        assert summary.status == STATUS_OK
+        # fly_time keeps counting across flights on one battery; the duration must not.
+        assert abs(summary.duration_s - header.total_time) < 2
+        assert track.points[0][4] < 2
+        assert 0 <= summary.video_time_s <= summary.duration_s
+        # Exports use the height above takeoff, never the (negative) barometric altitude.
+        gpx = track_to_gpx(summary.as_dict(), track.as_dict())
+        assert min(float(e.split("<")[0]) for e in gpx.split("<ele>")[1:]) > -5

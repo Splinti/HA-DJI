@@ -20,6 +20,7 @@ from custom_components.dji_flightlog.const import (
 from custom_components.dji_flightlog.parser import (
     KeychainError,
     _downsample,
+    _sd_card,
     classify_log_file,
     parse_flight,
     summarize_frames,
@@ -112,6 +113,179 @@ def test_downsample_keeps_ends():
     assert _downsample(pts[:5], 100) == pts[:5]
 
 
+def test_fly_time_continues_from_previous_flight():
+    """Landed and took off again without a battery swap: fly_time starts at 590 s."""
+    frames = make_frames(100)
+    for f in frames:
+        f.osd.fly_time += 590.8
+    summary, track = summarize_frames(frames, dict(BASE), max_track_points=1000)
+    assert summary.duration_s == 99.0
+    assert track.points[0][4] == 0.0
+    assert track.points[-1][4] == 99.0
+
+
+def test_video_time_and_photos_from_frames():
+    frames = make_frames(100)
+    for i, f in enumerate(frames):
+        # two clips: 10 s (frames 10-20) and 30 s (frames 50-80)
+        if 10 <= i <= 20 or 50 <= i <= 80:
+            f.camera.is_video = True
+            f.camera.record_time = i - 10 if i <= 20 else i - 50
+        f.camera.remain_photo_num = 500 - (i // 30)
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert summary.video_time_s == 40.0
+    assert summary.photo_num == 3
+
+
+def test_photo_count_unknown_keeps_header_value():
+    # Models like the Avata 360 always report remain_photo_num = 0.
+    summary, _ = summarize_frames(make_frames(10), dict(BASE, photo_num=2), max_track_points=100)
+    assert summary.photo_num == 2
+    assert summary.video_time_s == 0.0
+
+
+def test_battery_health_from_frames():
+    frames = make_frames(100)
+    for i, f in enumerate(frames):
+        f.recover.battery_sn = "A4SPNBJDA101JD" if i > 2 else ""
+        if i < 5:
+            continue  # no battery record yet: zeros must not count as readings
+        b = f.battery
+        b.voltage = 16.8 - i * 0.03
+        b.temperature = 30.0 + i * 0.2
+        b.design_capacity, b.full_capacity = 2880, 2743
+        b.number_of_discharges, b.lifetime_remaining = 1, 99
+        b.is_cell_voltage_estimated = i == 99  # estimated values are skipped
+        b.cell_voltages = [4.2 - i * 0.01, 4.2 - i * 0.012, 4.2 - i * 0.01, 4.2 - i * 0.01]
+        b.cell_voltage_deviation = round(i * 0.002, 3)
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert summary.battery_sn == "A4SPNBJDA101JD"
+    assert summary.battery_cycles == 1
+    assert summary.battery_life_pct == 99
+    assert (summary.battery_full_mah, summary.battery_design_mah) == (2743, 2880)
+    assert summary.battery_temp_start_c == 31.0
+    assert summary.battery_temp_max_c == pytest.approx(49.8)
+    assert summary.battery_cell_min_v == pytest.approx(4.2 - 98 * 0.012)
+    assert summary.battery_cell_dev_max_v == pytest.approx(0.196)
+
+
+def test_battery_health_absent():
+    summary, _ = summarize_frames(make_frames(10), dict(BASE, battery_sn="HDR"), max_track_points=100)
+    assert summary.battery_sn == "HDR"  # the header's serial survives
+    assert summary.battery_cycles is None
+    assert summary.battery_temp_max_c is None
+    assert summary.battery_cell_min_v is None
+
+
+def test_incident_levels():
+    summary, _ = summarize_frames(make_frames(10), dict(BASE), max_track_points=100)
+    assert (summary.incident, summary.incident_actions) == ("ok", [])
+
+    frames = make_frames(10)
+    frames[3].osd.flight_action = "RC_ONEKEY_GO_HOME"  # pilot pressed RTH: no incident
+    frames[5].osd.flight_action = "SMART_POWER_GO_HOME"
+    frames[6].osd.flight_action = "SMART_POWER_GO_HOME"
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert (summary.incident, summary.incident_actions) == ("warning", ["SMART_POWER_GO_HOME"])
+
+    frames[8].osd.flight_action = "BATTERY_FORCE_LANDING"
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert summary.incident == "critical"
+    assert summary.incident_actions == ["SMART_POWER_GO_HOME", "BATTERY_FORCE_LANDING"]
+
+
+def test_incident_motor_blocked_only_in_the_air():
+    frames = make_frames(10)
+    frames[0].osd.is_motor_blocked = True  # height 0: failed start, not an incident
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert summary.incident == "ok"
+    frames[5].osd.is_motor_blocked = True
+    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert (summary.incident, summary.incident_actions) == ("critical", ["MOTOR_BLOCKED"])
+
+
+class Camera(SimpleNamespace):
+    """Stand-in for pydjirecord's Camera record; _sd_card goes by the class name."""
+
+
+def _cam(total: int, free: int, state: str = "NORMAL", card: bool = True, video_left: int = 0):
+    return SimpleNamespace(
+        data=Camera(
+            has_sd_card=card,
+            sd_card_total_capacity=total,
+            sd_card_remain_capacity=free,
+            sd_card_state=SimpleNamespace(name=state),
+            remain_video_timer=video_left,
+        )
+    )
+
+
+def test_sd_card_from_records():
+    records = [
+        SimpleNamespace(data=b"unparsed"),
+        _cam(0, 0, card=False),
+        _cam(42958, 8492),
+        _cam(42958, 5, "FULL"),
+        _cam(42958, 5, "NORMAL"),
+    ]
+    assert _sd_card(records) == {"sd_total_mb": 42958, "sd_free_mb": 5, "sd_full": True, "sd_video_left_s": 0}
+    assert _sd_card([_cam(42958, 8492, video_left=547)])["sd_video_left_s"] == 547
+
+
+def test_sd_card_faults():
+    # Start-up states are no fault; a card that needs formatting or is too slow is.
+    records = [
+        _cam(0, 0, "INITIALIZE"),
+        _cam(30000, 20000, "SUGGEST_FORMAT"),
+        _cam(30000, 19000, "LOW_SPEED"),
+    ]
+    assert _sd_card(records)["sd_problems"] == ["SUGGEST_FORMAT", "LOW_SPEED"]
+    # Camera records, but never a card.
+    assert _sd_card([_cam(0, 0, card=False), _cam(0, 0, card=False)]) == {"sd_problems": ["NO_CARD"]}
+    assert _sd_card([SimpleNamespace(data=b"no camera at all")]) == {}
+
+
+def test_timeline_profile_modes_events():
+    frames = make_frames(100)
+    for i, f in enumerate(frames):
+        f.osd.flyc_state = "ASSISTED_TAKEOFF" if i < 5 else "GPS_SPORT" if 40 <= i < 60 else "GPS_GENTLE"
+        f.battery.voltage, f.battery.temperature = 16.0, 30.0 + i / 10
+    frames[70].osd.flight_action = "RC_ONEKEY_GO_HOME"
+    frames[71].osd.flight_action = "RC_ONEKEY_GO_HOME"  # still the same event
+    frames[90].osd.flight_action = "VERT_LOW_LIMIT_LANDING"
+    summary, track = summarize_frames(frames, dict(BASE), max_track_points=1000)
+
+    assert track.modes == [
+        [0.0, 5.0, "ASSISTED_TAKEOFF"],
+        [5.0, 40.0, "GPS_GENTLE"],
+        [40.0, 60.0, "GPS_SPORT"],
+        [60.0, 99.0, "GPS_GENTLE"],
+    ]
+    assert summary.mode_time_s == {"ASSISTED_TAKEOFF": 5.0, "GPS_GENTLE": 74.0, "GPS_SPORT": 20.0}
+    assert track.events == [[70.0, "RC_ONEKEY_GO_HOME"], [90.0, "VERT_LOW_LIMIT_LANDING"]]
+    # 0.0001° of latitude per second from the home point: ~11.1 m/s.
+    assert summary.max_distance_m == pytest.approx(99 * 11.12, rel=0.01)
+
+    p = track.profile
+    assert len(p["t"]) == 100  # 1 frame/s, so every frame is a sample
+    assert {len(v) for v in p.values()} == {100}
+    assert p["t"][:3] == [0.0, 1.0, 2.0]
+    assert p["height"][-1] == 60.0 and p["speed"][50] == 10.0
+    assert p["battery"][0] == 95 and p["temp"][10] == 31.0
+    assert p["dist"][0] == 0.0 and p["lat"][0] == pytest.approx(48.1)
+
+
+def test_timeline_samples_once_per_second():
+    frames = make_frames(300)
+    for i, f in enumerate(frames):
+        f.osd.fly_time = i / 10  # 10 Hz, like the real logs
+    _, track = summarize_frames(frames, dict(BASE), max_track_points=1000)
+    t = track.profile["t"]
+    assert len(t) == 31 and t[-1] == 29.9  # 0, 1, ..., 29 plus the last frame
+    # No battery record: no temperature, and no dist without GPS.
+    assert set(track.profile["temp"]) == {None}
+
+
 def test_fallback_duration_from_timestamps():
     frames = make_frames(10)
     for f in frames:
@@ -125,9 +299,13 @@ class _FakeDetails(SimpleNamespace):
 
 
 def _patched(fake):
-    """Swap in a stub pydjirecord module exposing only ``DJILog.from_bytes``."""
+    """Swap in a stub pydjirecord: ``DJILog.from_bytes`` and a pass-through frame builder."""
     return patch.dict(
-        "sys.modules", {"pydjirecord": SimpleNamespace(DJILog=SimpleNamespace(from_bytes=lambda b: fake()))}
+        "sys.modules",
+        {
+            "pydjirecord": SimpleNamespace(DJILog=SimpleNamespace(from_bytes=lambda b: fake())),
+            "pydjirecord.frame.builder": SimpleNamespace(records_to_frames=lambda records, details: records),
+        },
     )
 
 
@@ -149,6 +327,7 @@ def _fake_log(version: int, frames: list[Frame] | None = None, fail_keychain: bo
         street="",
         capture_num=3,
         video_time=30.0,
+        battery_sn="A4SPNBJDA101JD",
     )
 
     class Log:
@@ -162,7 +341,8 @@ def _fake_log(version: int, frames: list[Frame] | None = None, fail_keychain: bo
             assert api_key == "KEY"
             return [["kc"]]
 
-        def frames(self, keychains):
+        def records(self, keychains):
+            # The stub builder passes records through, so these double as frames.
             if version >= 13:
                 assert keychains == [["kc"]]
             return frames or []
@@ -188,6 +368,9 @@ def test_parse_flight_header_only_without_key(tmp_path):
     assert summary.takeoff_lat == 48.2
     assert summary.city == "München"
     assert summary.photo_num == 3
+    assert summary.video_time_s is None  # the header value is not a duration
+    assert summary.incident is None  # unknown without the frames
+    assert summary.battery_sn == "A4SPNBJDA101JD"  # readable without the key
     assert len(summary.flight_id) == 16
 
 
@@ -233,9 +416,13 @@ def test_exports(frames):
     assert gpx.count("<trkpt") == 100
     assert "<time>2026-09-20T12:00:00+00:00</time>" in gpx
     assert "<time>2026-09-20T12:01:39+00:00</time>" in gpx
+    # Height above takeoff, not the log's (barometric) altitude of 500 m + height.
+    assert "<ele>0.0</ele>" in gpx and "<ele>60.0</ele>" in gpx and "<ele>560.0</ele>" not in gpx
+    assert gj["features"][0]["geometry"]["coordinates"][-1][2] == 60.0
 
     kml = track_to_kml(s, t)
-    assert "<coordinates>" in kml and "11.5,48.1,500.0" in kml
+    assert "<coordinates>" in kml and "11.5,48.1,0.0" in kml
+    assert "<altitudeMode>relativeToGround</altitudeMode>" in kml
 
 
 # --- file classification ----------------------------------------------------

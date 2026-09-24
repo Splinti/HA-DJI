@@ -34,12 +34,15 @@ class FlightStore:
         self.files: dict[str, dict[str, Any]] = {}
         # spot id -> spot (see spots.py)
         self.spots: dict[str, dict[str, Any]] = {}
+        # keys of pre-flight notices marked as done (see coordinator.attention_items)
+        self.dismissed: list[str] = []
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
         self.flights = data.get("flights", {})
         self.files = data.get("files", {})
         self.spots = data.get("spots", {})
+        self.dismissed = data.get("dismissed", [])
         # Flights imported before placeholders were filtered show "Map Loading".
         for flight in self.flights.values():
             for key in ("city", "street"):
@@ -48,7 +51,9 @@ class FlightStore:
         await self._hass.async_add_executor_job(partial(self._tracks_dir.mkdir, parents=True, exist_ok=True))
 
     async def async_save(self) -> None:
-        await self._store.async_save({"flights": self.flights, "files": self.files, "spots": self.spots})
+        await self._store.async_save(
+            {"flights": self.flights, "files": self.files, "spots": self.spots, "dismissed": self.dismissed}
+        )
 
     # -- tracks -------------------------------------------------------------
 

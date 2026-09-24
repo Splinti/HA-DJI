@@ -40,17 +40,42 @@ class OSD:
     z_speed: float = 0.0
     cumulative_distance: float = 0.0
     gps_level: int = 5
+    flight_action: str | None = None
+    flyc_state: str | None = None
+    is_motor_blocked: bool = False
 
 
 @dataclass
 class Battery:
     charge_level: int = 0
+    # Smart battery readings; voltage 0 means "no battery record yet".
+    voltage: float = 0.0
+    temperature: float = 0.0
+    design_capacity: int = 0
+    full_capacity: int = 0
+    number_of_discharges: int = 0
+    lifetime_remaining: int = 0
+    cell_voltages: list[float] = field(default_factory=list)
+    is_cell_voltage_estimated: bool = True
+    cell_voltage_deviation: float = 0.0
+
+
+@dataclass
+class Recover:
+    battery_sn: str = ""
 
 
 @dataclass
 class Home:
     latitude: float = 0.0
     longitude: float = 0.0
+
+
+@dataclass
+class Camera:
+    is_video: bool = False
+    record_time: int = 0
+    remain_photo_num: int = 0
 
 
 @dataclass
@@ -64,6 +89,8 @@ class Frame:
     battery: Battery = field(default_factory=Battery)
     home: Home = field(default_factory=Home)
     custom: Custom = field(default_factory=Custom)
+    camera: Camera = field(default_factory=Camera)
+    recover: Recover = field(default_factory=Recover)
 
 
 def make_frames(n: int = 100, *, start: datetime | None = None) -> list[Frame]:

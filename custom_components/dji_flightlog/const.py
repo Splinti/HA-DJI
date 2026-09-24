@@ -20,6 +20,22 @@ DEFAULT_GEO_LOCATION_LIMIT = 0
 DEFAULT_SIDEBAR_PANEL = True
 
 STORAGE_VERSION = 1
+# Bump when parsing changes what a flight's summary or track contains: files
+# imported by an older parser are re-parsed on the next scan.
+# 2: duration/track offsets per log (not since power-on), video time from frames,
+#    exports use height above takeoff.
+# 3: smart battery serial, cycles, capacity, temperature and cell voltages.
+# 4: incident level and actions, SD card capacity.
+# 5: per-second profile, flight modes and events for the detail view; max distance.
+# 6: SD card faults and recording time left.
+PARSER_VERSION = 6
+
+# "Before the next flight" checks on each aircraft's and battery's latest flight.
+ATTENTION_SD_VIDEO_LEFT_S = 600  # less recording time left than this
+ATTENTION_BATTERY_TEMP_C = 60.0
+ATTENTION_CELL_DEVIATION_V = 0.2  # measured under load: 0.1-0.17 V is common in hard flying
+ATTENTION_CELL_MIN_V = 3.0
+ATTENTION_BATTERY_WORN_PCT = 80  # capacity or lifetime below this
 STORAGE_KEY = f"{DOMAIN}.flights"
 STORAGE_SUBDIR = DOMAIN  # <config>/.storage/dji_flightlog/tracks/<id>.json
 

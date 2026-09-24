@@ -39,6 +39,11 @@
       "dir_not_found": "Folder does not exist"
     }
   },
+  "device": {
+    "battery": {
+      "name": "{aircraft} battery {sn}"
+    }
+  },
   "entity": {
     "sensor": {
       "flights": {
@@ -94,6 +99,38 @@
       },
       "saved_spots": {
         "name": "Saved spots"
+      },
+      "battery_cycles": {
+        "name": "Charge cycles"
+      },
+      "battery_life": {
+        "name": "Lifetime remaining"
+      },
+      "battery_capacity": {
+        "name": "Capacity"
+      },
+      "last_flight_battery_temp": {
+        "name": "Last flight max temperature"
+      },
+      "last_flight_cell_min": {
+        "name": "Last flight min cell voltage"
+      },
+      "last_flight_cell_deviation": {
+        "name": "Last flight max cell deviation"
+      },
+      "last_flight_incident": {
+        "name": "Last flight status",
+        "state": {
+          "ok": "OK",
+          "warning": "Warning",
+          "critical": "Critical"
+        }
+      },
+      "sd_free": {
+        "name": "SD card free"
+      },
+      "attention": {
+        "name": "Pre-flight notices"
       }
     },
     "button": {

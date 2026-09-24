@@ -41,6 +41,18 @@ def _fake_parse(path: Path, *, api_key, max_track_points, now=None):
         aircraft_name="Neo" if idx % 2 == 0 else "Avata 2",
         product_type="NEO" if idx % 2 == 0 else "AVATA_2",
         imported_at=datetime.now(UTC).isoformat(),
+        battery_sn=f"BAT{idx % 2:04d}",
+        battery_cycles=idx,
+        battery_life_pct=99,
+        battery_full_mah=2736,
+        battery_design_mah=2880,
+        battery_temp_start_c=30.0,
+        battery_temp_max_c=50.0 + idx,
+        battery_cell_min_v=3.4,
+        battery_cell_dev_max_v=0.05,
+        sd_total_mb=42958,
+        sd_free_mb=10000 - idx * 1000,
+        sd_full=False,
     )
     return summarize_frames(make_frames(50 + idx, start=start), base, max_track_points)
 
@@ -523,6 +535,138 @@ async def test_lovelace_resource_registered(hass: HomeAssistant, setup_entry):
         await hass.async_block_till_done()
     urls = [r["url"] for r in resources.async_items()]
     assert sum(u.startswith("/dji_flightlog_static/") for u in urls) == 1
+
+
+async def test_incident_and_sd_card(hass: HomeAssistant, setup_entry):
+    await setup_entry(3)
+    incident = hass.states.get("sensor.dji_flight_log_last_flight_status")
+    assert incident.state == "ok" and incident.attributes["actions"] == []
+    assert incident.attributes["options"] == ["ok", "warning", "critical"]
+    # The Neo flew flights 0 and 2; its card reading is the one from flight 2.
+    sd = hass.states.get("sensor.neo_sd_card_free")
+    assert float(sd.state) == pytest.approx(8.0)  # 8000 MB shown in GB
+    assert sd.attributes["total_mb"] == 42958
+    assert hass.states.get("sensor.dji_flight_log_sd_card_free") is None  # not on the totals
+
+
+async def test_pre_flight_notices(hass: HomeAssistant, setup_entry, hass_client):
+    """The latest flight's SD card and battery problems show up until marked as done."""
+    entry = await setup_entry(3)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert coordinator.data.attention == []  # the fake flights are all fine
+
+    flights = coordinator.store.flights
+    flights["flight0000"]["sd_full"] = True  # Neo, but superseded by its newer flight0002
+    flights["flight0002"].update(
+        sd_video_left_s=300,
+        battery_temp_max_c=63.6,
+        incident="warning",
+        incident_actions=["SMART_POWER_GO_HOME"],
+    )
+    coordinator._publish()
+    await hass.async_block_till_done()
+    codes = [(i["code"], i["flight_id"]) for i in coordinator.data.attention]
+    assert codes == [
+        ("incident", "flight0002"),
+        ("battery_hot", "flight0002"),
+        ("sd_low", "flight0002"),
+    ]
+    state = hass.states.get("sensor.dji_flight_log_pre_flight_notices")
+    assert state.state == "3" and state.attributes["worst"] == "warning"
+    assert state.attributes["items"][1]["battery_sn"] == "BAT0000"
+
+    client = await hass_client()
+    resp = await client.get(f"/api/{DOMAIN}/flights")
+    assert len((await resp.json())["attention"]) == 3
+
+    sd_key = coordinator.data.attention[2]["key"]
+    resp = await client.post(f"/api/{DOMAIN}/attention/dismiss", json={"keys": [sd_key, "gone:flight9999"]})
+    assert resp.status == 200
+    assert [i["code"] for i in (await resp.json())["attention"]] == ["incident", "battery_hot"]
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.dji_flight_log_pre_flight_notices").state == "2"
+    # Unknown keys are not kept.
+    assert coordinator.store.dismissed == [sd_key]
+
+    resp = await client.post(f"/api/{DOMAIN}/attention/dismiss", json={"nope": 1})
+    assert resp.status == 400
+
+
+async def test_battery_devices(hass: HomeAssistant, setup_entry):
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    entry = await setup_entry(3)  # flights 0 and 2 on BAT0000 (Neo), flight 1 on BAT0001 (Avata 2)
+    ent_reg, dev_reg = er.async_get(hass), dr.async_get(hass)
+
+    def state(sn: str, key: str):
+        entity_id = ent_reg.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_battery_{sn}_{key}")
+        assert entity_id is not None, key
+        return hass.states.get(entity_id)
+
+    assert state("BAT0000", "flights").state == "2"
+    assert state("BAT0001", "flights").state == "1"
+    assert state("BAT0000", "battery_cycles").state == "2"  # latest value wins
+    assert state("BAT0000", "battery_life").state == "99"
+    cap = state("BAT0000", "battery_capacity")
+    assert float(cap.state) == 95.0
+    assert cap.attributes["full_capacity_mah"] == 2736
+    temp = state("BAT0000", "last_flight_battery_temp")
+    assert float(temp.state) == 52.0 and temp.attributes["start_temperature"] == 30.0
+    assert float(state("BAT0000", "last_flight_cell_deviation").state) == 0.05
+    assert state("BAT0000", "last_flight").state == "2026-09-03T10:00:00+00:00"
+
+    assert state("BAT0000", "last_flight").attributes["aircraft_sn"] == "SN-NEO"
+
+    entity = ent_reg.async_get(state("BAT0000", "flights").entity_id)
+    battery = dev_reg.async_get(entity.device_id)
+    assert battery is not None
+    assert battery.serial_number == "BAT0000"
+    assert battery.name == "Neo battery 0000"
+
+
+async def test_outdated_parser_reparses_without_event(hass: HomeAssistant, setup_entry):
+    """After a parser fix, flights imported earlier are parsed again, silently."""
+    from custom_components.dji_flightlog.const import PARSER_VERSION
+
+    entry = await setup_entry(2)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    for record in coordinator.store.files.values():
+        assert record["parser"] == PARSER_VERSION
+        record["parser"] = PARSER_VERSION - 1
+    coordinator.store.flights["flight0001"]["duration_s"] = 1040.5  # what the old parser stored
+
+    events = []
+    hass.bus.async_listen(EVENT_FLIGHT_IMPORTED, events.append)
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as parse:
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert parse.call_count == 2
+    assert coordinator.data.flights["flight0001"]["duration_s"] == 50.0
+    assert all(r["parser"] == PARSER_VERSION for r in coordinator.store.files.values())
+    assert events == []
+
+    # Up to date now: the next scan leaves the files alone.
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as parse:
+        await coordinator.async_refresh()
+    assert parse.call_count == 0
+
+
+async def test_outdated_parser_keeps_full_import_without_key(hass: HomeAssistant, setup_entry):
+    """Without a key an encrypted log only has its header; don't trade the track for that."""
+    from custom_components.dji_flightlog.const import PARSER_VERSION
+
+    entry = await setup_entry(1)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator.api_key = None
+    for record in coordinator.store.files.values():
+        record["parser"] = PARSER_VERSION - 1
+
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as parse:
+        await coordinator.async_refresh()
+    assert parse.call_count == 0
+    assert coordinator.data.flights["flight0000"]["status"] == STATUS_OK
 
 
 async def test_api_key_added_later_backfills_tracks(hass: HomeAssistant, log_dir: Path, tmp_path: Path):

@@ -36,7 +36,19 @@ C:\tmp\djiha\venv\Scripts\ruff format custom_components tests
 
 ## Echte Logs testen
 
+Eigene Logs nach `flightrecords/` legen (gitignored). Einmal mit API-Key entschlüsseln:
+
 ```powershell
-$env:DJI_API_KEY = "<key>"
-C:\tmp\djiha\venv\Scripts\python -m pydjirecord "DJIFlightRecord_2026-09-20_[14-02-11].txt" --geojson out.geojson
+$env:DJI_API_KEY = "<key>"; C:\tmp\djiha\venv\Scripts\python scripts\decode_flightrecords.py
+```
+
+Das schreibt pro Log nach `flightrecords/decoded/`:
+- `*.frames.json`: alle Frames plus die Kennzahlen, die pydjirecord daraus berechnet
+- `*.records.json`: die Rohdatensätze (Firmware, SD-Karte, Parameter …)
+- `*.keychains.json`: die Schlüssel, die DJI für das Log zurückgegeben hat
+
+Mit den gespeicherten Keychains laufen `tests/test_real_logs.py` und weitere Decode-Läufe ohne Key und ohne Netz. Die Dateien enthalten Seriennummern und GPS-Positionen.
+
+```powershell
+C:\tmp\djiha\venv\Scripts\python -m pytest tests/test_real_logs.py -s
 ```

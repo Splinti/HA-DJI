@@ -39,6 +39,11 @@
       "dir_not_found": "Ordner existiert nicht"
     }
   },
+  "device": {
+    "battery": {
+      "name": "{aircraft} Akku {sn}"
+    }
+  },
   "entity": {
     "sensor": {
       "flights": {
@@ -94,6 +99,38 @@
       },
       "saved_spots": {
         "name": "Gemerkte Orte"
+      },
+      "battery_cycles": {
+        "name": "Ladezyklen"
+      },
+      "battery_life": {
+        "name": "Lebensdauer"
+      },
+      "battery_capacity": {
+        "name": "Kapazität"
+      },
+      "last_flight_battery_temp": {
+        "name": "Letzter Flug max. Temperatur"
+      },
+      "last_flight_cell_min": {
+        "name": "Letzter Flug min. Zellspannung"
+      },
+      "last_flight_cell_deviation": {
+        "name": "Letzter Flug max. Zellabweichung"
+      },
+      "last_flight_incident": {
+        "name": "Letzter Flug Status",
+        "state": {
+          "ok": "OK",
+          "warning": "Warnung",
+          "critical": "Kritisch"
+        }
+      },
+      "sd_free": {
+        "name": "SD-Karte frei"
+      },
+      "attention": {
+        "name": "Hinweise vor dem nächsten Flug"
       }
     },
     "button": {

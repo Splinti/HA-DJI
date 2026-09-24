@@ -17,6 +17,7 @@
  *   tile_switch: true    # "Karte | Satellit" toggle on the map
  *   spot_on_click: false # a click on the map opens the "Neuer Ort" form
  *   spots: true          # show saved spots (default in mode: all)
+ *   flights: true        # false: no tracks, e.g. a map for planning only
  *
  * The same module also defines custom:dji-spots-card, a list of the saved
  * spots with a Google Maps navigation link each:
@@ -301,6 +302,81 @@ const fmtDur = (s) => {
 const fmtDist = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m || 0)} m`);
 const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+// Flight controller actions (osd.flight_action), including those behind a
+// flight's "incident" (see parser.py).
+export const ACTION_LABELS = {
+  RC_ONEKEY_GO_HOME: "RTH per Taste",
+  APP_REQUEST_GO_HOME: "RTH aus der App",
+  P_GO_HOME_FINISH: "RTH beendet",
+  VERT_LOW_LIMIT_LANDING: "Landung",
+  AUTO_LANDING: "Auto-Landung",
+  AUTO_TAKEOFF: "Auto-Start",
+  OUT_OF_CONTROL_GO_HOME: "RTH nach Verbindungsverlust",
+  BATTERY_FORCE_LANDING: "Zwangslandung (Akku)",
+  SERIOUS_LOW_VOLTAGE_LANDING: "Landung, Spannung kritisch",
+  MOTORBLOCK_LANDING: "Landung, Motor blockiert",
+  FAKE_BATTERY_LANDING: "Landung, Akku nicht erkannt",
+  RTH_COMING_OBSTACLE_LANDING: "Landung, Hindernis beim RTH",
+  IMU_ERROR_RTH: "RTH wegen IMU-Fehler",
+  MC_PROTECT_GO_HOME: "RTH (Schutzfunktion)",
+  WARNING_POWER_GO_HOME: "RTH, Akku niedrig",
+  WARNING_POWER_LANDING: "Landung, Akku niedrig",
+  SMART_POWER_GO_HOME: "Smart-RTH (Akku)",
+  SMART_POWER_LANDING: "Smart-Landung (Akku)",
+  LOW_VOLTAGE_LANDING: "Landung, Spannung niedrig",
+  LOW_VOLTAGE_GO_HOME: "RTH, Spannung niedrig",
+  AVOID_GROUND_LANDING: "Landung (Bodenschutz)",
+  AIRPORT_AVOID_LANDING: "Landung (Flughafennähe)",
+  TOO_CLOSE_GO_HOME_LANDING: "Landung statt RTH (zu nah)",
+  TOO_FAR_GO_HOME_LANDING: "Landung statt RTH (zu weit)",
+  APP_REQUEST_FORCE_LANDING: "Zwangslandung (App)",
+  MOTOR_BLOCKED: "Motor blockiert",
+};
+
+// Flight modes (osd.flyc_state). GPS_GENTLE is what DJI Fly calls "Normal"
+// on the Avata 360; names without a label are shown as they are.
+export const MODE_LABELS = {
+  GPS_GENTLE: "Normal",
+  GPS_ATTI: "Normal",
+  GPS_NOVICE: "Anfänger",
+  GPS_SPORT: "Sport",
+  GPS_TRIPOD: "Cine",
+  ATTI: "ATTI (ohne GPS)",
+  MANUAL: "Manuell",
+  ACTIVE_TRACK: "ActiveTrack",
+  TAP_FLY: "TapFly",
+  POI: "Point of Interest",
+  WAYPOINT: "Wegpunkte",
+  GO_HOME: "Rückkehr (RTH)",
+  AUTO_LANDING: "Auto-Landung",
+  CONFIRM_LANDING: "Landung",
+  ASSISTED_TAKEOFF: "Start",
+  AUTO_TAKEOFF: "Auto-Start",
+  ENGINE_START: "Motorstart",
+};
+
+const prettyName = (name) => {
+  const s = String(name || "").toLowerCase().replace(/_/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+};
+export const actionLabel = (a) => ACTION_LABELS[a] || prettyName(a);
+export const modeLabel = (m) => MODE_LABELS[m] || prettyName(m);
+export const incidentText = (f) => (f.incident_actions || []).map(actionLabel).join(", ");
+
+/** Download a flight as GPX / KML / GeoJSON through the authenticated API. */
+export async function downloadExport(hass, f, fmt) {
+  const res = await hass.fetchWithAuth(`/api/${API}/flights/${f.flight_id}/export/${fmt}`);
+  if (!res.ok) throw new Error(`${res.status}`);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${(f.start_time || "").slice(0, 10)}_${f.flight_id}.${fmt}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 class DjiFlightMapCard extends HTMLElement {
   static getStubConfig() {
     return { mode: "all", heatmap: false, days: 365 };
@@ -376,6 +452,9 @@ class DjiFlightMapCard extends HTMLElement {
       // Saved spots only make sense on the overview map.
       spots: (config.mode || "all") === "all",
       spots_entity: "sensor.dji_flight_log_saved_spots",
+      flights: true,
+      // Popups get a "Details" link that fires dji-flight-details (panel only).
+      details: false,
       ...config,
     };
     this._render();
@@ -444,6 +523,7 @@ class DjiFlightMapCard extends HTMLElement {
     this._hintEl = null;
     this._planMarker = null;
     this._placeMarker = null;
+    this._cursor = null;
     tokenListeners.delete(this);
     this.shadowRoot.innerHTML = `
       <link rel="stylesheet" href="${STATIC}/leaflet.css">
@@ -679,6 +759,10 @@ class DjiFlightMapCard extends HTMLElement {
     }
     this._loading = true;
     try {
+      if (this._config.flights === false) {
+        await this._draw([], [], {});
+        return;
+      }
       const q = this._query();
       const flightsRes = await this._hass.callApi("GET", `${API}/flights?${q}`);
       const flights = flightsRes.flights || [];
@@ -712,7 +796,7 @@ class DjiFlightMapCard extends HTMLElement {
     this._hasFlights = flights.length > 0;
 
     const empty = this.shadowRoot.getElementById("empty");
-    empty.hidden = flights.length > 0;
+    empty.hidden = flights.length > 0 || c.flights === false;
     const sub = this.shadowRoot.getElementById("sub");
     if (sub) {
       const t = meta.totals || {};
@@ -784,6 +868,24 @@ class DjiFlightMapCard extends HTMLElement {
     Object.assign(this._config, patch);
     this._lastRefreshKey = null;
     return this._refresh();
+  }
+
+  /** Marker for a position along the track (chart hover); null removes it. */
+  setCursor(lat, lon) {
+    const L = window.L;
+    if (!this._map || !L) return;
+    if (lat == null || lon == null) {
+      this._cursor?.remove();
+      this._cursor = null;
+      return;
+    }
+    if (!this._cursor) {
+      this._cursor = L.circleMarker([lat, lon], {
+        radius: 7, color: "#fff", weight: 3, fillColor: "#212121", fillOpacity: 1, interactive: false,
+      }).addTo(this._map);
+    } else {
+      this._cursor.setLatLng([lat, lon]);
+    }
   }
 
   /** Zoom to one flight and highlight it; pass null to clear the selection. */
@@ -1105,10 +1207,14 @@ class DjiFlightMapCard extends HTMLElement {
       ["Max. Speed", `${((f.max_h_speed_ms || 0) * 3.6).toFixed(1)} km/h`],
     ];
     if (f.battery_start_pct != null && f.battery_end_pct != null) rows.push(["Akku", `${f.battery_start_pct}% → ${f.battery_end_pct}%`]);
+    if (f.battery_temp_max_c != null) rows.push(["Akku-Temp.", `max. ${Math.round(f.battery_temp_max_c)} °C`]);
+    if (f.incident && f.incident !== "ok") rows.push([f.incident === "critical" ? "Kritisch" : "Warnung", incidentText(f)]);
+    if (f.sd_full) rows.push(["SD-Karte", "voll"]);
     if (f.city) rows.push(["Ort", f.city]);
+    const details = this._config.details ? `<a data-details>Details</a>` : "";
     const exports = f.points
-      ? `<div class="links">${["gpx", "kml", "geojson"].map((x) => `<a data-fmt="${x}">${x.toUpperCase()}</a>`).join("")}</div>`
-      : `<div class="links"><i>kein Track (verschlüsseltes Log ohne API-Key)</i></div>`;
+      ? `<div class="links">${details}${["gpx", "kml", "geojson"].map((x) => `<a data-fmt="${x}">${x.toUpperCase()}</a>`).join("")}</div>`
+      : `<div class="links">${details}<i>kein Track (verschlüsseltes Log ohne API-Key)</i></div>`;
     return `<b>${esc(f.aircraft_name || f.product_type || "DJI")} · ${esc(fmtDate(f.start_time))}</b>
       ${rows.map(([k, v]) => `${esc(k)}: ${esc(v)}<br>`).join("")}${exports}`;
   }
@@ -1119,24 +1225,22 @@ class DjiFlightMapCard extends HTMLElement {
     el.querySelectorAll("a[data-fmt]").forEach((a) => {
       a.onclick = async (ev) => {
         ev.preventDefault();
-        const fmt = a.dataset.fmt;
         try {
-          const res = await this._hass.fetchWithAuth(`/api/${API}/flights/${f.flight_id}/export/${fmt}`);
-          if (!res.ok) throw new Error(`${res.status}`);
-          const blob = await res.blob();
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = url;
-          link.download = `${(f.start_time || "").slice(0, 10)}_${f.flight_id}.${fmt}`;
-          document.body.appendChild(link);
-          link.click();
-          link.remove();
-          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          await downloadExport(this._hass, f, a.dataset.fmt);
         } catch (err) {
           console.error("dji-flight-map-card export:", err);
         }
       };
     });
+    const details = el.querySelector("a[data-details]");
+    if (details) {
+      details.onclick = (ev) => {
+        ev.preventDefault();
+        this.dispatchEvent(
+          new CustomEvent("dji-flight-details", { detail: { flight_id: f.flight_id }, bubbles: true, composed: true }),
+        );
+      };
+    }
   }
 }
 

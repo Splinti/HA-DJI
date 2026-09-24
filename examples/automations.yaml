@@ -1,7 +1,9 @@
 # Beispiel-Automationen für dji_flightlog.
 # Das Event dji_flightlog_flight_imported trägt die komplette Flugzusammenfassung
 # (flight_id, file, filename, start_time, duration_s, distance_m, max_height_m,
-#  aircraft_name, aircraft_sn, takeoff_lat/lon, battery_start_pct/battery_end_pct, status, ...).
+#  aircraft_name, aircraft_sn, takeoff_lat/lon, battery_start_pct/battery_end_pct, status,
+#  battery_sn, battery_cycles, battery_temp_max_c, battery_cell_min_v, battery_cell_dev_max_v,
+#  incident (ok/warning/critical), incident_actions, sd_total_mb, sd_free_mb, sd_full, ...).
 
 # 1) Benachrichtigung bei neuem Flug
 - alias: "Drohne: neuer Flug importiert"
@@ -86,3 +88,47 @@
   action:
     - delay: "00:00:35"   # Dateien jünger als 30 s werden übersprungen (evtl. noch im Schreiben)
     - service: dji_flightlog.scan
+
+# 5) Akku-Warnung: heiß geflogen, Zellen driften auseinander oder tiefentladen
+#    Die Grenzwerte sind Richtwerte, keine DJI-Vorgaben. Braucht den DJI-API-Key
+#    (ohne Key kennt die Integration nur die Seriennummer des Akkus).
+- alias: "Drohne: Akku-Warnung"
+  trigger:
+    - platform: event
+      event_type: dji_flightlog_flight_imported
+  variables:
+    f: "{{ trigger.event.data }}"
+    problems: >-
+      {% set p = [] %}
+      {% if (f.battery_temp_max_c or 0) > 60 %}{% set p = p + ['max. ' ~ f.battery_temp_max_c ~ ' °C'] %}{% endif %}
+      {% if (f.battery_cell_dev_max_v or 0) > 0.2 %}{% set p = p + ['Zellabweichung ' ~ f.battery_cell_dev_max_v ~ ' V'] %}{% endif %}
+      {% if f.battery_cell_min_v is not none and f.battery_cell_min_v < 3.0 %}{% set p = p + ['Zelle bis ' ~ f.battery_cell_min_v ~ ' V'] %}{% endif %}
+      {{ p | join(', ') }}
+  condition:
+    - condition: template
+      value_template: "{{ problems | length > 0 }}"
+  action:
+    - service: notify.mobile_app_dein_handy
+      data:
+        title: "Akku {{ f.battery_sn[-4:] }} prüfen"
+        message: "Flug {{ as_local(as_datetime(f.start_time)).strftime('%d.%m. %H:%M') }}: {{ problems }}"
+
+# 6) Vorfall oder volle SD-Karte melden
+- alias: "Drohne: Vorfall oder SD-Karte voll"
+  trigger:
+    - platform: event
+      event_type: dji_flightlog_flight_imported
+  variables:
+    f: "{{ trigger.event.data }}"
+  condition:
+    - condition: template
+      value_template: "{{ f.incident in ['warning', 'critical'] or f.sd_full }}"
+  action:
+    - service: notify.mobile_app_dein_handy
+      data:
+        title: >-
+          {{ 'Kritischer Vorfall' if f.incident == 'critical' else 'Drohne: bitte prüfen' }}
+        message: >-
+          Flug {{ as_local(as_datetime(f.start_time)).strftime('%d.%m. %H:%M') }}:
+          {% if f.incident_actions %}{{ f.incident_actions | join(', ') }}{% endif %}
+          {% if f.sd_full %}SD-Karte voll, danach wird nichts mehr aufgezeichnet.{% endif %}
