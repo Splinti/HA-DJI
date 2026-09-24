@@ -32,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # ganze Historie mit Tags für die Changelog
 
       - name: Version bestimmen
         id: version
@@ -84,6 +86,26 @@ jobs:
           cd custom_components
           zip -r ../dji_flightlog.zip dji_flightlog -x '*/__pycache__/*' '*.pyc'
 
+      - name: Changelog erstellen
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # Alle Commits seit dem letzten Tag auf diesem Branch, ohne die
+          # automatischen "Release vX.Y.Z"-Commits.
+          prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
+          range=${prev:+$prev..}HEAD
+          {
+            echo "## Änderungen"
+            echo
+            git log "$range" --no-merges --invert-grep --grep='^Release v[0-9]'               --format='- %s (%h)' | grep . || echo "- Keine Änderungen"
+            if [ -n "$prev" ]; then
+              echo
+              echo "**Full Changelog**: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$prev...$TAG"
+            fi
+          } > CHANGELOG.md
+          cat CHANGELOG.md >> "$GITHUB_STEP_SUMMARY"
+          cat CHANGELOG.md
+
       - name: Release erstellen
         env:
           GH_TOKEN: ${{ github.token }}
@@ -91,7 +113,7 @@ jobs:
           PRERELEASE: ${{ inputs.prerelease }}
         run: |
           # HEAD ist nach dem Versions-Commit nicht mehr $GITHUB_SHA.
-          args=(--target "$(git rev-parse HEAD)" --title "$TAG" --generate-notes)
+          args=(--target "$(git rev-parse HEAD)" --title "$TAG" --notes-file CHANGELOG.md)
           if [ "$PRERELEASE" = "true" ]; then
             args+=(--prerelease)
           fi
