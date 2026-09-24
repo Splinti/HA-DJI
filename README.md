@@ -22,7 +22,7 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 - **Akkus** – ein Gerät je Flugakku (erkannt an der Seriennummer im Log): Ladezyklen, Lebensdauer und Kapazität (volle gegenüber Nenn-Kapazität, laut Akku-Elektronik), Flüge und Flugzeit mit diesem Akku, dazu aus dem letzten Flug die höchste Temperatur (Starttemperatur im Attribut), die niedrigste Zellspannung und die größte Abweichung zwischen den Zellen. Ohne API-Key kennt die Integration nur die Seriennummer, also nur Flüge und Flugzeit. Beispiel-Automation für eine Akku-Warnung in [`examples/automations.yaml`](examples/automations.yaml).
 - **Vorfälle** – jeder Flug bekommt einen Status `ok`, `warning` oder `critical`, je nachdem, ob der Flugcontroller selbst eingegriffen hat: Warnung z. B. bei Smart-RTH oder Landung wegen niedrigem Akku, kritisch z. B. bei Zwangslandung, RTH nach Verbindungsverlust oder blockiertem Motor. Welche Aktionen es waren, steht in `incident_actions`. Ein per Taste ausgelöstes RTH zählt nicht, schnelle Sinkflüge auch nicht (bei FPV normal). Im Panel stehen Vorfälle und eine volle SD-Karte in der Flugliste und im Popup. Braucht den API-Key.
 - **geo_location** *(optional, standardmäßig aus)* – Startpunkt jedes Flugs als Entity (`source: dji_flightlog`), nutzbar auf der eingebauten Map-Card und in Zonen-Automationen. Aus gutem Grund opt-in: HA hängt an das automatische „Übersicht"-Dashboard eine Karte an, sobald *irgendeine* `geo_location`-Entity existiert – die Flüge würden dann ungefragt auf der Standard-Karte landen.
-- **Eigenes Panel in der Seitenleiste** – Vollbild-Ansicht mit Statistik, Filtern, großer Karte und Flugliste zum Anklicken. Flugaufzeichnungen lassen sich dort direkt **hochladen** (Button oder Drag & Drop).
+- **Eigenes Panel in der Seitenleiste** – drei Ansichten: *Flüge* (Statistik, Filter, große Karte, Flugliste), *Flug* (Details eines Flugs mit Verlaufsdiagrammen, Flugmodi, Ereignissen und Akku) und *Planen* (Karte mit DIPUL-Zonen, Suche und gemerkten Orten). Flugaufzeichnungen lassen sich dort direkt **hochladen** (Button oder Drag & Drop).
 - **Orte merken mit DIPUL-Zonen** – im Panel einen Punkt auf der Karte wählen und speichern, die [DIPUL](https://www.dipul.de)-Geozonen (Flughäfen, Kontrollzonen, Naturschutz, Wohngebiete, …) werden dabei eingeblendet und am Punkt abgefragt. Liste im Dashboard per `custom:dji-spots-card`, mit Google-Maps-Link zum Starten der Navigation.
 - **Karte** – `custom:dji-flight-map-card` (Leaflet, offline-fähig außer Kacheln): alle Tracks, Heatmap, Popups mit Kennzahlen und GPX/KML/GeoJSON-Download, Filter nach Zeitraum/Drohne, Modus „nur letzter Flug".
 - **Event** `dji_flightlog_flight_imported` bei jedem neuen Flug (Payload = Flugzusammenfassung) → Benachrichtigung, OneDrive-Upload, …
@@ -54,24 +54,36 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 
 ## Eigenes Dashboard in der Seitenleiste
 
-Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge"** in der HA-Seitenleiste – kein Lovelace-Dashboard, sondern eine eigene Seite:
+Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge"** in der HA-Seitenleiste – kein Lovelace-Dashboard, sondern eine eigene Seite mit drei Ansichten. Die zuletzt gewählte merkt sich der Browser.
 
+**Flüge**
 - Statistik-Kacheln (Flüge, Flugzeit, Strecke, max. Höhe/Speed, letzter Flug) über den gefilterten Zeitraum
-- Filter: Zeitraum (7 Tage … alles), Drohne (ab zwei Drohnen), Heatmap an/aus
-- **Suche** über der Karte: Postleitzahl, Ort, Adresse oder Koordinaten eingeben, Enter. Die Karte springt hin und setzt einen Marker, dessen Popup „Ort merken“ (Name schon vorbelegt) und Navigation anbietet. Koordinaten gehen in allen üblichen Schreibweisen: `48.13743, 11.57549`, `48,13743 11,57549`, `N 48.13743 E 11.57549`, `48°08'14.7"N 11°34'31.8"E` (so kopiert man sie aus Google Maps) oder ein Google-Maps-Link mit `@48.13743,11.57549`. Koordinaten werden lokal erkannt; alles andere fragt der Browser bei [Nominatim](https://nominatim.org) (OpenStreetMap) an, eine reine PLZ zuerst als Postleitzahl im Land der HA-Instanz
+- Filter: Zeitraum (7 Tage … alles), Drohne (ab zwei Drohnen), Heatmap an/aus, DIPUL-Zonen an/aus
 - Große Karte, die die volle Höhe nutzt
-- Flugliste rechts (auf dem Handy darunter), nach Tagen gruppiert; Klick auf einen Flug zoomt auf ihn und hebt ihn hervor, nochmal klicken hebt die Auswahl auf
+- Flugliste rechts (auf dem Handy darunter), nach Tagen gruppiert; Klick auf einen Flug zoomt auf ihn und hebt ihn hervor, nochmal klicken hebt die Auswahl auf. Das Diagramm-Symbol am Flug oder „Details“ im Popup öffnet die Ansicht *Flug*
+
+**Flug**
+- Kennzahlen: Dauer, Strecke, maximale Entfernung vom Home-Punkt, max. Höhe und Speed, Akku, Videolänge; Hinweis bei Vorfall, voller SD-Karte oder fehlendem API-Key
+- Track auf der Karte und Verlaufsdiagramme über die Flugzeit: Höhe über dem Start, Geschwindigkeit, Entfernung vom Home-Punkt, Akku und Akku-Temperatur, darüber ein Band mit den Flugmodi (Normal, Sport, ActiveTrack, RTH, …). Eingriffe des Flugcontrollers (RTH, Landung, …) sind als gestrichelte Linien eingezeichnet. Mit Maus oder Finger über die Diagramme fahren zeigt die Werte an dieser Stelle und die Position auf der Karte
+- Flugmodi mit Zeitanteilen, Ereignisliste, Akku (Seriennummer, Zyklen, Kapazität, Temperatur, Zellspannungen), Aufnahme (Video, SD-Karte), Technik (Seriennummer, App- und Log-Version, Datei) und Export als GPX/KML/GeoJSON
+- ‹ und › blättern zum vorherigen bzw. nächsten Flug
+- Die Diagramme brauchen entschlüsselte Logs (API-Key). Flüge, die vor dieser Version importiert wurden, bekommen sie beim nächsten Scan
+
+**Planen**
+- Karte mit den DIPUL-Zonen; ein Tipp auf die Karte öffnet „Neuer Ort“ (siehe unten). „Flüge einblenden“ zeigt die bisherigen Tracks
+- **Suche** über der Karte: Postleitzahl, Ort, Adresse oder Koordinaten eingeben, Enter. Die Karte springt hin und setzt einen Marker, dessen Popup „Ort merken“ (Name schon vorbelegt) und Navigation anbietet. Koordinaten gehen in allen üblichen Schreibweisen: `48.13743, 11.57549`, `48,13743 11,57549`, `N 48.13743 E 11.57549`, `48°08'14.7"N 11°34'31.8"E` (so kopiert man sie aus Google Maps) oder ein Google-Maps-Link mit `@48.13743,11.57549`. Koordinaten werden lokal erkannt; alles andere fragt der Browser bei [Nominatim](https://nominatim.org) (OpenStreetMap) an, eine reine PLZ zuerst als Postleitzahl im Land der HA-Instanz
+- Liste der gemerkten Orte mit Navigations-Link und Löschen; Klick zoomt auf den Ort
+
+**Überall**
 - ↻-Button oben rechts scannt den Log-Ordner sofort
 - ⇧-Button oben rechts: **Flugaufzeichnungen hochladen** (nur für Admins). Alternativ Dateien oder den ganzen Ordner `FlightRecord` auf die Seite ziehen. Die Dateien landen im Log-Ordner und werden sofort importiert; schon vorhandene werden erkannt und nicht doppelt gespeichert
-- Marker-Button oben rechts: **Ort merken** (siehe unten); Schalter „DIPUL-Zonen“ blendet die Geozonen auch ohne Planungsmodus ein
-- Tab „Orte“ in der Liste: gemerkte Orte mit Navigations-Link und Löschen; Klick zoomt auf den Ort
 - Hinweisleiste, wenn Flüge ohne GPS-Track importiert wurden (fehlender API-Key) oder nicht unterstützte Dateien im Ordner liegen
 
 Abschaltbar über *Integration → Konfigurieren → „In der Seitenleiste anzeigen"*. Die Position in der Seitenleiste lässt sich wie bei jedem Panel per Rechtsklick bzw. über *Profil → Seitenleiste bearbeiten* ändern.
 
 ## Orte merken (DIPUL-Zonen)
 
-Im Panel einfach auf eine freie Stelle der Karte tippen: Es öffnet sich „Neuer Ort“ mit den DIPUL-Zonen an diesem Punkt. Der Marker-Button oben rechts schaltet zusätzlich den Planungsmodus ein: Die Karte blendet die Geozonen der [DIPUL](https://www.dipul.de) (DFS, Digitale Plattform Unbemannte Luftfahrt) ein, ab Zoomstufe 8. Ein Tipp auf die Karte fragt die Zonen an diesem Punkt ab (z. B. „Kontrollzone Frankfurt Main (EDDF) Zone 4 (691 ft MSL – 2500 ft MSL)“, „Vogelschutzgebiet Hessische Rhön“). Name und Notiz eingeben, **Merken**.
+Im Panel unter *Planen* auf eine freie Stelle der Karte tippen: Es öffnet sich „Neuer Ort“ mit den DIPUL-Zonen an diesem Punkt. Die Karte blendet dort die Geozonen der [DIPUL](https://www.dipul.de) (DFS, Digitale Plattform Unbemannte Luftfahrt) ein, ab Zoomstufe 8. Ein Tipp auf die Karte fragt die Zonen an diesem Punkt ab (z. B. „Kontrollzone Frankfurt Main (EDDF) Zone 4 (691 ft MSL – 2500 ft MSL)“, „Vogelschutzgebiet Hessische Rhön“). Name und Notiz eingeben, **Merken**.
 
 - Gespeichert wird der Punkt samt der Zonen zum Zeitpunkt der Abfrage. Im Popup eines Ortes lassen sich die Zonen mit „Zonen prüfen“ aktualisieren.
 - **Navigation** öffnet `https://www.google.com/maps/dir/?api=1&destination=<lat>,<lon>`, auf dem Handy also direkt die Google-Maps-App mit Route.
@@ -116,7 +128,7 @@ height: 450
 
 Satellitenbilder kommen von Esri World Imagery (mit Orts- und Grenznamen darüber) und werden im Dark Mode nicht invertiert.
 
-Weitere Optionen: `dipul` (DIPUL-Geozonen einblenden, Default false), `spots` (gemerkte Orte anzeigen, Default true bei `mode: all`), `scan_button` (↻ im Titel, Default true), `limit`, `since` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
+Weitere Optionen: `dipul` (DIPUL-Geozonen einblenden, Default false), `spots` (gemerkte Orte anzeigen, Default true bei `mode: all`), `flights` (false: keine Tracks, nur Orte und Zonen), `scan_button` (↻ im Titel, Default true), `limit`, `since` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
 
 ### Flüge auf der Standard-Karte
 

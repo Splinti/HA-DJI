@@ -2,26 +2,52 @@
  * dji-flightlog-panel
  *
  * Full-page Home Assistant panel (sidebar entry) for the dji_flightlog
- * integration: statistics, filters, a large map, a clickable flight list and
- * the saved spots ("Ort merken" picks a new one on the map, with the DIPUL
- * geo zones shown). ``?spot=<id>`` in the URL opens that spot. Flight records
- * can be uploaded with the upload button or by dropping files / folders onto
- * the page (admins only).
+ * integration, in three views:
+ *   Flüge   statistics, filters, a large map and a clickable flight list
+ *   Flug    details of one flight (dji-flight-details: charts, battery, ...)
+ *   Planen  a map with the DIPUL geo zones for picking and saving spots, the
+ *           place search and the saved spots; ``?spot=<id>`` opens a spot here
+ * Flight records can be uploaded with the upload button or by dropping files /
+ * folders onto the page (admins only).
  *
- * Registered by the integration via panel_custom; the map itself is the
- * dji-flight-map-card element, which this module loads on demand.
+ * Registered by the integration via panel_custom; the maps are
+ * dji-flight-map-card elements, loaded on demand like the detail view.
  */
 
 const STATIC = "/dji_flightlog_static";
 const API = "dji_flightlog";
 
+// Same ?v= as this module (set by the integration), so an update is not
+// served stale modules from the browser cache.
+const VERSION_QUERY = new URL(import.meta.url).search;
 let cardPromise = null;
 function loadCard() {
   if (customElements.get("dji-flight-map-card")) return Promise.resolve();
-  // Same ?v= as this module (set by the integration), so an update is not
-  // served a stale card from the browser cache.
-  cardPromise ??= import(`${STATIC}/dji-flight-map-card.js${new URL(import.meta.url).search}`);
+  cardPromise ??= import(`${STATIC}/dji-flight-map-card.js${VERSION_QUERY}`);
   return cardPromise;
+}
+let detailsPromise = null;
+function loadDetails() {
+  detailsPromise ??= import(`${STATIC}/dji-flight-details.js${VERSION_QUERY}`);
+  return detailsPromise;
+}
+
+const VIEWS = ["flights", "flight", "plan"];
+const VIEW_KEY = "dji_flightlog.panel_view";
+function loadView() {
+  try {
+    const v = localStorage.getItem(VIEW_KEY);
+    return VIEWS.includes(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+function saveView(v) {
+  try {
+    localStorage.setItem(VIEW_KEY, v);
+  } catch {
+    // Private mode or blocked storage: the panel just starts on "Flüge".
+  }
 }
 
 const fmtDate = (iso, opts = { dateStyle: "medium", timeStyle: "short" }) =>
@@ -57,8 +83,8 @@ class DjiFlightLogPanel extends HTMLElement {
     this._loading = false;
     this._lastKey = null;
     this._filters = { days: "0", aircraft: "", heatmap: false, dipul: false };
-    this._tab = "flights";
-    this._planning = false;
+    this._view = loadView() || "flights";
+    this._planFlights = false;
     this._spots = [];
     this._spotsKey = null;
     this._reload = false;
@@ -70,8 +96,10 @@ class DjiFlightLogPanel extends HTMLElement {
     this._hass = hass;
     if (!this._rendered) this._render();
     this.shadowRoot.getElementById("upload").hidden = !hass.user?.is_admin;
-    // Only once the card is upgraded and configured (see _setupCard).
+    // Only once the cards are upgraded and configured (see _setupCard).
     if (this._cardReady) this._card.hass = hass;
+    if (this._planReady) this._planCard.hass = hass;
+    if (this._details) this._details.hass = hass;
     // Reload whenever the integration reports a new import.
     const ent = hass.states["sensor.dji_flight_log_last_import"];
     const key = ent ? ent.state : "none";
@@ -95,6 +123,7 @@ class DjiFlightLogPanel extends HTMLElement {
     this._narrow = value;
     this.shadowRoot?.host?.classList?.toggle("narrow", !!value);
     if (this._rendered) this.shadowRoot.querySelector(".layout")?.classList.toggle("narrow", !!value);
+    this._details?.classList.toggle("narrow", !!value);
   }
 
   set panel(_panel) {
@@ -152,6 +181,21 @@ class DjiFlightLogPanel extends HTMLElement {
         #menu { display: none; }
         .layout.narrow #menu { display: inline-flex; }
 
+        nav.views {
+          display: flex; flex: 0 0 auto; padding: 0 8px; overflow-x: auto;
+          background: var(--app-header-background-color, var(--primary-color));
+          color: var(--app-header-text-color, #fff);
+        }
+        nav.views button {
+          background: none; border: none; border-bottom: 2px solid transparent; color: inherit; cursor: pointer;
+          font: inherit; font-size: 14px; font-weight: 500; padding: 10px 16px; opacity: 0.7;
+        }
+        nav.views button:hover { opacity: 1; }
+        nav.views button.on { opacity: 1; border-bottom-color: currentColor; }
+        .view { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+        .view[hidden] { display: none; }
+        #v-flight { overflow-y: auto; }
+
         .stats { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 16px 0; flex: 0 0 auto; }
         .tile {
           flex: 1 1 130px; background: var(--card-background-color, #fff);
@@ -200,16 +244,15 @@ class DjiFlightLogPanel extends HTMLElement {
           border-radius: var(--ha-card-border-radius, 12px);
           box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,.08));
         }
-        #list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-        .tabs { display: flex; flex: 0 0 auto; border-bottom: 1px solid var(--divider-color, #e0e0e0); }
-        .tabs button {
-          flex: 1; background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer;
-          font: inherit; font-size: 14px; padding: 10px; color: var(--secondary-text-color);
+        #list, #spotlist { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+        .asidehead {
+          flex: 0 0 auto; padding: 10px 16px; font-size: 14px; font-weight: 500;
+          border-bottom: 1px solid var(--divider-color, #e0e0e0);
         }
-        .tabs button.on { color: var(--primary-color); border-bottom-color: var(--primary-color); }
         /* Phone: the page scrolls, the map gets a fixed share of the screen. */
         :host(.narrow) { height: auto; min-height: 100dvh; }
         .layout.narrow .body { flex-direction: column; }
+        :host(.narrow) #v-flight { overflow: visible; }
         .layout.narrow .mapwrap { flex: 0 0 auto; height: 60vh; }
         .layout.narrow aside { flex: 0 0 auto; max-height: 60vh; }
 
@@ -265,9 +308,6 @@ class DjiFlightLogPanel extends HTMLElement {
         <header>
           <button id="menu" title="Menü">${svg("M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z")}</button>
           <div class="title">Drohnenflüge</div>
-          <button id="plan" title="Ort merken: Punkt auf der Karte wählen, DIPUL-Zonen werden eingeblendet">${svg(
-            "M20,14H18V11H15V9H18V6H20V9H23V11H20V14M12,2C15.86,2 19,5.14 19,9C19,14.25 12,22 12,22C12,22 5,14.25 5,9A7,7 0 0,1 12,2M12,6.5A2.5,2.5 0 0,0 9.5,9A2.5,2.5 0 0,0 12,11.5A2.5,2.5 0 0,0 14.5,9A2.5,2.5 0 0,0 12,6.5Z",
-          )}</button>
           <button id="upload" title="Flugaufzeichnungen hochladen (DJIFlightRecord_*.txt), oder Dateien auf die Seite ziehen" hidden>${svg(
             "M9,16V10H5L12,3L19,10H15V16H9M5,20V18H19V20H5Z",
           )}</button>
@@ -276,38 +316,55 @@ class DjiFlightLogPanel extends HTMLElement {
             "M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z",
           )}</button>
         </header>
+        <nav class="views">
+          <button data-view="flights">Flüge</button>
+          <button data-view="flight">Flug</button>
+          <button data-view="plan">Planen</button>
+        </nav>
 
         <div id="upbar" hidden></div>
         <div id="note" hidden></div>
 
-        <div class="stats" id="stats"></div>
+        <section class="view" id="v-flights" hidden>
+          <div class="stats" id="stats"></div>
+          <div class="filters">
+            <label>Zeitraum
+              <select id="range">${RANGES.map((r) => `<option value="${r.value}">${r.label}</option>`).join("")}</select>
+            </label>
+            <label id="aclabel" hidden>Drohne
+              <select id="aircraft"><option value="">Alle</option></select>
+            </label>
+            <label><input type="checkbox" id="heat"> Heatmap</label>
+            <label title="Geografische Gebiete für Drohnen (DFS / dipul)"><input type="checkbox" id="dipul"> DIPUL-Zonen</label>
+          </div>
+          <div class="body">
+            <div class="mapwrap"><dji-flight-map-card id="map"></dji-flight-map-card></div>
+            <aside>
+              <div class="asidehead">Flüge</div>
+              <div id="list"></div>
+            </aside>
+          </div>
+        </section>
 
-        <div class="filters">
-          <form class="search" id="search" role="search">
-            <input type="search" id="q" placeholder="PLZ, Ort, Adresse oder Koordinaten" autocomplete="off"
-              title="z. B. 80331, Marienplatz München, 48.13743, 11.57549 oder 48°08'14.7&quot;N 11°34'31.8&quot;E">
-            <div id="results" hidden></div>
-          </form>
-          <label>Zeitraum
-            <select id="range">${RANGES.map((r) => `<option value="${r.value}">${r.label}</option>`).join("")}</select>
-          </label>
-          <label id="aclabel" hidden>Drohne
-            <select id="aircraft"><option value="">Alle</option></select>
-          </label>
-          <label><input type="checkbox" id="heat"> Heatmap</label>
-          <label title="Geografische Gebiete für Drohnen (DFS / dipul)"><input type="checkbox" id="dipul"> DIPUL-Zonen</label>
-        </div>
+        <section class="view" id="v-flight" hidden></section>
 
-        <div class="body">
-          <div class="mapwrap"><dji-flight-map-card></dji-flight-map-card></div>
-          <aside>
-            <div class="tabs">
-              <button data-tab="flights">Flüge</button>
-              <button data-tab="spots">Orte</button>
-            </div>
-            <div id="list"></div>
-          </aside>
-        </div>
+        <section class="view" id="v-plan" hidden>
+          <div class="filters">
+            <form class="search" id="search" role="search">
+              <input type="search" id="q" placeholder="PLZ, Ort, Adresse oder Koordinaten" autocomplete="off"
+                title="z. B. 80331, Marienplatz München, 48.13743, 11.57549 oder 48°08'14.7&quot;N 11°34'31.8&quot;E">
+              <div id="results" hidden></div>
+            </form>
+            <label title="Die Tracks der bisherigen Flüge auf der Planungskarte zeigen"><input type="checkbox" id="planflights"> Flüge einblenden</label>
+          </div>
+          <div class="body">
+            <div class="mapwrap" id="planwrap"><dji-flight-map-card id="planmap"></dji-flight-map-card></div>
+            <aside>
+              <div class="asidehead" id="spotshead">Gemerkte Orte</div>
+              <div id="spotlist"></div>
+            </aside>
+          </div>
+        </section>
       </div>
       <div id="drop" hidden><div>Flugaufzeichnungen hier ablegen<small>DJIFlightRecord_*.txt oder der Ordner FlightRecord</small></div></div>`;
 
@@ -338,20 +395,40 @@ class DjiFlightLogPanel extends HTMLElement {
       this._card?.setDipul(e.target.checked);
     };
     this._setupSearch();
-    this.shadowRoot.getElementById("plan").onclick = () => this._setPlanning(!this._planning);
-    for (const tab of this.shadowRoot.querySelectorAll(".tabs button")) {
-      tab.onclick = () => this._setTab(tab.dataset.tab);
+    this.shadowRoot.getElementById("planflights").onchange = (e) => {
+      this._planFlights = e.target.checked;
+      if (this._planReady) this._planCard.updateOptions({ flights: this._planFlights });
+    };
+    for (const b of this.shadowRoot.querySelectorAll("nav.views button")) {
+      b.onclick = () => this._setView(b.dataset.view);
     }
     // Fired by the map card after a spot was saved, re-checked or deleted.
     this.shadowRoot.addEventListener("dji-spots-changed", () => this._loadSpots());
-    this._setTab(this._tab);
+    // "Details" in a flight's popup on the overview map.
+    this.shadowRoot.addEventListener("dji-flight-details", (e) => this._openDetails(e.detail.flight_id));
+    // Prev/next inside the detail view: keep the list selection in step.
+    this.shadowRoot.addEventListener("dji-flight-selected", (e) => {
+      this._selected = e.detail.flight_id;
+      this._renderList();
+      if (this._cardReady) this._card.focusFlight(this._selected, { openPopup: false });
+    });
 
     this.shadowRoot.querySelector(".layout").classList.toggle("narrow", !!this._narrow);
     this._setupCard();
+    // ?spot=<id> (a dashboard card linking here) wins over the remembered view.
+    this._setView(new URL(location.href).searchParams.has("spot") ? "plan" : this._view);
   }
 
   get _card() {
-    return this.shadowRoot?.querySelector("dji-flight-map-card");
+    return this.shadowRoot?.getElementById("map");
+  }
+
+  get _planCard() {
+    return this.shadowRoot?.getElementById("planmap");
+  }
+
+  get _details() {
+    return this.shadowRoot?.querySelector("dji-flight-details");
   }
 
   async _setupCard() {
@@ -370,41 +447,84 @@ class DjiFlightLogPanel extends HTMLElement {
       refresh_seconds: 0, // the panel drives reloads
       fit: true,
       spots: true,
-      spot_on_click: true,
+      details: true,
       dipul: this._filters.dipul,
     });
-    // Let the map fill the panel instead of using the card's fixed height.
-    const mapEl = card.shadowRoot?.getElementById("map");
-    if (mapEl) mapEl.style.height = "100%";
-    const haCard = card.shadowRoot?.querySelector("ha-card");
-    if (haCard) {
-      haCard.style.height = "100%";
-      haCard.style.display = "flex";
-      haCard.style.flexDirection = "column";
-      mapEl.style.flex = "1 1 auto";
-    }
+    fillPanel(card);
     this._cardReady = true;
     if (this._hass) {
       card.hass = this._hass;
       // Force the first load instead of relying on a refresh-entity change.
       card.updateOptions(this._cardFilters());
     }
-    if (this._planning) card.setPlanning(true);
+  }
+
+  /** The planning map is built on first use: Leaflet cannot size itself in a hidden view. */
+  async _setupPlanCard() {
+    if (this._planSetup) return;
+    this._planSetup = true;
+    await loadCard();
+    const card = this._planCard;
+    if (!card) return;
+    customElements.upgrade(card);
+    card.setConfig({
+      title: "",
+      mode: "all",
+      height: 100,
+      flights: this._planFlights,
+      scan_button: false,
+      refresh_seconds: 0,
+      fit: true,
+      spots: true,
+      details: true,
+      dipul: true,
+    });
+    fillPanel(card);
+    this._planReady = true;
+    if (this._hass) card.hass = this._hass;
+    // Planning mode: a tap on the map picks a spot and shows its DIPUL zones.
+    card.setPlanning(true);
     this._openSpotFromUrl();
   }
 
-  _setPlanning(on) {
-    this._planning = on;
-    this.shadowRoot.getElementById("plan").classList.toggle("active", on);
-    this._card?.setPlanning?.(on);
-    if (on) this._setTab("spots");
-    else this._renderList(); // drop the planning hint
+  _setView(view) {
+    if (!VIEWS.includes(view)) view = "flights";
+    this._view = view;
+    saveView(view);
+    for (const b of this.shadowRoot.querySelectorAll("nav.views button")) b.classList.toggle("on", b.dataset.view === view);
+    for (const v of VIEWS) this.shadowRoot.getElementById(`v-${v}`).hidden = v !== view;
+    if (view === "plan") {
+      this._setupPlanCard();
+      this._renderSpots();
+    } else if (view === "flight") {
+      this._showDetails();
+    }
   }
 
-  _setTab(tab) {
-    this._tab = tab;
-    for (const b of this.shadowRoot.querySelectorAll(".tabs button")) b.classList.toggle("on", b.dataset.tab === tab);
+  _openDetails(flightId) {
+    this._selected = flightId;
     this._renderList();
+    this._setView("flight");
+  }
+
+  async _showDetails() {
+    const host = this.shadowRoot.getElementById("v-flight");
+    if (!this._details) {
+      await loadDetails();
+      if (!this._details) host.innerHTML = "<dji-flight-details></dji-flight-details>";
+      const el = this._details;
+      customElements.upgrade(el);
+      el.classList.toggle("narrow", !!this._narrow);
+      if (this._hass) el.hass = this._hass;
+    }
+    const flights = this._data?.flights || [];
+    this._details.setFlights(flights);
+    // Nothing picked yet: the newest flight.
+    const id = this._selected && flights.some((f) => f.flight_id === this._selected) ? this._selected : flights[0]?.flight_id;
+    if (id !== this._detailsId) {
+      this._detailsId = id;
+      this._details.show(id || null);
+    }
   }
 
   async _loadSpots() {
@@ -416,20 +536,21 @@ class DjiFlightLogPanel extends HTMLElement {
       console.error("dji-flightlog-panel spots:", err);
       return;
     }
-    const tab = this.shadowRoot.querySelector('.tabs button[data-tab="spots"]');
-    if (tab) tab.textContent = this._spots.length ? `Orte (${this._spots.length})` : "Orte";
-    if (this._tab === "spots") this._renderList();
+    const head = this.shadowRoot.getElementById("spotshead");
+    if (head) head.textContent = this._spots.length ? `Gemerkte Orte (${this._spots.length})` : "Gemerkte Orte";
+    this._renderSpots();
     this._openSpotFromUrl();
   }
 
   _openSpotFromUrl() {
     const url = new URL(location.href);
     const id = url.searchParams.get("spot");
-    if (!id || !this._card?.focusSpot) return;
+    if (!id) return;
+    if (this._view !== "plan") this._setView("plan"); // builds the planning map, which calls back here
+    if (!this._planReady) return;
     url.searchParams.delete("spot");
     history.replaceState(history.state, "", url.pathname + url.search + url.hash);
-    if (this._tab !== "spots") this._setTab("spots");
-    this._card.focusSpot(id);
+    this._planCard.focusSpot(id);
   }
 
   async _deleteSpot(spot) {
@@ -441,18 +562,15 @@ class DjiFlightLogPanel extends HTMLElement {
       return;
     }
     await this._loadSpots();
-    this._card?.reloadSpots();
+    if (this._cardReady) this._card.reloadSpots();
+    if (this._planReady) this._planCard.reloadSpots();
   }
 
   _renderSpots() {
-    const list = this.shadowRoot.getElementById("list");
-    const intro = this._planning
-      ? `<div class="hint">Auf die Karte tippen, Namen eingeben, „Merken“. Die DIPUL-Zonen sind nur zur Orientierung: vor dem Flug auf dipul.de prüfen.</div>`
-      : "";
+    const list = this.shadowRoot.getElementById("spotlist");
+    const intro = `<div class="hint">Auf die Karte tippen, Namen eingeben, „Merken“. Die DIPUL-Zonen erscheinen ab Zoomstufe 8 und sind nur zur Orientierung: vor dem Flug auf dipul.de prüfen.</div>`;
     if (!this._spots.length) {
-      list.innerHTML =
-        intro ||
-        `<div class="empty">Noch keine Orte gemerkt.<br>Auf die Karte tippen, um einen Ort zu merken.</div>`;
+      list.innerHTML = intro + `<div class="empty">Noch keine Orte gemerkt.</div>`;
       return;
     }
     list.innerHTML =
@@ -483,7 +601,7 @@ class DjiFlightLogPanel extends HTMLElement {
         .join("");
     for (const row of list.querySelectorAll(".row")) {
       const spot = this._spots.find((s) => s.id === row.dataset.id);
-      row.onclick = () => this._card?.focusSpot(spot.id);
+      row.onclick = () => this._planReady && this._planCard.focusSpot(spot.id);
       row.querySelector("a.act").onclick = (ev) => ev.stopPropagation();
       row.querySelector(".del").onclick = (ev) => {
         ev.stopPropagation();
@@ -521,6 +639,8 @@ class DjiFlightLogPanel extends HTMLElement {
       this._renderStats();
       this._renderList();
       this._renderNote();
+      if (this._view === "flight") this._showDetails();
+      else this._details?.setFlights(this._data.flights || []);
     } catch (err) {
       console.error("dji-flightlog-panel:", err);
       const list = this.shadowRoot.getElementById("list");
@@ -548,7 +668,8 @@ class DjiFlightLogPanel extends HTMLElement {
       await this._hass.callService(API, "scan", {});
       setTimeout(() => {
         this._load();
-        this._card?.updateOptions({});
+        if (this._cardReady) this._card.updateOptions({});
+        if (this._planReady && this._planFlights) this._planCard.updateOptions({});
       }, 3000);
     } catch (err) {
       console.error("dji-flightlog-panel scan:", err);
@@ -569,7 +690,7 @@ class DjiFlightLogPanel extends HTMLElement {
     };
     input.oninput = () => {
       results.hidden = true;
-      if (!input.value.trim()) this._card?.clearPlace?.(); // also the × of the field
+      if (!input.value.trim() && this._planReady) this._planCard.clearPlace?.(); // also the × of the field
     };
     const move = (e, from) => {
       const items = [...results.querySelectorAll("button")];
@@ -638,9 +759,9 @@ class DjiFlightLogPanel extends HTMLElement {
   }
 
   _showPlace(place) {
-    this._card?.showPlace?.(place);
+    if (this._planReady) this._planCard.showPlace?.(place);
     // Phone: the map sits below the filters and may be scrolled out of view.
-    if (this._narrow) this.shadowRoot.querySelector(".mapwrap").scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (this._narrow) this.shadowRoot.getElementById("planwrap").scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
   // -- upload ---------------------------------------------------------------
@@ -698,7 +819,7 @@ class DjiFlightLogPanel extends HTMLElement {
     this._renderUpload({ results });
     if (results.some((r) => r.status === "imported")) {
       this._load();
-      this._card?.updateOptions({});
+      if (this._cardReady) this._card.updateOptions({});
     }
   }
 
@@ -792,7 +913,6 @@ class DjiFlightLogPanel extends HTMLElement {
   }
 
   _renderList() {
-    if (this._tab === "spots") return this._renderSpots();
     if (!this._data) return; // flights not loaded yet
     const list = this.shadowRoot.getElementById("list");
     const flights = this._data?.flights || [];
@@ -827,6 +947,9 @@ class DjiFlightLogPanel extends HTMLElement {
             }
             ${f.sd_full ? `<div class="warn">SD-Karte voll</div>` : ""}
           </div>
+          <button class="act det" title="Details zum Flug">${svg(
+            "M16,11.78L20.24,4.45L21.97,5.45L16.74,14.5L10.23,10.75L5.46,19H22V21H2V3H4V17.54L9.5,8L16,11.78Z",
+          )}</button>
         </div>`;
     }
     list.innerHTML = html;
@@ -837,8 +960,24 @@ class DjiFlightLogPanel extends HTMLElement {
         this._renderList();
         this._card?.focusFlight(this._selected);
       };
+      row.querySelector(".det").onclick = (ev) => {
+        ev.stopPropagation();
+        this._openDetails(row.dataset.id);
+      };
     }
   }
+}
+
+/** Let a map card fill its flex area instead of using the card's fixed height. */
+function fillPanel(card) {
+  const mapEl = card.shadowRoot?.getElementById("map");
+  const haCard = card.shadowRoot?.querySelector("ha-card");
+  if (!mapEl || !haCard) return;
+  mapEl.style.height = "100%";
+  haCard.style.height = "100%";
+  haCard.style.display = "flex";
+  haCard.style.flexDirection = "column";
+  mapEl.style.flex = "1 1 auto";
 }
 
 // Same palette the card uses, so list dots match the tracks.
