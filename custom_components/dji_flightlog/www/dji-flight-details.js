@@ -8,7 +8,8 @@
  * With a media source (OneDrive, folder) connected, the recordings of the flight show in a
  * player that can be enlarged to fill the window. A playing video moves
  * the cursor in the charts and on the map along; a click into the charts
- * seeks the video to that moment.
+ * seeks the video to that moment. 360° recordings play in a 360° view
+ * (dji-360-view: drag to look around, zoom; "Flach" shows the raw picture).
  *
  * On wide screens video, map and charts share one area that fills the rest
  * of the screen: video over map on the left, charts on the right. The
@@ -30,6 +31,12 @@ const VERSION_QUERY = new URL(import.meta.url).search;
 // The map card module also holds the labels for modes and actions.
 let cardModule = null;
 const loadCardModule = () => (cardModule ??= import(`${STATIC}/dji-flight-map-card.js${VERSION_QUERY}`));
+// The 360° player, loaded once a flight with videos is shown; it also decides
+// which recordings are 360° (view360.projectionOf), known here once loaded.
+let viewModule = null;
+let view360 = null;
+const load360 = () =>
+  (viewModule ??= import(`${STATIC}/dji-360-view.js${VERSION_QUERY}`).then((mod) => (view360 = mod)));
 
 const fmtDate = (iso, opts = { dateStyle: "full", timeStyle: "short" }) =>
   iso ? new Date(iso).toLocaleString(undefined, opts) : "";
@@ -112,6 +119,8 @@ class DjiFlightDetails extends HTMLElement {
     this._hover = null;
     this._chartBox = { w: 0, h: 0 };
     this._durations = {}; // recording id -> seconds, read from the video where the source knows none
+    this._sizes = {}; // recording id -> { width, height } of the video, once read (tells a 2:1 fisheye proxy)
+    this._probed = new Set(); // recording ids whose metadata were fetched or are queued
     this._prefs = readLayout();
     this._onResize = () => this._layout();
     this._render();
@@ -710,6 +719,7 @@ class DjiFlightDetails extends HTMLElement {
     if (key === this._mediaKey) return false;
     this._mediaKey = key;
     this._setBig(false);
+    this._drop360();
     this._sync = null;
     this._mediaIndex = null;
     this._photoT = null;
@@ -727,12 +737,8 @@ class DjiFlightDetails extends HTMLElement {
           media.length > 1
             ? `<div class="strip">${media
                 .map(
-                  (m, i) => `
-              <div class="m" data-i="${i}" title="${esc(m.name)}">
-                ${esc(KIND_LABEL[m.kind] || m.kind)}
-                ${m.thumb ? `<img src="${esc(m.thumb)}" loading="lazy" alt="">` : ""}
-                <span>${m.kind === "360" ? "360° " : ""}${this._recDuration(m) ? esc(fmtClock(this._recDuration(m))) : m.kind === "photo" ? "Foto" : ""}</span>
-              </div>`,
+                  (m, i) =>
+                    `<div class="m" data-i="${i}" data-p="${this._projection(m) || ""}" title="${esc(m.name)}">${this._thumbHtml(m)}</div>`,
                 )
                 .join("")}</div>`
             : ""
@@ -741,7 +747,61 @@ class DjiFlightDetails extends HTMLElement {
     for (const el of box.querySelectorAll(".strip .m")) el.onclick = () => this._selectMedia(Number(el.dataset.i));
     this._selectMedia(0);
     if (this._track) this._probeDurations();
+    // Which videos are 360° is up to the player module; show them as such once it is in.
+    if (media.some((m) => m.kind !== "photo" && m.play) && !view360) {
+      load360()
+        .then(() => {
+          if (key !== this._mediaKey) return;
+          this._refresh360();
+          if (this._track) this._probeDurations(); // proxies whose size tells whether they are 360°
+        })
+        .catch((err) => console.error("dji-flight-details 360:", err));
+    }
     return true;
+  }
+
+  /** "equirect", "dfisheye" or null (flat) for a recording, as far as known yet. */
+  _projection(m) {
+    return view360 ? view360.projectionOf(m, this._sizes[m.id]) : null;
+  }
+
+  _kindLabel(m) {
+    return this._projection(m) ? KIND_LABEL["360"] : KIND_LABEL[m.kind] || m.kind;
+  }
+
+  /** Kind, cover and badge of a recording in the thumbnail strip. */
+  _thumbHtml(m) {
+    const len = this._recDuration(m);
+    return `
+      ${esc(this._kindLabel(m))}
+      ${m.thumb ? `<img src="${esc(m.thumb)}" loading="lazy" alt="">` : ""}
+      <span>${this._projection(m) || m.kind === "360" ? "360° " : ""}${len ? esc(fmtClock(len)) : m.kind === "photo" ? "Foto" : ""}</span>`;
+  }
+
+  /**
+   * Show what turned out to be 360° as such (player module loaded, a proxy's
+   * size read): thumbnails, and the selected recording's hint and 360° view.
+   */
+  _refresh360() {
+    const recs = this._recordings || [];
+    for (const el of this.shadowRoot.querySelectorAll(".strip .m")) {
+      const m = recs[Number(el.dataset.i)];
+      if (!m || el.dataset.p === (this._projection(m) || "")) continue;
+      el.dataset.p = this._projection(m) || "";
+      el.innerHTML = this._thumbHtml(m);
+      const img = el.querySelector("img");
+      if (img) img.onerror = () => img.remove();
+    }
+    const m = recs[this._mediaIndex];
+    const stage = this.shadowRoot.getElementById("stage");
+    const video = stage?.querySelector("video");
+    const projection = m && this._projection(m);
+    if (!projection || !video || this._view360?.video === video) return;
+    const facts = stage.querySelector("#facts");
+    if (facts) facts.textContent = this._facts(m);
+    const hint = stage.querySelector("#mhint");
+    if (hint && !video.error) hint.textContent = view360.HINT_360[projection] || "";
+    this._attach360(video, m, projection);
   }
 
   /** Length of a recording in seconds: from the media source, the video itself or the log; else null. */
@@ -754,11 +814,21 @@ class DjiFlightDetails extends HTMLElement {
   _probeDurations() {
     const key = this._mediaKey;
     const todo = (this._recordings || []).filter(
-      (m) => m.kind !== "photo" && m.play && !this._recDuration(m) && !(m.id in this._durations),
+      (m) =>
+        m.kind !== "photo" &&
+        m.play &&
+        !this._probed.has(m.id) &&
+        ((!this._recDuration(m) && !(m.id in this._durations)) || (view360?.needsSize(m) && !this._sizes[m.id])),
     );
+    for (const m of todo) this._probed.add(m.id);
     const next = () => {
       const m = todo.shift();
-      if (!m || key !== this._mediaKey) return;
+      if (!m) return;
+      if (key !== this._mediaKey) {
+        // Another flight: the rest is fetched when it is shown again.
+        for (const x of [m, ...todo]) this._probed.delete(x.id);
+        return;
+      }
       // Only the metadata: the browser fetches the header (and the end, where DJI puts it).
       // Held on the element: a detached video nobody references is garbage
       // collected before its metadata arrive (takes ~10 s through OneDrive).
@@ -770,6 +840,7 @@ class DjiFlightDetails extends HTMLElement {
         if (settled) return;
         settled = true;
         this._probe = null;
+        this._learnSize(m.id, v);
         this._learnDuration(m.id, v.duration);
         v.removeAttribute("src");
         v.load();
@@ -782,6 +853,14 @@ class DjiFlightDetails extends HTMLElement {
     next();
   }
 
+  /** Remember a video's size: a 2:1 proxy is the dual fisheye and gets the 360° view. */
+  _learnSize(id, video) {
+    if (this._sizes[id] || !video.videoWidth || !video.videoHeight) return;
+    this._sizes[id] = { width: video.videoWidth, height: video.videoHeight };
+    const m = (this._recordings || []).find((x) => x.id === id);
+    if (m && this._projection(m)) this._refresh360();
+  }
+
   _learnDuration(id, seconds) {
     if (this._durations[id]) return;
     const known = Number.isFinite(seconds) && seconds > 0;
@@ -791,7 +870,8 @@ class DjiFlightDetails extends HTMLElement {
     if (i < 0) return;
     const m = this._recordings[i];
     const label = this.shadowRoot.querySelector(`.strip .m[data-i="${i}"] span`);
-    if (label) label.textContent = `${m.kind === "360" ? "360° " : ""}${fmtClock(seconds)}`;
+    if (label) label.textContent = `${this._projection(m) || m.kind === "360" ? "360° " : ""}${fmtClock(seconds)}`;
+    this._view360?.update(); // its time display takes the length from here before the video has it
     if (this._track) this._renderCharts(); // bar instead of a dot in the band
   }
 
@@ -801,6 +881,7 @@ class DjiFlightDetails extends HTMLElement {
     if (!m || !stage) return;
     this._mediaIndex = i;
     this._sync = null;
+    this._drop360();
     // A photo pins the cursor to where it was taken.
     this._photoT = m.kind === "photo" ? this._recOffset(m) : null;
     this._markSelected();
@@ -808,16 +889,19 @@ class DjiFlightDetails extends HTMLElement {
     const big = stage.classList.contains("big");
     let screen;
     if (isVideo) {
-      // preload="none": nothing is fetched until play is pressed.
-      screen = `<video controls playsinline preload="none"${m.thumb ? ` poster="${esc(m.thumb)}"` : ""} src="${esc(m.play)}"></video>`;
+      // preload="none": nothing is fetched until play is pressed. crossorigin:
+      // OneDrive redirects to another host, and WebGL (360° view) may only
+      // read the frames if that host allows it (it sends CORS headers).
+      screen = `<video controls playsinline preload="none" crossorigin="anonymous"${m.thumb ? ` poster="${esc(m.thumb)}"` : ""} src="${esc(m.play)}"></video>`;
     } else if (m.thumb || m.play) {
       // Photos: the small cover while small, the full picture once enlarged.
       screen = `<img src="${esc((big && m.play) || m.thumb || m.play)}" alt="">`;
     } else {
       screen = `<div class="ph">${esc(KIND_LABEL[m.kind] || m.kind)}</div>`;
     }
+    const projection = isVideo ? this._projection(m) : null;
     let hint = "";
-    if (m.kind === "360" && isVideo) hint = "360°-Vorschau der Kamera (beide Fisheye-Linsen nebeneinander). Das Original lässt sich in DJI Studio / LightCut bearbeiten.";
+    if (projection) hint = view360.HINT_360[projection] || "";
     else if (!m.play) hint = `Im Browser nicht darstellbar (360°-Original ohne Proxy oder RAW). ${sourceHint(m)}`;
     stage.innerHTML = `
       <div class="screen">
@@ -845,9 +929,34 @@ class DjiFlightDetails extends HTMLElement {
           `Dieses Video kann der Browser nicht abspielen (vermutlich H.265/HEVC ohne Hardware-Decoder). ${sourceHint(m)}`;
       };
       if (this._recOffset(m) != null) this._wireVideo(video, m);
+      // The size decides for proxies the source could not classify (360° or flat).
+      video.addEventListener("loadedmetadata", () => this._learnSize(m.id, video));
+      if (projection) this._attach360(video, m, projection);
     }
     this._updateSyncUi();
     this._refreshCursor();
+  }
+
+  /**
+   * Lay the 360° view over the video (drag to look around, own controls; the
+   * video underneath keeps playing and drives the sync), also over one that
+   * already plays. Without WebGL the flat video stays.
+   */
+  _attach360(video, m, projection) {
+    if (!view360 || !video.isConnected || this._view360?.video === video) return;
+    this._drop360();
+    const view = view360.Dji360View.create(video, video.closest(".screen"), { projection, duration: () => this._recDuration(m) });
+    if (view) this._view360 = view;
+    else {
+      const hint = this.shadowRoot.querySelector("#mhint");
+      if (hint) hint.textContent = `${hint.textContent} ${view360.HINT_NO_WEBGL}`.trim();
+    }
+  }
+
+  /** Free the 360° view (its WebGL context) before the player is rebuilt. */
+  _drop360() {
+    this._view360?.destroy();
+    this._view360 = null;
   }
 
   /** Highlight the selected recording in the thumbnail strip and in the band of the charts. */
@@ -860,7 +969,7 @@ class DjiFlightDetails extends HTMLElement {
   _facts(m) {
     const offset = this._recOffset(m);
     return [
-      KIND_LABEL[m.kind] || m.kind,
+      this._kindLabel(m),
       m.start ? fmtDate(m.start, { timeStyle: "short" }) : null,
       offset != null && offset >= 0 ? `bei ${fmtClock(offset)} im Flug` : null,
       this._recDuration(m) ? fmtClock(this._recDuration(m)) : null,

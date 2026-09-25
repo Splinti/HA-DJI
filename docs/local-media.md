@@ -50,8 +50,8 @@ Man kann mehrere Ordner (und OneDrive-Konten) gleichzeitig verbinden. Wie Kopien
 
 - **Einlesen:** Bei jedem Durchlauf wird der Ordner komplett aufgelistet. Dateien mit unveränderter Größe und Änderungszeit werden nicht erneut geöffnet. Ordner, die mit `.`, `@`, `#` oder `$` beginnen (Synology `@eaDir`, Papierkörbe), werden übersprungen.
 - **Dauer:** Wird aus dem MP4-Header gelesen (`moov/mvhd`, auch bei `.LRF` und `.OSV`). Dafür werden nur wenige Kilobyte gelesen, auch wenn der Header am Dateiende liegt.
-- **Vorschaubilder:** Kommen von ffmpeg (bei HAOS vorhanden), und zwar aus `…_cover.jpg`, sonst aus dem Proxy, sonst aus dem Original. Sie sind 480 px breit und werden in `.storage/dji_flightlog/thumbs` zwischengespeichert.
-- **Wiedergabe:** Home Assistant liefert den Proxy (bzw. das normale Video/Foto) selbst aus, mit Range-Anfragen, sodass man im Player spulen kann. Wie bei OneDrive muss der Browser HEVC abspielen können.
+- **Vorschaubilder:** Kommen von ffmpeg (bei HAOS vorhanden), und zwar aus `…_cover.jpg`, sonst aus `…_360.mp4`, sonst aus dem Proxy, sonst aus dem Original. Sie sind 480 px breit und werden in `.storage/dji_flightlog/thumbs` zwischengespeichert.
+- **Wiedergabe:** Home Assistant liefert `…_360.mp4`, sonst den Proxy (bzw. das normale Video/Foto) selbst aus, mit Range-Anfragen, sodass man im Player spulen kann. Wie bei OneDrive muss der Browser für den Proxy HEVC abspielen können; `…_360.mp4` ist H.264. 360°-Aufnahmen laufen als 360°-Video, siehe [`onedrive.md`](onedrive.md#welche-dateien).
 - **Original:** Statt „In OneDrive öffnen“ gibt es den Link „Original herunterladen“.
 - **Freigabe nicht eingebunden:** Ist der Ordner leer, obwohl vorher Dateien darin lagen, schlägt der Abgleich fehl, statt alle Aufnahmen zu entfernen. Das Panel zeigt dann einen Hinweis.
 
@@ -64,6 +64,8 @@ Man kann mehrere Ordner (und OneDrive-Konten) gleichzeitig verbinden. Wie Kopien
 ```
 
 Oder über das Samba-Add-on direkt in den Medienordner von Home Assistant: `-MediaTarget '\\homeassistant\media\drohne'`.
+
+Mit ffmpeg packt das Skript den Proxy mit Faststart um, mit `-Stitch360` legt es für 360°-Aufnahmen zusätzlich ein `…_360.mp4` ab. Alle Schalter stehen in [`onedrive.md`](onedrive.md#3-pc-skript). Jede Datei entsteht erst unter einem Hilfsnamen (`.<name>.partial`, von der Integration ignoriert) und wird umbenannt, wenn sie vollständig ist.
 
 ## Andere Speicherorte
 

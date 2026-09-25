@@ -15,7 +15,8 @@
  *
  * With a media source (OneDrive, folder) connected, every flight carries the recordings
  * made during it (`flight.media`); the selected flight shows them as a
- * strip of thumbnails that play in an overlay or open at the source.
+ * strip of thumbnails that play in an overlay or open at the source; 360°
+ * recordings play there in a 360° view (dji-360-view).
  */
 
 const STATIC = "/dji_flightlog_static";
@@ -40,6 +41,13 @@ let detailsPromise = null;
 function loadDetails() {
   detailsPromise ??= import(`${STATIC}/dji-flight-details.js${VERSION_QUERY}`);
   return detailsPromise;
+}
+// The 360° player, loaded once a video is opened; it also decides which
+// recordings are 360° (projectionOf).
+let viewPromise = null;
+function load360() {
+  viewPromise ??= import(`${STATIC}/dji-360-view.js${VERSION_QUERY}`);
+  return viewPromise;
 }
 
 const VIEWS = ["flights", "flight", "plan"];
@@ -330,6 +338,9 @@ class DjiFlightLogPanel extends HTMLElement {
         #player .bar a { font-size: 13px; color: var(--primary-color); text-decoration: none; white-space: nowrap; }
         #player .bar button { background: none; border: none; color: inherit; cursor: pointer; padding: 6px; border-radius: 50%; line-height: 0; }
         #player video, #player img.full { width: 100%; max-height: calc(100dvh - 140px); background: #000; display: block; object-fit: contain; }
+        /* 360°: the view needs a box of its own; the video fills it (hidden under the view) */
+        #player .pano { position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: calc(100dvh - 140px); background: #000; overflow: hidden; }
+        #player .pano video { height: 100%; max-height: none; }
         #player .hint { padding: 8px 16px 12px; font-size: 13px; color: var(--secondary-text-color); }
         .empty { padding: 24px 16px; color: var(--secondary-text-color); text-align: center; }
         .note {
@@ -1172,15 +1183,22 @@ class DjiFlightLogPanel extends HTMLElement {
       .join("")}</div>`;
   }
 
-  _openMedia(m) {
+  async _openMedia(m) {
     if (!m.play) {
       // 360° original without proxy, raw photo, ...: only the source can show it.
       if (m.web_url) window.open(m.web_url, "_blank", "noopener");
       else if (m.download) window.location.assign(m.download);
       return;
     }
-    const dlg = this.shadowRoot.getElementById("player");
     const isPhoto = m.kind === "photo";
+    const mod = isPhoto ? null : await load360().catch((err) => console.error("dji-flightlog-panel 360:", err));
+    const dlg = this.shadowRoot.getElementById("player");
+    const projection = mod?.projectionOf(m) || null;
+    // A proxy the source could not classify: the 360° box right away, dropped if it turns out flat.
+    const maybe = !projection && !!mod?.needsSize(m);
+    // crossorigin: the 360° view reads the frames, also when OneDrive redirects to another host.
+    const video = `<video controls autoplay playsinline preload="metadata" crossorigin="anonymous" src="${esc(m.play)}"></video>`;
+    this._drop360();
     dlg.innerHTML = `
       <div class="box">
         <div class="bar">
@@ -1188,31 +1206,61 @@ class DjiFlightLogPanel extends HTMLElement {
           ${sourceLink(m)}
           <button class="close" title="Schließen">${svg(ICON_CLOSE)}</button>
         </div>
-        ${isPhoto ? `<img class="full" src="${esc(m.play)}" alt="">` : `<video controls autoplay playsinline preload="metadata" src="${esc(m.play)}"></video>`}
-        <div class="hint" id="phint"${m.kind === "360" ? "" : " hidden"}>${
-          m.kind === "360"
-            ? "360°-Vorschau (Proxy der Kamera, beide Fisheye-Linsen nebeneinander). Das Original lässt sich in DJI Studio / LightCut bearbeiten."
-            : ""
-        }</div>
+        ${isPhoto ? `<img class="full" src="${esc(m.play)}" alt="">` : projection || maybe ? `<div class="pano">${video}</div>` : video}
+        <div class="hint" id="phint"${projection ? "" : " hidden"}>${esc(mod?.HINT_360[projection] || "")}</div>
       </div>`;
     dlg.hidden = false;
     dlg.onclick = (e) => {
       if (e.target === dlg) this._closePlayer();
     };
     dlg.querySelector(".close").onclick = () => this._closePlayer();
-    const video = dlg.querySelector("video");
-    if (video) {
-      video.onerror = () => {
+    const el = dlg.querySelector("video");
+    if (el) {
+      el.onerror = () => {
         const hint = dlg.querySelector("#phint");
         hint.hidden = false;
         hint.textContent =
           "Dieses Video kann der Browser nicht abspielen (vermutlich H.265/HEVC ohne Hardware-Decoder). " + sourceHint(m);
       };
+      if (projection) this._attach360(mod, el, projection);
+      else if (maybe) {
+        // Decided by the video's size (2:1: the dual fisheye); it plays on meanwhile.
+        el.addEventListener("loadedmetadata", () => {
+          const found = mod.projectionOf(m, { width: el.videoWidth, height: el.videoHeight });
+          if (!found) {
+            el.parentElement.classList.remove("pano");
+            return;
+          }
+          const hint = dlg.querySelector("#phint");
+          hint.hidden = false;
+          hint.textContent = mod.HINT_360[found];
+          this._attach360(mod, el, found);
+        }, { once: true });
+      }
     }
     window.addEventListener("keydown", this._onKey);
   }
 
+  /** Lay the 360° view over the dialog's video (with a fullscreen button); without WebGL the flat video stays. */
+  _attach360(mod, video, projection) {
+    if (!video.isConnected || this._view360?.video === video) return; // closed meanwhile
+    const view = mod.Dji360View.create(video, video.parentElement, { projection });
+    if (view) this._view360 = view;
+    else {
+      const hint = this.shadowRoot.getElementById("phint");
+      hint.hidden = false;
+      hint.textContent = `${hint.textContent} ${mod.HINT_NO_WEBGL}`.trim();
+    }
+  }
+
+  /** Free the 360° view (its WebGL context) before the dialog is emptied. */
+  _drop360() {
+    this._view360?.destroy();
+    this._view360 = null;
+  }
+
   _closePlayer() {
+    this._drop360();
     const dlg = this.shadowRoot?.getElementById("player");
     if (dlg && !dlg.hidden) {
       dlg.hidden = true;

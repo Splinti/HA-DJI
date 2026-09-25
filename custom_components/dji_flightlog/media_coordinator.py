@@ -43,7 +43,10 @@ from .const import (
 from .coordinator import FlightLogCoordinator
 from .media import (
     KIND_360,
+    PROJECTION_DFISHEYE,
+    PROJECTION_EQUIRECT,
     ROLE_COVER,
+    ROLE_EQUIRECT,
     ROLE_ORIGINAL,
     ROLE_PROXY,
     ROLE_RAW,
@@ -222,9 +225,10 @@ class MediaCoordinator(DataUpdateCoordinator[MediaData]):
 
     async def async_thumbnail(self, rec: dict[str, Any]) -> bytes | None:
         """Cover image of a recording, cached on disk."""
-        # A cover added after the first request must not be hidden by the
-        # cached thumbnail of the proxy, hence the suffix.
-        path = self._thumb_dir / f"{rec['id']}{'_cover' if rec.get(ROLE_COVER) else ''}.jpg"
+        # A cover or 360° render added after the first request must not be
+        # hidden by the cached thumbnail of the proxy, hence the suffix.
+        suffix = "_cover" if rec.get(ROLE_COVER) else "_360" if rec.get(ROLE_EQUIRECT) else ""
+        path = self._thumb_dir / f"{rec['id']}{suffix}.jpg"
         cached = await self.hass.async_add_executor_job(_read_if_exists, path)
         if cached is not None:
             return cached
@@ -243,11 +247,24 @@ def _flightlog(hass: HomeAssistant) -> FlightLogCoordinator | None:
 
 
 def playable_ref(rec: dict[str, Any]) -> dict[str, Any] | None:
-    """The file the browser can show: the proxy, else a normal video/photo (not a 360° original)."""
-    ref = rec.get(ROLE_PROXY)
+    """The file the browser can show.
+
+    The stitched 360° render (H.264, plays everywhere), else the proxy, else a
+    normal video/photo (not a 360° original).
+    """
+    ref = rec.get(ROLE_EQUIRECT) or rec.get(ROLE_PROXY)
     if ref is None and rec.get("kind") != KIND_360:
         ref = rec.get(ROLE_ORIGINAL)
     return ref
+
+
+def play_projection(rec: dict[str, Any]) -> str | None:
+    """How the frontend projects the file of :func:`playable_ref`; None for a flat video/photo."""
+    if rec.get(ROLE_EQUIRECT):
+        return PROJECTION_EQUIRECT
+    if rec.get("kind") == KIND_360 and rec.get(ROLE_PROXY):
+        return PROJECTION_DFISHEYE
+    return None
 
 
 def original_ref(rec: dict[str, Any]) -> dict[str, Any] | None:

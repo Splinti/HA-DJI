@@ -15,12 +15,15 @@ Drohne / SD-Karte ──PC-Skript──▶ lokaler OneDrive-Ordner ──OneDriv
 | Datei | Inhalt | Im Browser? | Ablegen? |
 |---|---|---|---|
 | `DJI_…_D.OSV` (Avata 360) | 360°-Original: zwei Fisheye-Streams 3840×3840, HEVC 10 Bit, ~180 Mbit/s (≈ 1,3 GB/min), plus eingebettetes Titelbild | Nein, muss erst in DJI Studio / LightCut gestitcht werden | Ja, als Archiv |
-| `DJI_…_D.LRF` | Proxy der Kamera; bei der Avata 360: 1920×960 HEVC 8 Bit, **ungestitcht** (beide Linsen nebeneinander), ~15 Mbit/s | Ja, sofern der Browser HEVC kann (Edge/Chrome/Safari mit Hardware-Decoder) | Empfohlen; das Skript benennt ihn in `…_proxy.mp4` um |
+| `DJI_…_D.LRF` | Proxy der Kamera; bei der Avata 360: 1920×960 HEVC 8 Bit, **ungestitcht** (beide Linsen nebeneinander), ~15 Mbit/s | Ja, sofern der Browser HEVC kann (Edge/Chrome/Safari mit Hardware-Decoder) | Empfohlen; das Skript legt ihn als `…_proxy.mp4` ab (mit ffmpeg verlustfrei mit Faststart umgepackt) |
+| `DJI_…_D_360.mp4` | Vom Skript mit `-Stitch360` aus dem Proxy erzeugt: equirektangular, 1920×960 H.264 | Ja, in jedem Browser | Empfohlen bei 360°-Aufnahmen |
 | `DJI_…_D.MP4` (Avata 2, Neo) | Normales Video (H.264/H.265, ggf. D-Log M) | H.264 immer, H.265 meist | Ja |
 | `DJI_…_D.JPG` / `.DNG` | Foto / Raw-Foto | JPG ja, DNG nein | Ja; DNG wird am Foto als „RAW“ angezeigt |
 | `DJI_…_D.SRT` | Telemetrie-Untertitel | – | Optional |
 
 „Rohdateien“ (OSV, DNG, 10-Bit-Log-Video) gehören also ins Archiv. Zum Anschauen im Browser dienen der Proxy bzw. OneDrives eigener Player (Link „OneDrive“).
+
+360°-Aufnahmen spielt der Player als 360°-Video ab (Umschauen und Zoom). Gibt es ein `…_360.mp4`, wird es bevorzugt. Sonst läuft der Proxy mit den zwei Fischaugen, den der Browser selbst entzerrt; dafür muss er HEVC können.
 
 ## Zuordnung
 
@@ -28,7 +31,7 @@ Die Aufnahmezeit steht im Dateinamen (`DJI_20260921190306_…` = 21.09.2026 19:0
 
 Andere Namen (z. B. Clips, die DJI Fly in der Handy-Galerie gespeichert hat) werden über einen Zeitstempel `YYYYMMDD_HHMMSS` im Namen oder über das von OneDrive ausgelesene Aufnahmedatum zugeordnet.
 
-Zusammengehörige Dateien (gleicher Name ohne Endung, im selben Ordner) werden zu **einer** Aufnahme zusammengefasst: Original + `_proxy.mp4` + `_cover.jpg` + `.DNG` + `.SRT`.
+Zusammengehörige Dateien (gleicher Name ohne Endung, im selben Ordner) werden zu **einer** Aufnahme zusammengefasst: Original + `_proxy.mp4` + `_360.mp4` + `_cover.jpg` + `.DNG` + `.SRT`.
 
 ## Einrichten
 
@@ -79,13 +82,18 @@ Quellen: `DCIM` angeschlossener MTP-Geräte (Drohne, Goggles, RC), `DCIM` von We
 
 | Schalter | Wirkung |
 |---|---|
-| `-NoProxy` | `.LRF` nicht kopieren |
+| `-NoProxy` | `.LRF` nicht als `_proxy.mp4` ablegen |
+| `-NoFaststart` | `.LRF` unverändert kopieren. Sonst packt ffmpeg ihn verlustfrei um: Index an den Anfang (Wiedergabe startet schneller), ohne die DJI-Metadatenspuren (rund ein Fünftel kleiner). Dauert nur Sekunden |
 | `-NoCover` | kein `_cover.jpg` (sonst: bei `.OSV` das eingebettete Titelbild, bei `.MP4` ein Frame; braucht **ffmpeg**) |
-| `-Stitch360` | Proxy von 360°-Aufnahmen per ffmpeg zu einem equirektangularen H.264-Video umrechnen: spielt in jedem Browser, dauert etwa Echtzeit |
-| `-FisheyeFov 190` | Bildwinkel der Linsen für `-Stitch360` |
-| `-FfmpegPath` | Pfad zu `ffmpeg.exe`, falls nicht im `PATH` |
+| `-Stitch360` | Zusätzlich zum Proxy ein `_360.mp4`: der Proxy von 360°-Aufnahmen per ffmpeg zu einem equirektangularen H.264-Video umgerechnet. Spielt in jedem Browser, dauert je nach PC ein Drittel der Cliplänge bis Echtzeit (2:17 min → 42 s, 93 MB) |
+| `-FisheyeFov 194.5` | Bildwinkel der Linsen für `-Stitch360` (an einer Avata-360-Aufnahme gemessen) |
+| `-FfmpegPath` | Pfad zu `ffmpeg.exe`, falls nicht im `PATH`. Ohne ffmpeg wird der Proxy unverändert kopiert, es gibt keine Titelbilder und kein `_360.mp4` |
 
 ffmpeg z. B. per `winget install Gyan.FFmpeg`.
+
+Das Skript schreibt jede Datei erst unter einem Hilfsnamen und benennt sie um, wenn sie fertig ist. Bricht ein Lauf ab, holt der nächste nach, was fehlt. Was schon da ist, wird nicht neu erzeugt: Um einen Proxy oder ein `_360.mp4` neu zu erzeugen (z. B. mit anderem `-FisheyeFov`), die Datei löschen und das Skript erneut starten. Das gilt auch für Proxys aus älteren Versionen des Skripts, die noch ohne Faststart kopiert wurden.
+
+> **Umstieg:** Frühere Versionen haben mit `-Stitch360` das Equirect in die `…_proxy.mp4` geschrieben. Diese `…_proxy.mp4` der 360°-Aufnahmen löschen und das Skript neu starten; es legt dann den Proxy und das `…_360.mp4` getrennt ab.
 
 > Speicherplatz: 360°-Originale haben mehrere GB pro Clip. Mit OneDrive „Dateien bei Bedarf“ kann Windows die lokale Kopie nach dem Upload freigeben (Rechtsklick → *Speicherplatz freigeben*).
 
@@ -117,10 +125,10 @@ Bei jedem Abgleich werden neue `FlightRecord_*.txt` bzw. `DJIFlightRecord_*.txt`
 ## Anzeige
 
 - **Panel**: Flüge mit Aufnahmen tragen ein Kamerasymbol mit Anzahl. Nach Auswahl des Flugs erscheint darunter eine Leiste mit Vorschaubildern:
-  Klick spielt den Proxy bzw. das Video im Overlay ab, „OneDrive“ öffnet die Datei in OneDrive. Steht im Flugprotokoll, dass aufgenommen wurde, aber es gibt keine passende Datei, zeigt der Flug einen Hinweis.
+  Klick spielt den Proxy bzw. das Video im Overlay ab (360°-Aufnahmen als 360°-Video, siehe [oben](#welche-dateien)), „OneDrive“ öffnet die Datei in OneDrive. Steht im Flugprotokoll, dass aufgenommen wurde, aber es gibt keine passende Datei, zeigt der Flug einen Hinweis.
   Im Verlauf zeigt das Band „Medien“ die Zeiträume der Videos (Balken) und Fotos (Punkte); Klick wählt die Aufnahme. Das laufende Video bewegt den Cursor in den Diagrammen und auf der Karte mit, ein Klick in die Diagramme spult dorthin. Videos werden am Aufnahmestart ausgerichtet, den das Flugprotokoll festhält (`camera.isVideo`): Die Zeit im Dateinamen hat nur Sekundenauflösung und liegt rund 2 s vor dem tatsächlichen Aufnahmebeginn. Ohne passenden Start im Log (±5 s) gilt der Dateiname. Ein verbleibender Versatz lässt sich unter dem Player mit − / + ausgleichen. OneDrive kennt für `.LRF` keine Länge; sie kommt dann aus dem Log bzw. aus dem Video selbst.
 - **Karte**: Das Popup eines Flugs zeigt die Vorschaubilder; Klick öffnet OneDrive.
-- **API**: `/api/dji_flightlog/flights` liefert je Flug `media: [{id, kind, name, start, duration_s, web_url, thumb, play, download, has_raw, …}]` sowie `media` (Status je Konto bzw. Ordner). `download` gibt es nur bei Quellen ohne `web_url` (lokaler Ordner). `thumb`/`play` sind signierte URLs (6 h gültig), damit `<img>`/`<video>` ohne Auth-Header funktionieren.
+- **API**: `/api/dji_flightlog/flights` liefert je Flug `media: [{id, kind, name, start, duration_s, web_url, thumb, play, projection, download, has_raw, …}]` sowie `media` (Status je Konto bzw. Ordner). `download` gibt es nur bei Quellen ohne `web_url` (lokaler Ordner). `projection` sagt, wie `play` darzustellen ist: `"equirect"` (`_360.mp4`), `"dfisheye"` (Proxy einer 360°-Aufnahme, zwei Fischaugen nebeneinander) oder `null` (normales Video/Foto). `thumb`/`play` sind signierte URLs (6 h gültig), damit `<img>`/`<video>` ohne Auth-Header funktionieren.
 
 ## Datenschutz / Rechte
 
