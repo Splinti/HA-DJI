@@ -118,6 +118,7 @@ Bei jedem Abgleich werden neue `FlightRecord_*.txt` bzw. `DJIFlightRecord_*.txt`
 
 - **Panel**: Flüge mit Aufnahmen tragen ein Kamerasymbol mit Anzahl. Nach Auswahl des Flugs erscheint darunter eine Leiste mit Vorschaubildern:
   Klick spielt den Proxy bzw. das Video im Overlay ab, „OneDrive“ öffnet die Datei in OneDrive. Steht im Flugprotokoll, dass aufgenommen wurde, aber es gibt keine passende Datei, zeigt der Flug einen Hinweis.
+  Im Verlauf zeigt das Band „Medien“ die Zeiträume der Videos (Balken) und Fotos (Punkte); Klick wählt die Aufnahme. Das laufende Video bewegt den Cursor in den Diagrammen und auf der Karte mit, ein Klick in die Diagramme spult dorthin. Videos werden am Aufnahmestart ausgerichtet, den das Flugprotokoll festhält (`camera.isVideo`): Die Zeit im Dateinamen hat nur Sekundenauflösung und liegt rund 2 s vor dem tatsächlichen Aufnahmebeginn. Ohne passenden Start im Log (±5 s) gilt der Dateiname. Ein verbleibender Versatz lässt sich unter dem Player mit − / + ausgleichen. OneDrive kennt für `.LRF` keine Länge; sie kommt dann aus dem Log bzw. aus dem Video selbst.
 - **Karte**: Das Popup eines Flugs zeigt die Vorschaubilder; Klick öffnet OneDrive.
 - **API**: `/api/dji_flightlog/flights` liefert je Flug `media: [{id, kind, name, start, duration_s, web_url, thumb, play, download, has_raw, …}]` sowie `media` (Status je Konto bzw. Ordner). `download` gibt es nur bei Quellen ohne `web_url` (lokaler Ordner). `thumb`/`play` sind signierte URLs (6 h gültig), damit `<img>`/`<video>` ohne Auth-Header funktionieren.
 

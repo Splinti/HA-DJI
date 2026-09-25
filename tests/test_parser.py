@@ -132,9 +132,21 @@ def test_video_time_and_photos_from_frames():
             f.camera.is_video = True
             f.camera.record_time = i - 10 if i <= 20 else i - 50
         f.camera.remain_photo_num = 500 - (i // 30)
-    summary, _ = summarize_frames(frames, dict(BASE), max_track_points=100)
+    summary, track = summarize_frames(frames, dict(BASE), max_track_points=100)
     assert summary.video_time_s == 40.0
     assert summary.photo_num == 3
+    assert track.videos == [[10.0, 20.0], [50.0, 80.0]]
+
+
+def test_videos_running_at_log_start_and_end():
+    frames = make_frames(100)
+    for i, f in enumerate(frames):
+        # recording since 5 s before the log, and one still running at its end
+        if i <= 10 or i >= 90:
+            f.camera.is_video = True
+            f.camera.record_time = i + 5 if i <= 10 else i - 90
+    _, track = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert track.videos == [[-5.0, 10.0], [90.0, None]]
 
 
 def test_photo_count_unknown_keeps_header_value():
