@@ -6,7 +6,14 @@
  * home, battery, battery temperature) with the flight modes and flight
  * controller events, and the battery / recording / technical data.
  * With a media source (OneDrive, folder) connected, the recordings of the flight show in a
- * small player that can be enlarged to fill the window.
+ * player that can be enlarged to fill the window. A playing video moves
+ * the cursor in the charts and on the map along; a click into the charts
+ * seeks the video to that moment.
+ *
+ * On wide screens video, map and charts share one area that fills the rest
+ * of the screen: video over map on the left, charts on the right. The
+ * dividers can be dragged (double click resets); the sizes are kept per
+ * browser. Narrow screens stack everything.
  *
  * The panel creates it, sets `hass`, hands over the (filtered) flight list
  * with `setFlights()` and picks one with `show(flightId)`. Prev/next inside
@@ -54,11 +61,11 @@ const sourceHint = (m) =>
   m.web_url ? "Über „In OneDrive öffnen“ ansehen oder herunterladen." : m.download ? "Das Original lässt sich herunterladen." : "";
 
 const CHARTS = [
-  { key: "height", label: "Höhe über Start", unit: "m", color: "#4363d8", digits: 0, floor: 0 },
-  { key: "speed", label: "Geschwindigkeit", unit: "km/h", color: "#f58231", digits: 0, scale: 3.6, floor: 0 },
-  { key: "dist", label: "Entfernung vom Home-Punkt", unit: "m", color: "#3cb44b", digits: 0, floor: 0 },
-  { key: "battery", label: "Akku", unit: "%", color: "#e6194b", digits: 0, range: [0, 100] },
-  { key: "temp", label: "Akku-Temperatur", unit: "°C", color: "#911eb4", digits: 1 },
+  { key: "height", label: "Höhe über Start", short: "Höhe", unit: "m", color: "#4363d8", digits: 0, floor: 0 },
+  { key: "speed", label: "Geschwindigkeit", short: "Speed", unit: "km/h", color: "#f58231", digits: 0, scale: 3.6, floor: 0 },
+  { key: "dist", label: "Entfernung vom Home-Punkt", short: "Entfernung", unit: "m", color: "#3cb44b", digits: 0, floor: 0 },
+  { key: "battery", label: "Akku", short: "Akku", unit: "%", color: "#e6194b", digits: 0, range: [0, 100] },
+  { key: "temp", label: "Akku-Temperatur", short: "Temp.", unit: "°C", color: "#911eb4", digits: 1 },
 ];
 
 // Colour per flight mode label (see MODE_LABELS in the map card).
@@ -73,9 +80,22 @@ const MODE_COLORS = {
 };
 const OTHER_MODE_COLOR = "#bdbdbd";
 
+// Manual shift of a recording against the log, in seconds, per recording id.
+const ADJUST_KEY = "dji_flightlog.media_shift.";
+// A file name's time within this of a recording start in the log snaps to it.
+const SNAP_S = 5;
+
+// Divider positions of the flight view, per browser.
+const LAYOUT_KEY = "dji_flightlog.detail_layout";
+const LAYOUT_DEFAULTS = { lr: 0.45, v: 0.55 }; // left column share, video share of it
+const MIN_WORK_H = 460;
+const MAX_WORK_H = 2000;
+
 const PAD_L = 44;
 const PAD_R = 10;
-const CHART_H = 86;
+const CHART_H = 86; // stacked layout; the split layout fits the charts to their pane
+const MIN_CHART_H = 44;
+const MAX_CHART_H = 220;
 
 class DjiFlightDetails extends HTMLElement {
   constructor() {
@@ -90,7 +110,20 @@ class DjiFlightDetails extends HTMLElement {
     this._seq = 0;
     this._width = 0;
     this._hover = null;
+    this._chartBox = { w: 0, h: 0 };
+    this._durations = {}; // recording id -> seconds, read from the video where the source knows none
+    this._prefs = readLayout();
+    this._onResize = () => this._layout();
     this._render();
+  }
+
+  connectedCallback() {
+    window.addEventListener("resize", this._onResize);
+    this._layout();
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener("resize", this._onResize);
   }
 
   set hass(hass) {
@@ -113,7 +146,8 @@ class DjiFlightDetails extends HTMLElement {
       if (fresh) this._flight = fresh;
     }
     this._renderHead();
-    this._renderMedia();
+    // New or removed recordings change the band in the charts.
+    if (this._renderMedia() && this._track) this._renderCharts();
   }
 
   /** Stop playback and leave the enlarged player (the panel calls this when the view is left). */
@@ -152,6 +186,7 @@ class DjiFlightDetails extends HTMLElement {
       this._track = res;
     }
     this._renderAll();
+    this._probeDurations();
   }
 
   // -- layout ---------------------------------------------------------------
@@ -181,12 +216,34 @@ class DjiFlightDetails extends HTMLElement {
         .tile .k { font-size: 12px; color: var(--secondary-text-color); margin-top: 2px; }
         .banner { padding: 10px 14px; border-radius: 8px; font-size: 14px; color: #000; background: var(--warning-color, #ffa600); }
         .banner.crit { background: var(--error-color, #db4437); color: #fff; }
-        .main { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 12px; }
-        :host(.narrow) .main { grid-template-columns: minmax(0, 1fr); }
         .card { padding: 12px 14px; min-width: 0; }
         .card h3 { margin: 0 0 8px; font-size: 14px; font-weight: 500; }
-        .mapcard { padding: 0; overflow: hidden; display: flex; min-height: 320px; isolation: isolate; }
+        .mapcard { padding: 0; overflow: hidden; display: flex; isolation: isolate; }
         .mapcard dji-flight-map-card { flex: 1; display: block; min-width: 0; }
+
+        /* split layout: video over map | charts */
+        .work { display: flex; height: 600px; min-height: 0; }
+        .left { flex: 0 0 calc(var(--lr) * 100%); min-width: 0; display: flex; flex-direction: column; }
+        #media { flex: 0 0 calc(var(--v) * 100%); min-height: 120px; box-sizing: border-box; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+        #media[hidden] { display: none; }
+        .left .mapcard { flex: 1 1 0; min-height: 120px; }
+        .chartcard { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; overflow-y: auto; }
+        .chartcard #charts { flex: 1 1 0; min-height: 0; }
+        .split { flex: 0 0 12px; display: flex; align-items: center; justify-content: center; touch-action: none; outline: none; }
+        .split[hidden] { display: none; }
+        .split::after { content: ""; border-radius: 2px; background: var(--divider-color, #d0d0d0); transition: background .15s; }
+        .split.col { cursor: col-resize; }
+        .split.col::after { width: 4px; height: 40px; }
+        .split.row { cursor: row-resize; }
+        .split.row::after { width: 40px; height: 4px; }
+        .split:hover::after, .split:focus-visible::after, .split.drag::after { background: var(--primary-color); }
+        :host(.narrow) .work { flex-direction: column; height: auto !important; gap: 12px; }
+        :host(.narrow) .left { flex: none; gap: 12px; }
+        :host(.narrow) #media { flex: none; }
+        :host(.narrow) .left .mapcard { flex: none; height: 320px; }
+        :host(.narrow) .chartcard { flex: none; overflow: visible; }
+        :host(.narrow) .chartcard #charts { flex: none; }
+        :host(.narrow) .split { display: none; }
         .info { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
         td { padding: 3px 0; vertical-align: top; }
@@ -207,6 +264,9 @@ class DjiFlightDetails extends HTMLElement {
         svg .cursor { stroke: var(--primary-text-color); stroke-width: 1; opacity: 0.6; }
         svg .event { stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.8; }
         .band { margin: 2px 0 8px; }
+        .recband [data-rec] { fill: var(--primary-color); opacity: 0.4; cursor: pointer; }
+        .recband circle[data-rec] { stroke: var(--card-background-color, #fff); stroke-width: 1; }
+        .recband [data-rec].sel { opacity: 1; }
         .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--secondary-text-color); padding-left: ${PAD_L}px; }
         .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
         .bars .row { display: grid; grid-template-columns: 110px 1fr 56px; align-items: center; gap: 8px; font-size: 13px; margin: 3px 0; }
@@ -224,12 +284,10 @@ class DjiFlightDetails extends HTMLElement {
         #banner:empty { display: none; }
 
         /* recordings */
-        #media[hidden] { display: none; }
-        #media h3 .count { color: var(--secondary-text-color); font-weight: 400; }
-        .mwrap { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
-        .stage { flex: 0 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-        :host(.narrow) .stage { flex-basis: 100%; }
-        .screen { position: relative; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: #000; }
+        .stage { flex: 1 1 0; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+        .screen { position: relative; flex: 1 1 0; min-height: 60px; border-radius: 8px; overflow: hidden; background: #000; }
+        :host(.narrow) .stage { flex: none; }
+        :host(.narrow) .screen { flex: none; aspect-ratio: 16 / 9; }
         .screen video, .screen img { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
         .screen .ph { height: 100%; display: flex; align-items: center; justify-content: center; color: #bbb; font-size: 13px; }
         .screen .grow {
@@ -237,6 +295,10 @@ class DjiFlightDetails extends HTMLElement {
           border: none; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; cursor: pointer; line-height: 0;
         }
         .screen .grow:hover { background: rgba(0,0,0,.8); }
+        .screen.busy::after {
+          content: "Lade Video …"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+          background: rgba(0,0,0,.45); color: #fff; font-size: 13px; pointer-events: none;
+        }
         .screen .grow svg { width: 24px; height: 24px; }
         .stage .cap { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--secondary-text-color); }
         .stage .cap a { color: var(--primary-color); text-decoration: none; white-space: nowrap; }
@@ -248,9 +310,20 @@ class DjiFlightDetails extends HTMLElement {
         .stage.big .screen { width: min(1400px, 100%); aspect-ratio: auto; height: calc(100dvh - 90px); border-radius: 0; }
         .stage.big .cap, .stage.big .muted { width: min(1400px, 100%); color: #ddd; }
         .stage.big .cap a { color: #8ab4f8; }
-        .strip { flex: 1 1 200px; display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; }
+        .stage .sync button {
+          width: 22px; height: 20px; margin: 0 4px; padding: 0; line-height: 1; cursor: pointer;
+          border: 1px solid var(--divider-color, #ccc); border-radius: 4px; background: none; color: inherit;
+        }
+        .stage .hud { display: none; }
+        .stage.big.synced .screen { height: calc(100dvh - 170px); }
+        .stage.big.synced .hud { display: flex; flex-direction: column; gap: 4px; width: min(1400px, 100%); font-size: 13px; color: #ddd; }
+        .hud svg { width: 100%; height: 40px; cursor: pointer; }
+        .hud .range { fill: rgba(255,255,255,.14); }
+        .hud path { fill: none; stroke: #8ab4f8; stroke-width: 1.5; }
+        .hud .cur { stroke: #fff; stroke-width: 1.5; }
+        .strip { flex: none; display: flex; gap: 6px; overflow-x: auto; padding: 2px; }
         .strip .m {
-          position: relative; width: 112px; height: 63px; border-radius: 6px; overflow: hidden; cursor: pointer;
+          position: relative; flex: none; width: 80px; height: 45px; border-radius: 6px; overflow: hidden; cursor: pointer;
           background: var(--divider-color, #ddd); display: flex; align-items: center; justify-content: center;
           font-size: 11px; color: var(--secondary-text-color); outline-offset: 1px;
         }
@@ -268,18 +341,109 @@ class DjiFlightDetails extends HTMLElement {
         <div class="content" id="content" hidden>
           <div class="tiles" id="tiles"></div>
           <div id="banner"></div>
-          <div class="main">
-            <!-- Built once: re-inserting the map would detach Leaflet and its tile token refresh. -->
-            <div class="card mapcard"><dji-flight-map-card></dji-flight-map-card></div>
-            <div class="card">
-              <h3>Verlauf</h3>
-              <div id="charts"></div>
+          <div>
+            <div class="work" id="work">
+              <div class="left" id="left">
+                <div class="card" id="media" hidden></div>
+                <div class="split row" id="split-v" data-key="v" role="separator" aria-orientation="horizontal" tabindex="0" title="Ziehen ändert die Größe von Video und Karte, Doppelklick setzt zurück" hidden></div>
+                <!-- Built once: re-inserting the map would detach Leaflet and its tile token refresh. -->
+                <div class="card mapcard"><dji-flight-map-card></dji-flight-map-card></div>
+              </div>
+              <div class="split col" id="split-lr" data-key="lr" role="separator" aria-orientation="vertical" tabindex="0" title="Ziehen ändert die Breite, Doppelklick setzt zurück"></div>
+              <div class="card chartcard">
+                <h3>Verlauf</h3>
+                <div id="charts"></div>
+              </div>
             </div>
+            <div class="split row grip" id="split-h" data-key="h" role="separator" aria-orientation="horizontal" tabindex="0" title="Ziehen ändert die Höhe, Doppelklick passt sie wieder an den Bildschirm an"></div>
           </div>
-          <div class="card" id="media" hidden></div>
           <div class="info" id="info"></div>
         </div>
       </div>`;
+    this._wireSplitters();
+    this._applyLayout();
+  }
+
+  // -- split layout -------------------------------------------------------------
+
+  /** Size the split area: the rest of the screen below the key figures, or the height dragged to. */
+  _layout() {
+    const work = this.shadowRoot.getElementById("work");
+    this._applyLayout();
+    if (!work || !this.isConnected || this.classList.contains("narrow") || !work.offsetParent) return;
+    let h = this._prefs.h;
+    if (!h) {
+      const scroller = scrollParent(this);
+      const viewTop = scroller ? scroller.getBoundingClientRect().top : 0;
+      const viewH = scroller ? scroller.clientHeight : window.innerHeight;
+      const top = work.getBoundingClientRect().top - viewTop + (scroller ? scroller.scrollTop : window.scrollY);
+      // Below the key figures if there is room, else the whole screen once scrolled down to it.
+      h = viewH - top - 16;
+      if (h < MIN_WORK_H) h = viewH - 16;
+    }
+    h = `${Math.round(Math.min(MAX_WORK_H, Math.max(MIN_WORK_H, h)))}px`;
+    if (work.style.height !== h) work.style.height = h;
+  }
+
+  _applyLayout() {
+    const work = this.shadowRoot.getElementById("work");
+    if (!work) return;
+    const { lr, v } = { ...LAYOUT_DEFAULTS, ...this._prefs };
+    work.style.setProperty("--lr", String(lr));
+    work.style.setProperty("--v", String(v));
+  }
+
+  _wireSplitters() {
+    const $ = (id) => this.shadowRoot.getElementById(id);
+    const work = $("work");
+    const left = $("left");
+    const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+    const set = (key, value) => {
+      if (value == null) delete this._prefs[key];
+      else this._prefs[key] = key === "h" ? Math.round(value) : Math.round(value * 1000) / 1000;
+      this._layout();
+    };
+    // Position of the divider from the pointer, per divider.
+    const fromPointer = {
+      lr: (e) => {
+        const r = work.getBoundingClientRect();
+        return clamp((e.clientX - r.left) / r.width, 0.2, 0.75);
+      },
+      v: (e) => {
+        const r = left.getBoundingClientRect();
+        return clamp((e.clientY - r.top) / r.height, 0.15, 0.85);
+      },
+      h: (e) => clamp(e.clientY - work.getBoundingClientRect().top - 6, MIN_WORK_H, MAX_WORK_H),
+    };
+    const current = (key) => (key === "h" ? this._prefs.h || work.offsetHeight : this._prefs[key] ?? LAYOUT_DEFAULTS[key]);
+    for (const el of this.shadowRoot.querySelectorAll(".split")) {
+      const key = el.dataset.key;
+      el.onpointerdown = (e) => {
+        if (e.button) return;
+        e.preventDefault();
+        el.setPointerCapture(e.pointerId);
+        el.classList.add("drag");
+        el.onpointermove = (ev) => set(key, fromPointer[key](ev));
+        el.onpointerup = el.onpointercancel = () => {
+          el.onpointermove = el.onpointerup = el.onpointercancel = null;
+          el.classList.remove("drag");
+          writeLayout(this._prefs);
+        };
+      };
+      el.ondblclick = () => {
+        set(key, null);
+        writeLayout(this._prefs);
+      };
+      el.onkeydown = (e) => {
+        const back = e.key === "ArrowLeft" || e.key === "ArrowUp";
+        if (!back && e.key !== "ArrowRight" && e.key !== "ArrowDown") return;
+        e.preventDefault();
+        const step = key === "h" ? 40 : 0.02;
+        const [lo, hi] = key === "h" ? [MIN_WORK_H, MAX_WORK_H] : key === "lr" ? [0.2, 0.75] : [0.15, 0.85];
+        set(key, clamp(current(key) + (back ? -step : step), lo, hi));
+        writeLayout(this._prefs);
+      };
+    }
   }
 
   get _map() {
@@ -329,8 +493,11 @@ class DjiFlightDetails extends HTMLElement {
     $("info").innerHTML =
       this._modesHtml(f) + this._eventsHtml(f) + this._batteryHtml(f) + this._recordingHtml(f) + this._techHtml(f);
     this._wireLinks(f);
-    if (loading) $("charts").innerHTML = `<div class="muted">Lade …</div>`;
-    else this._renderCharts();
+    this._layout();
+    if (loading) {
+      this._chartCtx = null;
+      $("charts").innerHTML = `<div class="muted">Lade …</div>`;
+    } else this._renderCharts();
   }
 
   async _showMap(flightId) {
@@ -359,7 +526,7 @@ class DjiFlightDetails extends HTMLElement {
         haCard.style.flexDirection = "column";
         mapEl.style.height = "auto";
         mapEl.style.flex = "1 1 auto";
-        mapEl.style.minHeight = "320px";
+        mapEl.style.minHeight = "0";
       }
       this._mapReady = true;
       card.hass = this._hass;
@@ -474,11 +641,17 @@ class DjiFlightDetails extends HTMLElement {
       f.sd_total_mb != null
         ? `${fmtNum(f.sd_free_mb / 1024, 1)} von ${fmtNum(f.sd_total_mb / 1024, 1, "GB")} frei${f.sd_full ? " (voll)" : ""}`
         : "–";
+    const media = this._recordings;
+    const recorded = f.video_time_s > 0 || f.photo_num > 0;
     const rows = [
       ["Video", f.video_time_s == null ? "–" : fmtClock(f.video_time_s)],
       ["Fotos", f.photo_num ?? "–"],
       ["SD-Karte", sd, f.sd_full ? "warn" : ""],
     ];
+    // Only with a media source connected (the summaries then carry a media array).
+    if (media && (media.length || recorded)) {
+      rows.push(["Dateien", media.length ? `${media.length} verknüpft` : "keine gefunden", media.length ? "" : "warn"]);
+    }
     return `<div class="card"><h3>Aufnahme</h3>${table(rows)}</div>`;
   }
 
@@ -527,30 +700,28 @@ class DjiFlightDetails extends HTMLElement {
     return this._flights.find((x) => x.flight_id === this._id)?.media;
   }
 
+  /** Rebuild the recordings box if the flight or its recordings changed; true if it did. */
   _renderMedia() {
     const box = this.shadowRoot.getElementById("media");
     const media = this._id ? this._recordings : undefined;
     // Rebuild only when the flight or its recordings change: the summaries are
     // re-sent after every refresh and must not restart a playing video.
     const key = media ? `${this._id}:${media.map((m) => m.id).join(",")}` : "";
-    if (key === this._mediaKey) return;
+    if (key === this._mediaKey) return false;
     this._mediaKey = key;
     this._setBig(false);
-    const f = this._flight;
-    // No media array at all: no media source connected.
-    if (!media || (!media.length && !(f?.video_time_s > 0 || f?.photo_num > 0))) {
-      box.hidden = true;
+    this._sync = null;
+    this._mediaIndex = null;
+    this._photoT = null;
+    // No media array: no media source connected. None found: the "Aufnahme" card says so.
+    const none = !media?.length;
+    box.hidden = none;
+    this.shadowRoot.getElementById("split-v").hidden = none;
+    if (none) {
       box.innerHTML = "";
-      return;
-    }
-    box.hidden = false;
-    if (!media.length) {
-      box.innerHTML = `<h3>Aufnahmen</h3><div class="muted">Laut Log wurde aufgenommen, zu diesem Flug wurde aber keine Aufnahme gefunden.</div>`;
-      return;
+      return true;
     }
     box.innerHTML = `
-      <h3>Aufnahmen <span class="count">${media.length}</span></h3>
-      <div class="mwrap">
         <div class="stage" id="stage"></div>
         ${
           media.length > 1
@@ -560,16 +731,68 @@ class DjiFlightDetails extends HTMLElement {
               <div class="m" data-i="${i}" title="${esc(m.name)}">
                 ${esc(KIND_LABEL[m.kind] || m.kind)}
                 ${m.thumb ? `<img src="${esc(m.thumb)}" loading="lazy" alt="">` : ""}
-                <span>${m.kind === "360" ? "360° " : ""}${m.duration_s ? esc(fmtClock(m.duration_s)) : m.kind === "photo" ? "Foto" : ""}</span>
+                <span>${m.kind === "360" ? "360° " : ""}${this._recDuration(m) ? esc(fmtClock(this._recDuration(m))) : m.kind === "photo" ? "Foto" : ""}</span>
               </div>`,
                 )
                 .join("")}</div>`
             : ""
-        }
-      </div>`;
+        }`;
     for (const img of box.querySelectorAll(".strip img")) img.onerror = () => img.remove();
     for (const el of box.querySelectorAll(".strip .m")) el.onclick = () => this._selectMedia(Number(el.dataset.i));
     this._selectMedia(0);
+    if (this._track) this._probeDurations();
+    return true;
+  }
+
+  /** Length of a recording in seconds: from the media source, the video itself or the log; else null. */
+  _recDuration(m) {
+    const seg = this._logVideo(m);
+    return m?.duration_s || this._durations[m?.id] || (seg?.[1] != null ? seg[1] - seg[0] : null);
+  }
+
+  /** Read the length of videos neither the source nor the log knows (OneDrive has none for .LRF). */
+  _probeDurations() {
+    const key = this._mediaKey;
+    const todo = (this._recordings || []).filter(
+      (m) => m.kind !== "photo" && m.play && !this._recDuration(m) && !(m.id in this._durations),
+    );
+    const next = () => {
+      const m = todo.shift();
+      if (!m || key !== this._mediaKey) return;
+      // Only the metadata: the browser fetches the header (and the end, where DJI puts it).
+      // Held on the element: a detached video nobody references is garbage
+      // collected before its metadata arrive (takes ~10 s through OneDrive).
+      const v = (this._probe = document.createElement("video"));
+      v.preload = "metadata";
+      v.muted = true;
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        this._probe = null;
+        this._learnDuration(m.id, v.duration);
+        v.removeAttribute("src");
+        v.load();
+        next();
+      };
+      v.addEventListener("loadedmetadata", done, { once: true });
+      v.addEventListener("error", done, { once: true });
+      v.src = m.play;
+    };
+    next();
+  }
+
+  _learnDuration(id, seconds) {
+    if (this._durations[id]) return;
+    const known = Number.isFinite(seconds) && seconds > 0;
+    this._durations[id] = known ? seconds : null; // null: tried, don't again
+    if (!known) return;
+    const i = (this._recordings || []).findIndex((m) => m.id === id);
+    if (i < 0) return;
+    const m = this._recordings[i];
+    const label = this.shadowRoot.querySelector(`.strip .m[data-i="${i}"] span`);
+    if (label) label.textContent = `${m.kind === "360" ? "360° " : ""}${fmtClock(seconds)}`;
+    if (this._track) this._renderCharts(); // bar instead of a dot in the band
   }
 
   _selectMedia(i) {
@@ -577,7 +800,10 @@ class DjiFlightDetails extends HTMLElement {
     const stage = this.shadowRoot.getElementById("stage");
     if (!m || !stage) return;
     this._mediaIndex = i;
-    for (const el of this.shadowRoot.querySelectorAll(".strip .m")) el.classList.toggle("sel", Number(el.dataset.i) === i);
+    this._sync = null;
+    // A photo pins the cursor to where it was taken.
+    this._photoT = m.kind === "photo" ? this._recOffset(m) : null;
+    this._markSelected();
     const isVideo = m.kind !== "photo" && !!m.play;
     const big = stage.classList.contains("big");
     let screen;
@@ -590,14 +816,6 @@ class DjiFlightDetails extends HTMLElement {
     } else {
       screen = `<div class="ph">${esc(KIND_LABEL[m.kind] || m.kind)}</div>`;
     }
-    const offset = m.start && this._flight?.start_time ? (Date.parse(m.start) - Date.parse(this._flight.start_time)) / 1000 : null;
-    const facts = [
-      KIND_LABEL[m.kind] || m.kind,
-      m.start ? fmtDate(m.start, { timeStyle: "short" }) : null,
-      offset != null && offset >= 0 ? `bei ${fmtClock(offset)} im Flug` : null,
-      m.duration_s ? fmtClock(m.duration_s) : null,
-      m.has_raw ? "RAW" : null,
-    ].filter(Boolean);
     let hint = "";
     if (m.kind === "360" && isVideo) hint = "360°-Vorschau der Kamera (beide Fisheye-Linsen nebeneinander). Das Original lässt sich in DJI Studio / LightCut bearbeiten.";
     else if (!m.play) hint = `Im Browser nicht darstellbar (360°-Original ohne Proxy oder RAW). ${sourceHint(m)}`;
@@ -607,10 +825,12 @@ class DjiFlightDetails extends HTMLElement {
         ${isVideo || m.thumb || m.play ? `<button class="grow" title="${big ? "Verkleinern" : "Vergrößern"}">${svg(big ? ICON_SHRINK : ICON_EXPAND)}</button>` : ""}
       </div>
       <div class="cap">
-        <span>${esc(facts.join(" · "))}</span>
+        <span id="facts">${esc(this._facts(m))}</span>
         ${sourceLink(m)}
       </div>
-      <div class="muted" id="mhint">${esc(hint)}</div>`;
+      <div class="muted" id="mhint">${esc(hint)}</div>
+      <div class="muted sync" id="msync"></div>
+      <div class="hud" id="hud"></div>`;
     const grow = stage.querySelector(".grow");
     if (grow) grow.onclick = () => this._setBig(!stage.classList.contains("big"));
     stage.onclick = (e) => {
@@ -624,7 +844,235 @@ class DjiFlightDetails extends HTMLElement {
         stage.querySelector("#mhint").textContent =
           `Dieses Video kann der Browser nicht abspielen (vermutlich H.265/HEVC ohne Hardware-Decoder). ${sourceHint(m)}`;
       };
+      if (this._recOffset(m) != null) this._wireVideo(video, m);
     }
+    this._updateSyncUi();
+    this._refreshCursor();
+  }
+
+  /** Highlight the selected recording in the thumbnail strip and in the band of the charts. */
+  _markSelected() {
+    const i = this._mediaIndex;
+    for (const el of this.shadowRoot.querySelectorAll(".strip .m")) el.classList.toggle("sel", Number(el.dataset.i) === i);
+    for (const el of this.shadowRoot.querySelectorAll(".recband [data-rec]")) el.classList.toggle("sel", Number(el.dataset.rec) === i);
+  }
+
+  _facts(m) {
+    const offset = this._recOffset(m);
+    return [
+      KIND_LABEL[m.kind] || m.kind,
+      m.start ? fmtDate(m.start, { timeStyle: "short" }) : null,
+      offset != null && offset >= 0 ? `bei ${fmtClock(offset)} im Flug` : null,
+      this._recDuration(m) ? fmtClock(this._recDuration(m)) : null,
+      m.has_raw ? "RAW" : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  /** Flight second of the recording's start by its file name (camera clock), or null. */
+  _fileOffset(m) {
+    const start = this._flight?.start_time;
+    if (!m?.start || !start) return null;
+    return (Date.parse(m.start) - Date.parse(start)) / 1000;
+  }
+
+  /**
+   * The recording in the log (`[t_start, t_end]`) this video is, if any. The
+   * file name's time runs about 2 s ahead of the camera actually recording.
+   */
+  _logVideo(m) {
+    const f = m && m.kind !== "photo" ? this._fileOffset(m) : null;
+    if (f == null) return null;
+    let best = null;
+    for (const seg of this._track?.videos || []) {
+      if (Math.abs(seg[0] - f) <= SNAP_S && (!best || Math.abs(seg[0] - f) < Math.abs(best[0] - f))) best = seg;
+    }
+    return best;
+  }
+
+  /** Flight second at which a recording starts (aligned to the log, plus the manual shift), or null. */
+  _recOffset(m) {
+    const f = this._fileOffset(m);
+    if (f == null) return null;
+    return (this._logVideo(m)?.[0] ?? f) + readAdjust(m.id);
+  }
+
+  /** Follow the video's position with the cursor in the charts and on the map. */
+  _wireVideo(video, m) {
+    const self = this;
+    const s = {
+      video,
+      id: m.id,
+      get offset() {
+        return self._recOffset(m);
+      },
+      get duration() {
+        return self._recDuration(m);
+      },
+      active: false,
+      looping: false,
+    };
+    this._sync = s;
+    const tick = () => {
+      s.looping = false;
+      if (this._sync !== s || !video.isConnected) return;
+      this._refreshCursor();
+      if (!video.paused) loop();
+    };
+    // Once per shown frame; without requestVideoFrameCallback (older Firefox) once per repaint.
+    const loop = () => {
+      if (s.looping) return;
+      s.looping = true;
+      if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(tick);
+      else requestAnimationFrame(tick);
+    };
+    const refresh = () => {
+      if (this._sync === s) this._refreshCursor();
+    };
+    video.addEventListener("play", () => {
+      s.active = true;
+      loop();
+    });
+    video.addEventListener("seeking", () => {
+      s.active = true;
+      refresh();
+    });
+    video.addEventListener("seeked", refresh);
+    video.addEventListener("timeupdate", refresh);
+    video.addEventListener("loadedmetadata", () => this._learnDuration(m.id, video.duration));
+  }
+
+  /** Flight second shown in the video, or null before it was started. */
+  _videoTime() {
+    const s = this._sync;
+    if (!s?.active || !s.video.isConnected) return null;
+    return s.offset + s.video.currentTime;
+  }
+
+  /** Jump the video to flight second t: in the recording picked (`pick`), else the shown one or any that covers t. */
+  _seekTo(t, pick = null) {
+    const recs = this._recordings || [];
+    // Start of recording i if it runs at t; a length not known yet counts as open-ended.
+    const covers = (i) => {
+      const m = recs[i];
+      const a = m && m.kind !== "photo" && m.play ? this._recOffset(m) : null;
+      const len = this._recDuration(m);
+      return a != null && t >= a && (!len || t <= a + len) ? a : null;
+    };
+    if (pick != null && covers(pick) == null) {
+      if (pick !== this._mediaIndex) this._selectMedia(pick); // a photo
+      return;
+    }
+    let i = pick ?? (covers(this._mediaIndex) != null ? this._mediaIndex : -1);
+    if (i < 0) {
+      recs.forEach((_, k) => {
+        const a = covers(k);
+        if (a != null && (i < 0 || a > covers(i))) i = k;
+      });
+    }
+    if (i < 0) return;
+    if (i !== this._mediaIndex) this._selectMedia(i);
+    const s = this._sync;
+    if (!s) return;
+    const v = s.video;
+    const pos = Math.max(0, t - s.offset);
+    s.active = true;
+    if (v.readyState >= 1) {
+      v.currentTime = pos;
+    } else {
+      // preload="none": fetch the metadata first, then seek (shows that frame).
+      // Through OneDrive that takes a few seconds: DJI puts the index at the end.
+      // Clicks while it loads only move the target; the last one wins.
+      s.pendingPos = pos;
+      if (s.loading) return;
+      s.loading = true;
+      const screen = v.closest(".screen");
+      screen?.classList.add("busy");
+      const ready = () => {
+        if (!s.loading) return;
+        s.loading = false;
+        screen?.classList.remove("busy");
+        if (v.readyState >= 1) v.currentTime = s.pendingPos;
+      };
+      v.addEventListener("loadedmetadata", ready, { once: true });
+      v.addEventListener("error", ready, { once: true });
+      v.preload = "metadata";
+      v.load();
+    }
+  }
+
+  /** Shift the shown recording against the log by d seconds (camera clock vs. log time). */
+  _adjust(d) {
+    const s = this._sync;
+    if (!s) return;
+    const value = Math.round((readAdjust(s.id) + d) * 10) / 10;
+    try {
+      if (value) localStorage.setItem(ADJUST_KEY + s.id, String(value));
+      else localStorage.removeItem(ADJUST_KEY + s.id);
+    } catch {
+      // No storage (private window): nothing to keep it in.
+    }
+    this._renderCharts(); // moves the recording's bar, redraws the sync line
+  }
+
+  /** Sync line under the player and, for the enlarged player, values and a mini height curve. */
+  _updateSyncUi() {
+    const stage = this.shadowRoot.getElementById("stage");
+    const line = stage?.querySelector("#msync");
+    const hud = stage?.querySelector("#hud");
+    if (!line || !hud) return;
+    const s = this._sync;
+    const ctx = this._chartCtx;
+    const on = !!(s && ctx);
+    stage.classList.toggle("synced", on);
+    if (!on) {
+      line.innerHTML = "";
+      hud.innerHTML = "";
+      return;
+    }
+    const m = this._recordings?.[this._mediaIndex];
+    const facts = stage.querySelector("#facts");
+    if (m && facts) facts.textContent = this._facts(m);
+    const aligned = m && this._logVideo(m);
+    const adj = readAdjust(s.id);
+    line.innerHTML = `Läuft mit Verlauf und Karte mit${
+      aligned
+        ? ` · <span title="Zeit aus dem Dateinamen: ${esc(fmtClock(this._fileOffset(m)))}; die Kamera nimmt erst etwas später auf">am Aufnahmestart im Log ausgerichtet</span>`
+        : ""
+    } · Versatz
+      <button data-d="-1" title="Video 1 s früher im Flug einordnen">−</button><b>${adj > 0 ? "+" : ""}${esc(fmtNum(adj, adj % 1 ? 1 : 0))} s</b><button data-d="1" title="Video 1 s später im Flug einordnen">+</button>`;
+    for (const b of line.querySelectorAll("button")) b.onclick = () => this._adjust(Number(b.dataset.d));
+
+    // The enlarged player covers the charts: a small height curve stands in.
+    const { p, t0, t1 } = ctx;
+    const hx = (t) => (1000 * (t - t0)) / (t1 - t0 || 1);
+    const heights = p.height || [];
+    const hi = Math.max(1, ...heights.filter((v) => v != null));
+    let d = "";
+    let pen = false;
+    heights.forEach((v, i) => {
+      if (v == null) {
+        pen = false;
+        return;
+      }
+      d += `${pen ? "L" : "M"}${hx(p.t[i]).toFixed(1)},${(38 - (36 * Math.max(0, v)) / hi).toFixed(1)}`;
+      pen = true;
+    });
+    const a = hx(Math.max(t0, s.offset));
+    const b = hx(Math.min(t1, s.offset + (s.duration || s.video.duration || 0)));
+    hud.innerHTML = `
+      <div id="hudvals">&nbsp;</div>
+      <svg viewBox="0 0 1000 40" preserveAspectRatio="none">
+        ${b > a ? `<rect class="range" x="${a}" y="0" width="${b - a}" height="40"></rect>` : ""}
+        <path d="${d}" vector-effect="non-scaling-stroke"></path>
+        <line class="cur" y1="0" y2="40" vector-effect="non-scaling-stroke" visibility="hidden"></line>
+      </svg>`;
+    const mini = hud.querySelector("svg");
+    mini.onclick = (e) => {
+      const r = mini.getBoundingClientRect();
+      this._seekTo(t0 + ((e.clientX - r.left) / (r.width || 1)) * (t1 - t0), this._mediaIndex);
+    };
   }
 
   _setBig(big) {
@@ -652,8 +1100,11 @@ class DjiFlightDetails extends HTMLElement {
   _renderCharts() {
     const el = this.shadowRoot.getElementById("charts");
     if (!el) return;
+    this._chartCtx = null;
+    this._hoverT = null;
     const p = this._track?.profile;
     if (!p || !p.t?.length) {
+      this._updateSyncUi();
       el.innerHTML = `<div class="muted">Kein Verlauf für diesen Flug${
         this._flight?.status === "header_only" ? " (nur Kopfdaten)" : " (vor dem Update importiert; wird beim nächsten Scan nachgeladen)"
       }.</div>`;
@@ -665,7 +1116,6 @@ class DjiFlightDetails extends HTMLElement {
       this._observe(el);
       return;
     }
-    this._width = width;
     const t0 = p.t[0];
     const t1 = p.t[p.t.length - 1] || t0 + 1;
     const plotW = Math.max(10, width - PAD_L - PAD_R);
@@ -684,51 +1134,68 @@ class DjiFlightDetails extends HTMLElement {
         )
         .join("");
 
-    let html = this._bandHtml(x, width);
-    this._charts = [];
-    for (const c of CHARTS.filter((def) => (p[def.key] || []).some((v) => v != null))) {
-      const scale = c.scale || 1;
-      const vals = p[c.key].map((v) => (v == null ? null : v * scale));
-      const known = vals.filter((v) => v != null);
-      let lo = c.range ? c.range[0] : Math.min(...known);
-      let hi = c.range ? c.range[1] : Math.max(...known);
-      if (c.floor != null) lo = Math.min(lo, c.floor);
-      if (hi - lo < 1) hi = lo + 1;
-      const pad = c.range ? 0 : (hi - lo) * 0.05;
-      lo = c.floor != null && lo === c.floor ? lo : lo - pad;
-      hi += pad;
-      const y = (v) => 4 + (1 - (v - lo) / (hi - lo)) * (CHART_H - 8);
-      let d = "";
-      let pen = false;
-      vals.forEach((v, i) => {
-        if (v == null) {
-          pen = false;
-          return;
-        }
-        d += `${pen ? "L" : "M"}${x(p.t[i]).toFixed(1)},${y(v).toFixed(1)}`;
-        pen = true;
-      });
-      const peak = Math.max(...known);
-      html += `
-        <div class="chart" data-key="${c.key}">
-          <div class="lbl"><span>${esc(c.label)}</span><span class="val">max. <b>${esc(fmtNum(peak, c.digits, c.unit))}</b></span></div>
-          <svg width="${width}" height="${CHART_H}">
-            <line class="grid" x1="${PAD_L}" x2="${width - PAD_R}" y1="${y(hi)}" y2="${y(hi)}"></line>
-            <line class="grid" x1="${PAD_L}" x2="${width - PAD_R}" y1="${y(lo)}" y2="${y(lo)}"></line>
-            <text x="${PAD_L - 6}" y="${y(hi) + 3}" text-anchor="end">${esc(fmtNum(hi, hi - lo < 10 ? 1 : 0))}</text>
-            <text x="${PAD_L - 6}" y="${y(lo) + 3}" text-anchor="end">${esc(fmtNum(lo, hi - lo < 10 ? 1 : 0))}</text>
-            ${eventLines(CHART_H)}
-            <path d="${d}" fill="none" stroke="${c.color}" stroke-width="1.8" stroke-linejoin="round"></path>
-            <line class="cursor" x1="0" x2="0" y1="0" y2="${CHART_H}" visibility="hidden"></line>
-            <circle r="3.5" fill="${c.color}" visibility="hidden"></circle>
-          </svg>
-        </div>`;
-      this._charts.push({ ...c, y, vals });
+    const build = (chartH) => {
+      let html = this._bandHtml(x, width) + this._recBandHtml(x, width, t0, t1);
+      this._charts = [];
+      for (const c of CHARTS.filter((def) => (p[def.key] || []).some((v) => v != null))) {
+        const scale = c.scale || 1;
+        const vals = p[c.key].map((v) => (v == null ? null : v * scale));
+        const known = vals.filter((v) => v != null);
+        let lo = c.range ? c.range[0] : Math.min(...known);
+        let hi = c.range ? c.range[1] : Math.max(...known);
+        if (c.floor != null) lo = Math.min(lo, c.floor);
+        if (hi - lo < 1) hi = lo + 1;
+        const pad = c.range ? 0 : (hi - lo) * 0.05;
+        lo = c.floor != null && lo === c.floor ? lo : lo - pad;
+        hi += pad;
+        const y = (v) => 4 + (1 - (v - lo) / (hi - lo)) * (chartH - 8);
+        let d = "";
+        let pen = false;
+        vals.forEach((v, i) => {
+          if (v == null) {
+            pen = false;
+            return;
+          }
+          d += `${pen ? "L" : "M"}${x(p.t[i]).toFixed(1)},${y(v).toFixed(1)}`;
+          pen = true;
+        });
+        const peak = Math.max(...known);
+        html += `
+          <div class="chart" data-key="${c.key}">
+            <div class="lbl"><span>${esc(c.label)}</span><span class="val">max. <b>${esc(fmtNum(peak, c.digits, c.unit))}</b></span></div>
+            <svg width="${width}" height="${chartH}">
+              <line class="grid" x1="${PAD_L}" x2="${width - PAD_R}" y1="${y(hi)}" y2="${y(hi)}"></line>
+              <line class="grid" x1="${PAD_L}" x2="${width - PAD_R}" y1="${y(lo)}" y2="${y(lo)}"></line>
+              <text x="${PAD_L - 6}" y="${y(hi) + 3}" text-anchor="end">${esc(fmtNum(hi, hi - lo < 10 ? 1 : 0))}</text>
+              <text x="${PAD_L - 6}" y="${y(lo) + 3}" text-anchor="end">${esc(fmtNum(lo, hi - lo < 10 ? 1 : 0))}</text>
+              ${eventLines(chartH)}
+              <path d="${d}" fill="none" stroke="${c.color}" stroke-width="1.8" stroke-linejoin="round"></path>
+              <line class="cursor" x1="0" x2="0" y1="0" y2="${chartH}" visibility="hidden"></line>
+              <circle r="3.5" fill="${c.color}" visibility="hidden"></circle>
+            </svg>
+          </div>`;
+        this._charts.push({ ...c, y, vals });
+      }
+      html += this._axisHtml(x, t0, t1, width);
+      el.innerHTML = `<div class="charts">${html}</div>`;
+    };
+    // Split layout: #charts has the pane's height; share it between the charts.
+    const avail = this.classList.contains("narrow") ? 0 : el.clientHeight;
+    let chartH = avail ? this._chartH || CHART_H : CHART_H;
+    build(chartH);
+    const n = this._charts.length;
+    if (avail && n) {
+      const fixed = el.firstElementChild.offsetHeight - n * chartH;
+      const fit = Math.floor(Math.min(MAX_CHART_H, Math.max(MIN_CHART_H, (avail - fixed) / n)));
+      if (fit !== chartH) build((chartH = fit));
+      this._chartH = chartH;
     }
-    html += this._axisHtml(x, t0, t1, width);
-    el.innerHTML = `<div class="charts">${html}</div>`;
-    this._wireHover(el.querySelector(".charts"), p, x, t0, t1, plotW);
+    this._chartBox = { w: width, h: el.clientHeight };
+    this._wireCharts(el.querySelector(".charts"), p, x, t0, t1, plotW);
     this._observe(el);
+    this._markSelected();
+    this._updateSyncUi();
+    this._refreshCursor();
   }
 
   _bandHtml(x, width) {
@@ -750,6 +1217,30 @@ class DjiFlightDetails extends HTMLElement {
       <div class="legend">${seen.map((l) => `<span><i style="background:${modeColor(l)}"></i>${esc(l)}</span>`).join("")}</div>`;
   }
 
+  /** Band with the recordings: videos as bars over their time, photos as dots. */
+  _recBandHtml(x, width, t0, t1) {
+    const items = (this._recordings || [])
+      .map((m, i) => {
+        const a = this._recOffset(m);
+        if (a == null) return "";
+        const len = m.kind !== "photo" ? this._recDuration(m) : null;
+        const b = len ? a + len : null;
+        const title = `<title>${esc(`${m.name} · ${fmtClock(a)}${b != null ? `–${fmtClock(b)}` : ""}`)}</title>`;
+        if (b == null) {
+          return a < t0 || a > t1 ? "" : `<circle data-rec="${i}" cx="${x(a)}" cy="7" r="4">${title}</circle>`;
+        }
+        if (b < t0 || a > t1) return "";
+        const xa = x(Math.max(a, t0));
+        return `<rect data-rec="${i}" x="${xa}" y="2" width="${Math.max(3, x(Math.min(b, t1)) - xa)}" height="10" rx="2">${title}</rect>`;
+      })
+      .join("");
+    if (!items) return "";
+    return `
+      <div class="band recband">
+        <svg width="${width}" height="14"><text x="${PAD_L - 6}" y="11" text-anchor="end">Medien</text>${items}</svg>
+      </div>`;
+  }
+
   _axisHtml(x, t0, t1, width) {
     const span = t1 - t0;
     const step = [10, 15, 30, 60, 120, 300, 600, 900, 1800].find((s) => span / s <= 8) || 3600;
@@ -760,57 +1251,110 @@ class DjiFlightDetails extends HTMLElement {
     return `<svg width="${width}" height="14">${ticks}</svg>`;
   }
 
-  _wireHover(root, p, x, t0, t1, plotW) {
-    const svgs = [...root.querySelectorAll(".chart svg")];
+  _wireCharts(root, p, x, t0, t1, plotW) {
     const labels = [...root.querySelectorAll(".chart .val")];
-    const peaks = labels.map((l) => l.innerHTML);
-    const show = (i) => {
-      const cx = x(p.t[i]);
-      this._charts.forEach((c, k) => {
-        const svg = svgs[k];
-        const line = svg.querySelector(".cursor");
-        const dot = svg.querySelector("circle");
-        line.setAttribute("x1", cx);
-        line.setAttribute("x2", cx);
-        line.setAttribute("visibility", "visible");
-        const v = c.vals[i];
-        if (v == null) {
-          dot.setAttribute("visibility", "hidden");
-          labels[k].innerHTML = `${esc(fmtClock(p.t[i]))} · –`;
-        } else {
-          dot.setAttribute("cx", cx);
-          dot.setAttribute("cy", c.y(v));
-          dot.setAttribute("visibility", "visible");
-          labels[k].innerHTML = `${esc(fmtClock(p.t[i]))} · <b>${esc(fmtNum(v, c.digits, c.unit))}</b>`;
-        }
-      });
-      this._map?.setCursor?.(p.lat?.[i], p.lon?.[i]);
+    this._chartCtx = {
+      p,
+      x,
+      t0,
+      t1,
+      svgs: [...root.querySelectorAll(".chart svg")],
+      labels,
+      peaks: labels.map((l) => l.innerHTML),
+      shown: true, // so the first update clears a cursor left on the map
     };
-    const hide = () => {
+    const timeAt = (e) => {
+      const px = e.clientX - root.getBoundingClientRect().left;
+      if (px < PAD_L - 4 || px > PAD_L + plotW + 4) return null;
+      return Math.min(t1, Math.max(t0, t0 + ((px - PAD_L) / plotW) * (t1 - t0)));
+    };
+    // Hovering wins over the video; leaving the charts hands the cursor back to it.
+    root.onpointermove = (e) => {
+      this._hoverT = timeAt(e);
+      this._refreshCursor();
+    };
+    root.onpointerleave = () => {
+      this._hoverT = null;
+      this._refreshCursor();
+    };
+    root.onclick = (e) => {
+      const t = timeAt(e);
+      const hit = e.target.closest?.("[data-rec]");
+      if (t != null) this._seekTo(t, hit ? Number(hit.dataset.rec) : null);
+    };
+  }
+
+  _refreshCursor() {
+    this._setCursor(this._hoverT ?? this._videoTime() ?? this._photoT);
+  }
+
+  /** Cursor in all charts, on the map and in the enlarged player at flight second t; null hides it. */
+  _setCursor(t) {
+    const ctx = this._chartCtx;
+    if (!ctx) return;
+    const { p, x, svgs, labels, peaks } = ctx;
+    const hudVals = this.shadowRoot.getElementById("hudvals");
+    const hudCur = this.shadowRoot.querySelector("#hud .cur");
+    if (t == null || t < ctx.t0 || t > ctx.t1) {
+      if (!ctx.shown) return;
+      ctx.shown = false;
       svgs.forEach((svg) => {
         svg.querySelector(".cursor").setAttribute("visibility", "hidden");
         svg.querySelector("circle").setAttribute("visibility", "hidden");
       });
       labels.forEach((l, k) => (l.innerHTML = peaks[k]));
       this._map?.setCursor?.(null, null);
-    };
-    root.onpointermove = (e) => {
-      const rect = root.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      if (px < PAD_L - 4 || px > PAD_L + plotW + 4) return hide();
-      const t = t0 + ((px - PAD_L) / plotW) * (t1 - t0);
-      show(nearest(p.t, t));
-    };
-    root.onpointerleave = hide;
+      if (hudVals) hudVals.innerHTML = "&nbsp;";
+      hudCur?.setAttribute("visibility", "hidden");
+      return;
+    }
+    ctx.shown = true;
+    const [i, f] = locate(p.t, t);
+    const cx = x(t);
+    const clock = esc(fmtClock(t));
+    const parts = [clock];
+    this._charts.forEach((c, k) => {
+      const svg = svgs[k];
+      const line = svg.querySelector(".cursor");
+      const dot = svg.querySelector("circle");
+      line.setAttribute("x1", cx);
+      line.setAttribute("x2", cx);
+      line.setAttribute("visibility", "visible");
+      const v = lerpAt(c.vals, i, f);
+      if (v == null) {
+        dot.setAttribute("visibility", "hidden");
+        labels[k].innerHTML = `${clock} · –`;
+      } else {
+        const text = esc(fmtNum(v, c.digits, c.unit));
+        dot.setAttribute("cx", cx);
+        dot.setAttribute("cy", c.y(v));
+        dot.setAttribute("visibility", "visible");
+        labels[k].innerHTML = `${clock} · <b>${text}</b>`;
+        parts.push(`${esc(c.short)} <b>${text}</b>`);
+      }
+    });
+    this._map?.setCursor?.(lerpAt(p.lat, i, f), lerpAt(p.lon, i, f));
+    if (hudVals) hudVals.innerHTML = parts.join(" · ");
+    if (hudCur) {
+      const hx = (1000 * (t - ctx.t0)) / (ctx.t1 - ctx.t0 || 1);
+      hudCur.setAttribute("x1", hx);
+      hudCur.setAttribute("x2", hx);
+      hudCur.setAttribute("visibility", "visible");
+    }
   }
 
   _observe(el) {
     if (this._ro) return;
     this._ro = new ResizeObserver(() => {
+      this._layout(); // the key figures may wrap into another row
       const target = this.shadowRoot.getElementById("charts");
-      if (target && target.clientWidth && Math.abs(target.clientWidth - this._width) > 2) this._renderCharts();
+      if (!target?.clientWidth) return;
+      const box = this._chartBox;
+      const narrow = this.classList.contains("narrow");
+      if (Math.abs(target.clientWidth - box.w) > 2 || (!narrow && Math.abs(target.clientHeight - box.h) > 2)) this._renderCharts();
     });
     this._ro.observe(this);
+    this._ro.observe(el);
   }
 }
 
@@ -832,16 +1376,60 @@ function modeColor(label) {
   return MODE_COLORS[label] || OTHER_MODE_COLOR;
 }
 
-/** Index of the sample closest to t in the ascending array ts. */
-function nearest(ts, t) {
+/** [i, f]: t lies between samples i and i + 1 of the ascending array ts, at fraction f. */
+function locate(ts, t) {
+  if (ts.length < 2) return [0, 0];
   let lo = 0;
   let hi = ts.length - 1;
   while (hi - lo > 1) {
     const mid = (lo + hi) >> 1;
-    if (ts[mid] < t) lo = mid;
+    if (ts[mid] <= t) lo = mid;
     else hi = mid;
   }
-  return Math.abs(ts[lo] - t) <= Math.abs(ts[hi] - t) ? lo : hi;
+  const span = ts[hi] - ts[lo];
+  return [lo, span > 0 ? Math.min(1, Math.max(0, (t - ts[lo]) / span)) : 0];
+}
+
+/** Value between samples i and i + 1 at fraction f; the nearer one if the other is missing. */
+function lerpAt(vals, i, f) {
+  const a = vals?.[i];
+  const b = vals?.[i + 1];
+  if (a == null || b == null) return (f < 0.5 ? a : b) ?? null;
+  return a + (b - a) * f;
+}
+
+function readLayout() {
+  try {
+    const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}");
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLayout(prefs) {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(prefs));
+  } catch {
+    // No storage (private window): the sizes hold until the page is left.
+  }
+}
+
+/** Nearest scrolling ancestor, across shadow roots; null for the page itself. */
+function scrollParent(el) {
+  for (let n = el.parentNode || el.host; n; n = n.parentNode || n.host) {
+    if (n instanceof Element && /(auto|scroll)/.test(getComputedStyle(n).overflowY) && n.clientHeight) return n;
+  }
+  return null;
+}
+
+/** Manual shift of a recording in seconds (see ADJUST_KEY). */
+function readAdjust(id) {
+  try {
+    return Number(localStorage.getItem(ADJUST_KEY + id)) || 0;
+  } catch {
+    return 0;
+  }
 }
 
 if (!customElements.get("dji-flight-details")) {

@@ -113,7 +113,9 @@ class FlightTrack:
     ``profile`` holds equally long columns (``t``, ``height``, ``speed``,
     ``dist``, ``battery``, ``temp``, ``lat``, ``lon``; ``None`` where a frame
     had no reading), ``modes`` the flight mode segments ``[t_start, t_end,
-    mode]`` and ``events`` the flight controller actions ``[t, action]``.
+    mode]``, ``events`` the flight controller actions ``[t, action]`` and
+    ``videos`` the camera's recordings ``[t_start, t_end]`` (``t_end`` None
+    while still recording when the log ends).
     """
 
     points: list[list[float]] = field(default_factory=list)
@@ -121,6 +123,7 @@ class FlightTrack:
     profile: dict[str, list[Any]] | None = None
     modes: list[list[Any]] = field(default_factory=list)
     events: list[list[Any]] = field(default_factory=list)
+    videos: list[list[float | None]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -129,6 +132,7 @@ class FlightTrack:
             "profile": self.profile,
             "modes": self.modes,
             "events": self.events,
+            "videos": self.videos,
         }
 
 
@@ -393,6 +397,7 @@ def summarize_frames(
     track = FlightTrack(points=_downsample(raw_points, max_track_points), home=home)
     timeline = _timeline(frames, fly_time_base if max_fly_time > 0 else None, first_time, home)
     track.profile, track.modes, track.events = timeline["profile"], timeline["modes"], timeline["events"]
+    track.videos = timeline["videos"]
     base["max_distance_m"] = timeline["max_distance_m"]
     base["mode_time_s"] = timeline["mode_time_s"]
 
@@ -463,6 +468,7 @@ def _timeline(
         fix = osd.gps_level >= _MIN_GPS_LEVEL and _valid_fix(osd.latitude, osd.longitude)
         bat = fr.battery
         has_bat = bool(getattr(bat, "voltage", 0.0))
+        camera = getattr(fr, "camera", None)
         rows.append(
             (
                 t,
@@ -474,6 +480,8 @@ def _timeline(
                 float(bat.temperature) if has_bat else None,
                 _name(getattr(osd, "flyc_state", None)),
                 _name(getattr(osd, "flight_action", None)),
+                bool(getattr(camera, "is_video", False)),
+                int(getattr(camera, "record_time", 0) or 0),
             )
         )
 
@@ -498,6 +506,22 @@ def _timeline(
         if action and action != "NONE" and action != prev_action:
             events.append([round(t, 1), action])
         prev_action = action
+    # Recordings as the camera reports them. The file name's time comes about
+    # 2 s early (the file is created before the camera records), so the
+    # detail view aligns the recordings to these starts.
+    videos: list[list[float | None]] = []
+    recording = False
+    for r in rows:
+        t, is_video, record_time = r[0], r[9], r[10]
+        if is_video and not recording:
+            # Already recording when the log starts: record_time says since when.
+            videos.append([round(t - record_time, 1), None])
+        if is_video:
+            videos[-1][1] = round(t, 1)
+        recording = is_video
+    if recording:
+        videos[-1][1] = None  # still recording when the log ends: length unknown
+
     mode_time: dict[str, float] = {}
     for t0, t1, mode in modes:
         mode_time[mode] = mode_time.get(mode, 0.0) + (t1 - t0)
@@ -535,6 +559,7 @@ def _timeline(
         "profile": profile,
         "modes": [[round(t0, 1), round(t1, 1), m] for t0, t1, m in modes],
         "events": events,
+        "videos": videos,
         "max_distance_m": round(max(known), 1) if known else None,
         "mode_time_s": {m: round(s, 1) for m, s in mode_time.items()},
     }
