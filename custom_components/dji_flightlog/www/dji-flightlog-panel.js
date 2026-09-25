@@ -13,9 +13,9 @@
  * Registered by the integration via panel_custom; the maps are
  * dji-flight-map-card elements, loaded on demand like the detail view.
  *
- * With a OneDrive account connected, every flight carries the recordings
+ * With a media source (OneDrive, folder) connected, every flight carries the recordings
  * made during it (`flight.media`); the selected flight shows them as a
- * strip of thumbnails that play in an overlay or open in OneDrive.
+ * strip of thumbnails that play in an overlay or open at the source.
  */
 
 const STATIC = "/dji_flightlog_static";
@@ -74,6 +74,17 @@ const fmtClock = (iso) => (iso ? new Date(iso).toLocaleTimeString(undefined, { t
 const KIND_LABEL = { video: "Video", "360": "360°", photo: "Foto" };
 const esc = (t) =>
   String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+/** Link to a recording at its source: OneDrive's web view, or the original as a download (local folder). */
+const sourceLink = (m, short = false) =>
+  m.web_url
+    ? `<a href="${esc(m.web_url)}" target="_blank" rel="noopener">${short ? "OneDrive" : "In OneDrive öffnen"}</a>`
+    : m.download
+      ? `<a href="${esc(m.download)}" download>${short ? "Download" : "Original herunterladen"}</a>`
+      : "";
+/** Where to look at a recording the browser cannot show. */
+const sourceHint = (m) =>
+  m.web_url ? "Über „In OneDrive öffnen“ ansehen oder herunterladen." : m.download ? "Das Original lässt sich herunterladen." : "";
 
 const RANGES = [
   { value: "0", label: "Alle" },
@@ -970,8 +981,10 @@ class DjiFlightLogPanel extends HTMLElement {
     for (const acc of this._data?.media?.accounts || []) {
       if (!acc.ok) {
         msgs.push(
-          `OneDrive-Abgleich für ${acc.title} (Ordner „${acc.folder}“) fehlgeschlagen. Details stehen im Protokoll; ` +
-            `bei abgelaufener Anmeldung bietet Home Assistant unter Einstellungen → Geräte & Dienste eine neue Anmeldung an.`,
+          `Abgleich der Aufnahmen für ${acc.title} (Ordner „${acc.folder}“) fehlgeschlagen. Details stehen im Protokoll; ` +
+            (acc.source === "onedrive"
+              ? `bei abgelaufener Anmeldung bietet Home Assistant unter Einstellungen → Geräte & Dienste eine neue Anmeldung an.`
+              : `ist der Ordner bzw. Netzwerkspeicher eingebunden (Einstellungen → System → Speicher)?`),
         );
       }
     }
@@ -1085,7 +1098,7 @@ class DjiFlightLogPanel extends HTMLElement {
       // The log knows whether the camera recorded; say so if nothing matched.
       const missing =
         mediaConnected && !media.length && (f.video_time_s > 0 || f.photo_num > 0)
-          ? `<div class="hint">Laut Log aufgenommen, keine Datei in OneDrive gefunden</div>`
+          ? `<div class="hint">Laut Log aufgenommen, keine Aufnahme gefunden</div>`
           : "";
       html += `
         <div class="row${selected ? " sel" : ""}" data-id="${esc(f.flight_id)}">
@@ -1121,7 +1134,7 @@ class DjiFlightLogPanel extends HTMLElement {
       const f = flights.find((x) => x.flight_id === el.dataset.fid);
       const m = f?.media?.[Number(el.dataset.i)];
       el.onclick = (e) => {
-        if (e.target.closest("a")) return; // "OneDrive" link opens by itself
+        if (e.target.closest("a")) return; // "OneDrive"/"Download" link opens by itself
         if (m) this._openMedia(m);
       };
     }
@@ -1152,7 +1165,7 @@ class DjiFlightLogPanel extends HTMLElement {
           </div>
           <div class="cap">
             <span>${esc(fmtClock(m.start))}${m.has_raw ? " · RAW" : ""}</span>
-            ${m.web_url ? `<a href="${esc(m.web_url)}" target="_blank" rel="noopener">OneDrive</a>` : ""}
+            ${sourceLink(m, true)}
           </div>
         </div>`,
       )
@@ -1161,8 +1174,9 @@ class DjiFlightLogPanel extends HTMLElement {
 
   _openMedia(m) {
     if (!m.play) {
-      // 360° original without proxy, raw photo, ...: only OneDrive can show it.
+      // 360° original without proxy, raw photo, ...: only the source can show it.
       if (m.web_url) window.open(m.web_url, "_blank", "noopener");
+      else if (m.download) window.location.assign(m.download);
       return;
     }
     const dlg = this.shadowRoot.getElementById("player");
@@ -1171,7 +1185,7 @@ class DjiFlightLogPanel extends HTMLElement {
       <div class="box">
         <div class="bar">
           <span class="ttl">${esc(m.name)} · ${esc(fmtDate(m.start))}</span>
-          ${m.web_url ? `<a href="${esc(m.web_url)}" target="_blank" rel="noopener">In OneDrive öffnen</a>` : ""}
+          ${sourceLink(m)}
           <button class="close" title="Schließen">${svg(ICON_CLOSE)}</button>
         </div>
         ${isPhoto ? `<img class="full" src="${esc(m.play)}" alt="">` : `<video controls autoplay playsinline preload="metadata" src="${esc(m.play)}"></video>`}
@@ -1192,8 +1206,7 @@ class DjiFlightLogPanel extends HTMLElement {
         const hint = dlg.querySelector("#phint");
         hint.hidden = false;
         hint.textContent =
-          "Dieses Video kann der Browser nicht abspielen (vermutlich H.265/HEVC ohne Hardware-Decoder). " +
-          "Über „In OneDrive öffnen“ ansehen oder herunterladen.";
+          "Dieses Video kann der Browser nicht abspielen (vermutlich H.265/HEVC ohne Hardware-Decoder). " + sourceHint(m);
       };
     }
     window.addEventListener("keydown", this._onKey);

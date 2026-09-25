@@ -1,6 +1,24 @@
 {
   "config": {
     "step": {
+      "media_source": {
+        "title": "Aufnahmen hinzufügen",
+        "description": "Wo liegen die Videos und Fotos deiner Flüge? Eine Aufnahme wird einem Flug zugeordnet, wenn sich Aufnahme- und Flugzeit überschneiden.",
+        "menu_options": {
+          "local": "Ordner oder Netzwerkspeicher (SMB, NFS)",
+          "onedrive": "OneDrive"
+        }
+      },
+      "local": {
+        "title": "Ordner mit Aufnahmen",
+        "description": "Ein Ordner, den Home Assistant lesen kann. Unterordner werden mitgelesen.\n\n**NAS (SMB/CIFS oder NFS):** Die Freigabe zuerst unter Einstellungen → System → Speicher → *Netzwerkspeicher hinzufügen* mit der Verwendung **Medien** einbinden. Sie liegt dann unter `/media/<Name>`.\n\nVorschaubilder erzeugt ffmpeg; Aufnahmen werden über Home Assistant im Browser abgespielt.\n\nMit der Übernahme der Flugaufzeichnungen werden DJI-Fly-Logs (`FlightRecord_*.txt`) aus diesem Ordner in den Log-Ordner kopiert und importiert, z. B. die eines zweiten Piloten. Maßgeblich bleibt der Log-Ordner: Hier wird nichts geändert oder gelöscht.",
+        "data": {
+          "media_folder": "Ordner",
+          "media_scan_interval": "Scan-Intervall",
+          "match_tolerance": "Toleranz um einen Flug",
+          "import_logs": "Hier gefundene Flugaufzeichnungen (DJI Fly .txt) in den Log-Ordner übernehmen"
+        }
+      },
       "user": {
         "title": "DJI Flight Log",
         "description": "Ordner, in dem die DJI-Fly-Flugaufzeichnungen (*.txt) abgelegt werden. Neuere Logs (v13+) sind verschlüsselt; für GPS-Track und Telemetrie wird ein kostenloser DJI-Developer-API-Key benötigt. Ohne Key werden nur die Header-Daten (Zeit, Dauer, Distanz, max. Höhe) importiert.",
@@ -15,7 +33,7 @@
       },
       "onedrive_folder": {
         "title": "OneDrive-Ordner mit Aufnahmen",
-        "description": "Angemeldet als {account}. Aktueller Ordner: **{path}**{notice}\n\nUnterordner per Klick öffnen, eine Ebene höher gehen oder den aktuellen Ordner übernehmen. Unterordner werden mitgelesen. Eine Aufnahme wird einem Flug zugeordnet, wenn sich Aufnahme- und Flugzeit überschneiden."
+        "description": "Angemeldet als {account}. Aktueller Ordner: **{path}**{notice}\n\nUnterordner per Klick öffnen, eine Ebene höher gehen oder den aktuellen Ordner übernehmen. Unterordner werden mitgelesen. Eine Aufnahme wird einem Flug zugeordnet, wenn sich Aufnahme- und Flugzeit überschneiden.\n\nDJI-Fly-Flugaufzeichnungen (`FlightRecord_*.txt`) aus diesem Ordner lassen sich zusätzlich in den Log-Ordner übernehmen, z. B. die eines zweiten Piloten. Das wird in den Optionen eingeschaltet; in OneDrive wird dabei nichts geändert."
       },
       "reauth_confirm": {
         "title": "Erneut bei OneDrive anmelden",
@@ -28,7 +46,8 @@
     "error": {
       "dir_not_found": "Ordner existiert nicht",
       "folder_not_found": "Ordner in OneDrive nicht gefunden",
-      "cannot_connect": "OneDrive nicht erreichbar"
+      "cannot_connect": "OneDrive nicht erreichbar",
+      "dir_not_absolute": "Bitte einen absoluten Pfad angeben, z. B. /media/nas/drohne"
     },
     "abort": {
       "already_configured": "Bereits eingerichtet",
@@ -65,18 +84,30 @@
         "data": {
           "media_scan_interval": "Sync-Intervall",
           "match_tolerance": "Toleranz um einen Flug",
-          "change_folder": "Anderen Ordner wählen"
+          "change_folder": "Anderen Ordner wählen",
+          "import_logs": "Hier gefundene Flugaufzeichnungen (DJI Fly .txt) in den Log-Ordner übernehmen"
         }
       },
       "folder": {
         "title": "OneDrive-Ordner mit Aufnahmen",
         "description": "Aktueller Ordner: **{path}**{notice}\n\nUnterordner per Klick öffnen, eine Ebene höher gehen oder den aktuellen Ordner übernehmen. Unterordner werden mitgelesen."
+      },
+      "local": {
+        "title": "Ordner mit Aufnahmen",
+        "description": "Ein Ordner, den Home Assistant lesen kann, z. B. Netzwerkspeicher unter `/media/<Name>`. Unterordner werden mitgelesen.",
+        "data": {
+          "media_folder": "Ordner",
+          "media_scan_interval": "Scan-Intervall",
+          "match_tolerance": "Toleranz um einen Flug",
+          "import_logs": "Hier gefundene Flugaufzeichnungen (DJI Fly .txt) in den Log-Ordner übernehmen"
+        }
       }
     },
     "error": {
       "dir_not_found": "Ordner existiert nicht",
       "folder_not_found": "Ordner in OneDrive nicht gefunden",
-      "cannot_connect": "OneDrive nicht erreichbar"
+      "cannot_connect": "OneDrive nicht erreichbar",
+      "dir_not_absolute": "Bitte einen absoluten Pfad angeben, z. B. /media/nas/drohne"
     }
   },
   "device": {
@@ -172,13 +203,13 @@
       "attention": {
         "name": "Hinweise vor dem nächsten Flug"
       },
-      "onedrive_last_sync": {
+      "media_last_sync": {
         "name": "Letzter Abgleich"
       },
-      "onedrive_recordings": {
+      "media_recordings": {
         "name": "Aufnahmen"
       },
-      "onedrive_unmatched": {
+      "media_unmatched": {
         "name": "Aufnahmen ohne Flug"
       }
     },
@@ -188,6 +219,9 @@
       },
       "onedrive_sync": {
         "name": "OneDrive abgleichen"
+      },
+      "local_sync": {
+        "name": "Ordner einlesen"
       }
     }
   },

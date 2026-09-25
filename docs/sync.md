@@ -61,12 +61,13 @@ Ab dann: RC 2 nach dem Fliegen zum Laden an den PC hängen → Logs landen autom
 - Falls der Explorer den RC 2 zeigt, aber keine Ordner: USB-Modus am Gerät auf „Dateiübertragung" stellen.
 - Das Skript vergleicht Name + Größe, kopiert also nichts doppelt. Die Integration dedupliziert zusätzlich per Datei-Hash.
 
-## Aufnahmen (Videos/Fotos) nach OneDrive
+## Aufnahmen (Videos/Fotos) nach OneDrive oder aufs NAS
 
-Dasselbe Skript kopiert mit `-MediaTarget` auch die Aufnahmen (von Drohne/Goggles per USB, SD-Kartenleser oder `-MediaSource`-Ordnern) in den lokalen OneDrive-Ordner, erzeugt Vorschau-Proxys und Titelbilder und legt sie nach Datum ab. Die Integration verknüpft sie dann mit den Flügen – siehe [`onedrive.md`](onedrive.md).
+Dasselbe Skript kopiert mit `-MediaTarget` auch die Aufnahmen (von Drohne/Goggles per USB, SD-Kartenleser oder `-MediaSource`-Ordnern) in den lokalen OneDrive-Ordner oder eine Netzwerkfreigabe, erzeugt Vorschau-Proxys und Titelbilder und legt sie nach Datum ab. Die Integration verknüpft sie dann mit den Flügen – siehe [`onedrive.md`](onedrive.md) bzw. [`local-media.md`](local-media.md).
 
 ```powershell
 .\scripts\Sync-DjiFlightRecords.ps1 -MediaTarget "$env:OneDrive\Drohne\Medien" -MediaSource 'E:\DJI Avata 360'
+.\scripts\Sync-DjiFlightRecords.ps1 -MediaTarget '\\nas\drohne\medien' -MediaSource 'E:\DJI Avata 360'
 ```
 
 ## Alternativen

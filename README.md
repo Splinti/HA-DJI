@@ -25,10 +25,10 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 - **Eigenes Panel in der Seitenleiste** – drei Ansichten: *Flüge* (Statistik, Filter, große Karte, Flugliste), *Flug* (Details eines Flugs mit Verlaufsdiagrammen, Flugmodi, Ereignissen und Akku) und *Planen* (Karte mit DIPUL-Zonen, Suche und gemerkten Orten). Flugaufzeichnungen lassen sich dort direkt **hochladen** (Button oder Drag & Drop).
 - **Orte merken mit DIPUL-Zonen** – im Panel einen Punkt auf der Karte wählen und speichern, die [DIPUL](https://www.dipul.de)-Geozonen (Flughäfen, Kontrollzonen, Naturschutz, Wohngebiete, …) werden dabei eingeblendet und am Punkt abgefragt. Liste im Dashboard per `custom:dji-spots-card`, mit Google-Maps-Link zum Starten der Navigation.
 - **Karte** – `custom:dji-flight-map-card` (Leaflet, offline-fähig außer Kacheln): alle Tracks, Heatmap, Popups mit Kennzahlen und GPX/KML/GeoJSON-Download, Filter nach Zeitraum/Drohne, Modus „nur letzter Flug".
-- **Aufnahmen aus OneDrive** *(optional)* – Videos/Fotos (inkl. 360°-`.OSV` der Avata 360) aus einem OneDrive-Ordner werden per Aufnahmezeit den Flügen zugeordnet: Vorschaubilder und Player im Panel, Vorschaubilder im Karten-Popup, Link zur Datei in OneDrive. Siehe [`docs/onedrive.md`](docs/onedrive.md).
+- **Aufnahmen aus OneDrive oder vom NAS** *(optional)* – Videos/Fotos (inkl. 360°-`.OSV` der Avata 360) aus einem OneDrive-Ordner oder einem lokalen Ordner (auch SMB/NFS-Freigaben, die Home Assistant als Netzwerkspeicher einbindet) werden per Aufnahmezeit den Flügen zugeordnet: Vorschaubilder und Player im Panel, Vorschaubilder im Karten-Popup, Link zur Datei in OneDrive bzw. Download des Originals. Mehrere Konten/Ordner gleichzeitig, doppelte Aufnahmen werden zusammengeführt; auf Wunsch werden dort liegende Flugaufzeichnungen (z. B. eines zweiten Piloten) in den Log-Ordner übernommen. Siehe [`docs/onedrive.md`](docs/onedrive.md) und [`docs/local-media.md`](docs/local-media.md).
 - **Event** `dji_flightlog_flight_imported` bei jedem neuen Flug (Payload = Flugzusammenfassung) → Benachrichtigung, OneDrive-Upload, …
 - **Services** `dji_flightlog.scan`, `dji_flightlog.import_file`, `dji_flightlog.export_track` (GPX/KML/GeoJSON, in Datei oder als Response). Die Höhe in den Exporten ist die Höhe über dem Startpunkt (KML: `relativeToGround`). Die absolute Höhe im Log taugt nicht dafür: DJI rechnet eine barometrische Home-Höhe dazu, die von Tag zu Tag wandert und selbst auf Meereshöhe unter 0 m liegt.
-- **HTTP-API** (HA-Auth): `/api/dji_flightlog/flights`, `/tracks`, `/flights/<id>/track`, `/flights/<id>/export/<gpx|kml|geojson>`, `/spots` (GET/POST), `/spots/<id>` (PATCH/DELETE), `/upload` (POST, multipart-Feld `file`, nur Admins), `/media/<id>/thumb`, `/media/<id>/play`.
+- **HTTP-API** (HA-Auth): `/api/dji_flightlog/flights`, `/tracks`, `/flights/<id>/track`, `/flights/<id>/export/<gpx|kml|geojson>`, `/spots` (GET/POST), `/spots/<id>` (PATCH/DELETE), `/upload` (POST, multipart-Feld `file`, nur Admins), `/media/<id>/thumb`, `/media/<id>/play`, `/media/<id>/original`.
 
 ## Installation
 
@@ -51,7 +51,9 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 | geo_location-Limit | 0 (aus) | Nur die neuesten N Flüge bekommen eine Entity. **0 = keine** – siehe Hinweis unten |
 | In der Seitenleiste anzeigen | an | Panel „Drohnenflüge" in der HA-Seitenleiste |
 
-**Aufnahmen aus OneDrive:** Integration ein zweites Mal hinzufügen → OneDrive-Anmeldung (braucht eine kostenlose Azure-App-Registrierung), Details in [`docs/onedrive.md`](docs/onedrive.md).
+**Aufnahmen:** Integration ein zweites Mal hinzufügen, dann auswählen:
+- *Ordner oder Netzwerkspeicher (SMB, NFS)*: Pfad angeben, z. B. `/media/nas/drohne`. Details in [`docs/local-media.md`](docs/local-media.md).
+- *OneDrive*: Anmeldung, braucht eine kostenlose Azure-App-Registrierung. Details in [`docs/onedrive.md`](docs/onedrive.md).
 
 **DJI API-Key** (kostenlos): auf [developer.dji.com](https://developer.dji.com) registrieren → *Developer Center* → *Create App* → Typ **Open API** → E-Mail bestätigen → *App Key* kopieren.
 

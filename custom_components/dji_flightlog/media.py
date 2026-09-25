@@ -1,4 +1,4 @@
-"""Recordings (videos/photos) in OneDrive and their link to flights.
+"""Recordings (videos/photos) and their link to flights.
 
 Pure functions only (no Home Assistant, no network) so they are easy to test:
 
@@ -130,20 +130,24 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def _file_ref(item: dict[str, Any]) -> dict[str, Any]:
-    """The part of a stored OneDrive item the frontend needs."""
-    return {
+    """The part of a stored item needed to show or fetch the file."""
+    ref = {
         "item_id": item["id"],
         "name": item["name"],
         "size": item.get("size"),
         "web_url": item.get("web_url"),
     }
+    if item.get("path"):
+        ref["path"] = item["path"]  # local folder: relative to the folder
+    return ref
 
 
 def build_recordings(items: dict[str, dict[str, Any]], tz: tzinfo) -> dict[str, dict[str, Any]]:
-    """Group stored OneDrive items into recordings.
+    """Group stored items into recordings.
 
     ``items`` maps item id to ``{"id", "name", "size", "web_url", "folder",
-    "taken_at", "duration_ms", "width", "height"}`` (see ``onedrive.py``).
+    "taken_at", "duration_ms", "width", "height"}`` (see ``onedrive.py``;
+    ``local_media.py`` adds ``path`` and ``mtime``).
     ``tz`` is the zone the camera clock runs in (Home Assistant's zone).
     Files are grouped per folder, so a re-used DJI counter in another folder
     never merges two shots.
@@ -252,3 +256,48 @@ def match_recordings(
             assigned.setdefault(best[1], []).append((rs, rec["id"]))
 
     return {fid: [rid for _t, rid in sorted(recs)] for fid, recs in assigned.items()}
+
+
+# DJI Fly: FlightRecord_2026-09-21_[18-58-21].txt, older apps DJIFlightRecord_....txt.
+# Strict on purpose: only these are copied into the log folder, under this name.
+_FLIGHT_RECORD = re.compile(r"^(?:DJI)?FlightRecord_[\w\-\[\]() .]{1,100}\.txt$", re.IGNORECASE)
+
+
+def is_flight_record(name: str) -> bool:
+    """A DJI Fly flight record (to import), as opposed to a recording."""
+    return bool(_FLIGHT_RECORD.match(name))
+
+
+def _dedupe_key(rec: dict[str, Any]) -> tuple[str, int] | None:
+    main = rec.get(ROLE_ORIGINAL) or rec.get(ROLE_RAW) or rec.get(ROLE_PROXY) or {}
+    size = main.get("size")
+    return (rec["name"].lower(), size) if size else None
+
+
+def duplicate_recordings(sources: list[dict[str, dict[str, Any]]]) -> set[str]:
+    """Ids of recordings that another source holds as well.
+
+    The same shot copied to two places (say OneDrive and the NAS) has the
+    same file name and size. Of such copies the one with the most files
+    (proxy, cover, raw, ...) stays; on a tie the one of the earlier source.
+    """
+    kept: dict[tuple[str, int], dict[str, Any]] = {}
+    duplicates: set[str] = set()
+    for recordings in sources:
+        for rec in recordings.values():
+            key = _dedupe_key(rec)
+            if key is None:
+                continue
+            other = kept.get(key)
+            if other is None:
+                kept[key] = rec
+            elif _richness(rec) > _richness(other):
+                duplicates.add(other["id"])
+                kept[key] = rec
+            else:
+                duplicates.add(rec["id"])
+    return duplicates
+
+
+def _richness(rec: dict[str, Any]) -> int:
+    return sum(1 for role in (ROLE_ORIGINAL, ROLE_PROXY, ROLE_COVER, ROLE_RAW, ROLE_SRT) if rec.get(role))

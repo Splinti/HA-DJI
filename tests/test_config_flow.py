@@ -1,4 +1,4 @@
-"""Config flow: adding the integration again connects a OneDrive account."""
+"""Config flow: adding the integration again connects OneDrive (folders: see test_local_media)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dji_flightlog.const import (
+    CONF_IMPORT_LOGS,
     CONF_LOG_DIR,
     CONF_MATCH_TOLERANCE,
     CONF_MEDIA_FOLDER,
@@ -30,10 +31,18 @@ def _flightlog_entry(hass: HomeAssistant, tmp_path) -> MockConfigEntry:
     return entry
 
 
+async def _start_onedrive(hass: HomeAssistant) -> dict:
+    """Add the integration again and pick OneDrive in the menu."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    assert result["type"] is FlowResultType.MENU, result
+    assert result["menu_options"] == ["local", "onedrive"]
+    return await hass.config_entries.flow.async_configure(result["flow_id"], {"next_step_id": "onedrive"})
+
+
 async def test_second_add_without_credentials(hass: HomeAssistant, tmp_path) -> None:
     _flightlog_entry(hass, tmp_path)
     assert await async_setup_component(hass, "application_credentials", {})
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await _start_onedrive(hass)
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "missing_credentials"
 
@@ -44,7 +53,7 @@ async def test_second_add_starts_oauth(hass: HomeAssistant, tmp_path) -> None:
     await hass.config.async_update(external_url="https://example.com")
     assert await async_setup_component(hass, "application_credentials", {})
     await async_import_client_credential(hass, DOMAIN, ClientCredential("client-id", "secret"), "Azure")
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await _start_onedrive(hass)
     assert result["type"] is FlowResultType.EXTERNAL_STEP, result
     assert result["url"].startswith("https://login.microsoftonline.com/common/oauth2/v2.0/authorize")
 
@@ -55,7 +64,7 @@ async def _sign_in(hass: HomeAssistant, tmp_path, hass_client_no_auth, aioclient
     await hass.config.async_update(external_url="https://example.com")
     assert await async_setup_component(hass, "application_credentials", {})
     await async_import_client_credential(hass, DOMAIN, ClientCredential("client-id", "secret"), "Azure")
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await _start_onedrive(hass)
     state = parse_qs(urlparse(result["url"]).query)["state"][0]
 
     client = await hass_client_no_auth()
@@ -225,7 +234,13 @@ async def test_onedrive_flow_picks_folder(
     assert result["step_id"] == "media"
     assert result["description_placeholders"]["path"] == "/Drohne/Medien"
     result = await options.async_configure(
-        result["flow_id"], {CONF_MEDIA_SCAN_INTERVAL: 600, CONF_MATCH_TOLERANCE: 60, "change_folder": True}
+        result["flow_id"],
+        {
+            CONF_MEDIA_SCAN_INTERVAL: 600,
+            CONF_MATCH_TOLERANCE: 60,
+            CONF_IMPORT_LOGS: True,
+            "change_folder": True,
+        },
     )
     assert result["step_id"] == "folder"
     assert result["type"] is FlowResultType.MENU
@@ -236,6 +251,7 @@ async def test_onedrive_flow_picks_folder(
         CONF_MEDIA_FOLDER: "Drohne",
         CONF_MEDIA_SCAN_INTERVAL: 600,
         CONF_MATCH_TOLERANCE: 60,
+        CONF_IMPORT_LOGS: True,
     }
 
 

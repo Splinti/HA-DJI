@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -26,9 +28,17 @@ from .const import (
     UPLOAD_REJECTED,
 )
 from .coordinator import FlightLogCoordinator
-from .media import KIND_360, ROLE_ORIGINAL, ROLE_PROXY, ROLE_RAW
-from .media_coordinator import MediaCoordinator, media_coordinators, media_index, media_status
-from .onedrive import GraphError
+from .local_media import content_type
+from .media import ROLE_ORIGINAL, ROLE_RAW
+from .media_backend import MediaError
+from .media_coordinator import (
+    MediaCoordinator,
+    media_coordinators,
+    media_index,
+    media_status,
+    original_ref,
+    playable_ref,
+)
 from .parser import _downsample, track_to_geojson, track_to_gpx, track_to_kml
 
 _LOGGER = logging.getLogger(__name__)
@@ -327,13 +337,17 @@ def _public_recording(hass: HomeAssistant, rec: dict[str, Any]) -> dict[str, Any
     """What the frontend gets per recording, with signed thumb/play URLs.
 
     The URLs are signed because <img>/<video> cannot send the auth header.
-    OneDrive item ids only contain [A-Za-z0-9!], so the path needs no quoting
-    (and must not be quoted: the signature is checked against the decoded path).
+    OneDrive item ids only contain [A-Za-z0-9!] and local ids are hex, so the
+    path needs no quoting (and must not be quoted: the signature is checked
+    against the decoded path).
+
+    ``web_url`` opens the file at the source (OneDrive). Sources without a web
+    view (local folder) get ``download`` for the original instead.
     """
     ttl = timedelta(seconds=MEDIA_URL_TTL_S)
     base = f"{API_BASE}/media/{rec['id']}"
-    playable = rec.get(ROLE_PROXY) or (rec["kind"] != KIND_360 and rec.get(ROLE_ORIGINAL))
     original = rec.get(ROLE_ORIGINAL) or {}
+    download = not rec.get("web_url") and original_ref(rec) is not None
     return {
         "id": rec["id"],
         "kind": rec["kind"],
@@ -345,7 +359,8 @@ def _public_recording(hass: HomeAssistant, rec: dict[str, Any]) -> dict[str, Any
         "has_original": bool(original),
         "has_raw": bool(rec.get(ROLE_RAW)),
         "thumb": async_sign_path(hass, f"{base}/thumb", ttl),
-        "play": async_sign_path(hass, f"{base}/play", ttl) if playable else None,
+        "play": async_sign_path(hass, f"{base}/play", ttl) if playable_ref(rec) else None,
+        "download": async_sign_path(hass, f"{base}/original", ttl) if download else None,
     }
 
 
@@ -371,9 +386,9 @@ class MediaThumbView(HomeAssistantView):
         coordinator, rec = found
         try:
             data = await coordinator.async_thumbnail(rec)
-        except (GraphError, aiohttp.ClientError, TimeoutError) as err:
+        except (MediaError, aiohttp.ClientError, TimeoutError) as err:
             _LOGGER.debug("Thumbnail for %s failed: %s", rec["name"], err)
-            return self.json_message("OneDrive not reachable", status_code=502)
+            return self.json_message(f"{coordinator.backend.label} not reachable", status_code=502)
         if not data:
             return self.json_message("No thumbnail", status_code=404)
         return web.Response(
@@ -381,26 +396,62 @@ class MediaThumbView(HomeAssistantView):
         )
 
 
+async def _serve_file(
+    view: HomeAssistantView,
+    request: web.Request,
+    rec_id: str,
+    pick: Callable[[dict[str, Any]], dict[str, Any] | None],
+    *,
+    attachment: bool,
+) -> web.StreamResponse:
+    """Redirect to the file at the source (OneDrive) or stream it from disk (local folder)."""
+    found = _find_recording(request.app["hass"], rec_id)
+    if found is None:
+        return view.json_message("Unknown recording", status_code=404)
+    coordinator, rec = found
+    ref = pick(rec)
+    try:
+        target = await coordinator.async_file(ref)
+    except (MediaError, aiohttp.ClientError, TimeoutError) as err:
+        _LOGGER.debug("File of %s not available: %s", rec["name"], err)
+        return view.json_message(f"{coordinator.backend.label} not reachable", status_code=502)
+    if not target:
+        return view.json_message("No such file for this recording", status_code=404)
+    if isinstance(target, str):
+        raise web.HTTPFound(target)
+    # FileResponse answers Range requests, so the player can seek.
+    name = ref["name"].replace('"', "")
+    disposition = "attachment" if attachment else "inline"
+    return web.FileResponse(
+        Path(target),
+        headers={
+            "Content-Type": content_type(ref["name"]),
+            "Content-Disposition": f'{disposition}; filename="{name}"',
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
 class MediaPlayView(HomeAssistantView):
-    """Redirect to a short-lived OneDrive download URL of the playable file."""
+    """The playable file: the proxy, else a normal video or photo."""
 
     url = f"{API_BASE}/media/{{rec_id}}/play"
     name = f"api:{DOMAIN}:media_play"
     requires_auth = True
 
-    async def get(self, request: web.Request, rec_id: str) -> web.Response:
-        found = _find_recording(request.app["hass"], rec_id)
-        if found is None:
-            return self.json_message("Unknown recording", status_code=404)
-        coordinator, rec = found
-        try:
-            url = await coordinator.async_play_url(rec)
-        except (GraphError, aiohttp.ClientError, TimeoutError) as err:
-            _LOGGER.debug("Download URL for %s failed: %s", rec["name"], err)
-            return self.json_message("OneDrive not reachable", status_code=502)
-        if not url:
-            return self.json_message("Nothing playable in the browser for this recording", status_code=404)
-        raise web.HTTPFound(url)
+    async def get(self, request: web.Request, rec_id: str) -> web.StreamResponse:
+        return await _serve_file(self, request, rec_id, playable_ref, attachment=False)
+
+
+class MediaOriginalView(HomeAssistantView):
+    """Download the original (sources without a web view, i.e. a local folder)."""
+
+    url = f"{API_BASE}/media/{{rec_id}}/original"
+    name = f"api:{DOMAIN}:media_original"
+    requires_auth = True
+
+    async def get(self, request: web.Request, rec_id: str) -> web.StreamResponse:
+        return await _serve_file(self, request, rec_id, original_ref, attachment=True)
 
 
 def render_export(summary: dict[str, Any], track: dict[str, Any], fmt: str) -> tuple[str, str]:
@@ -423,5 +474,6 @@ def async_register_views(hass: HomeAssistant) -> None:
         AttentionDismissView,
         MediaThumbView,
         MediaPlayView,
+        MediaOriginalView,
     ):
         hass.http.register_view(view())

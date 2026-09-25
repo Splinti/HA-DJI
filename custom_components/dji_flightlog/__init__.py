@@ -26,11 +26,15 @@ from .const import (
     ATTR_PATH,
     CARD_URL,
     CONF_ENTRY_TYPE,
+    CONF_MEDIA_FOLDER,
     CONF_SIDEBAR_PANEL,
+    DEFAULT_LOCAL_MEDIA_FOLDER,
+    DEFAULT_MEDIA_FOLDER,
     DEFAULT_SIDEBAR_PANEL,
     DOMAIN,
-    ENTRY_TYPE_ONEDRIVE,
+    ENTRY_TYPE_LOCAL,
     EXPORT_FORMATS,
+    MEDIA_ENTRY_TYPES,
     MEDIA_STORAGE_KEY,
     MEDIA_STORAGE_VERSION,
     PANEL_ELEMENT,
@@ -45,14 +49,16 @@ from .const import (
 )
 from .coordinator import FlightLogCoordinator
 from .http import async_register_views, render_export
+from .local_media import LocalFolderMedia
+from .media_backend import MediaBackend
 from .media_coordinator import MediaCoordinator, media_coordinators
-from .onedrive import OneDriveClient
+from .onedrive import OneDriveClient, OneDriveMedia
 from .storage import FlightStore
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON, Platform.GEO_LOCATION]
-ONEDRIVE_PLATFORMS: list[Platform] = [Platform.BUTTON, Platform.SENSOR]
+MEDIA_PLATFORMS: list[Platform] = [Platform.BUTTON, Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -82,14 +88,14 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     return True
 
 
-def _is_onedrive(entry: ConfigEntry) -> bool:
-    return entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_ONEDRIVE
+def _is_media(entry: ConfigEntry) -> bool:
+    return entry.data.get(CONF_ENTRY_TYPE) in MEDIA_ENTRY_TYPES
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_setup(hass, {})
-    if _is_onedrive(entry):
-        return await _async_setup_onedrive(hass, entry)
+    if _is_media(entry):
+        return await _async_setup_media(hass, entry)
 
     store = FlightStore(hass)
     await store.async_load()
@@ -102,12 +108,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     @callback
     def _flights_changed() -> None:
-        # Recordings are matched to flights, so the OneDrive sensors follow the flight list.
+        # Recordings are matched to flights, so the media sensors follow the flight list.
         for media in media_coordinators(hass):
             media.async_update_listeners()
 
     entry.async_on_unload(coordinator.async_add_listener(_flights_changed))
     _flights_changed()
+    # Media entries set up before the flight log could not hand over their flight records yet.
+    for media in media_coordinators(hass):
+        media.async_schedule_log_import()
 
     _async_register_services(hass)
     await _async_register_lovelace_resource(hass)
@@ -115,8 +124,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def _async_setup_onedrive(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """A OneDrive account whose folder holds the recordings."""
+async def _async_setup_media(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """A OneDrive account or a local folder that holds the recordings."""
+    backend: MediaBackend
+    if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_LOCAL:
+        backend = LocalFolderMedia(hass, entry.options.get(CONF_MEDIA_FOLDER, DEFAULT_LOCAL_MEDIA_FOLDER))
+    else:
+        backend = await _async_onedrive_backend(hass, entry)
+
+    coordinator = MediaCoordinator(hass, entry, backend)
+    await coordinator.async_load()
+    await coordinator.async_config_entry_first_refresh()
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    await hass.config_entries.async_forward_entry_setups(entry, MEDIA_PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    return True
+
+
+async def _async_onedrive_backend(hass: HomeAssistant, entry: ConfigEntry) -> OneDriveMedia:
     try:
         implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(hass, entry)
     except ValueError as err:
@@ -128,19 +154,13 @@ async def _async_setup_onedrive(hass: HomeAssistant, entry: ConfigEntry) -> bool
         await session.async_ensure_token_valid()
         return session.token["access_token"]
 
-    coordinator = MediaCoordinator(hass, entry, OneDriveClient(async_get_clientsession(hass), _token))
-    await coordinator.async_load()
-    await coordinator.async_config_entry_first_refresh()
-
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    await hass.config_entries.async_forward_entry_setups(entry, ONEDRIVE_PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
-    return True
+    client = OneDriveClient(async_get_clientsession(hass), _token)
+    return OneDriveMedia(client, str(entry.options.get(CONF_MEDIA_FOLDER, DEFAULT_MEDIA_FOLDER)))
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    if _is_onedrive(entry):
-        ok = await hass.config_entries.async_unload_platforms(entry, ONEDRIVE_PLATFORMS)
+    if _is_media(entry):
+        ok = await hass.config_entries.async_unload_platforms(entry, MEDIA_PLATFORMS)
         if ok:
             hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         return ok
@@ -155,8 +175,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Drop the stored OneDrive listing when an account is removed."""
-    if _is_onedrive(entry):
+    """Drop the stored listing when a media entry is removed."""
+    if _is_media(entry):
         await Store(hass, MEDIA_STORAGE_VERSION, f"{MEDIA_STORAGE_KEY}.{entry.entry_id}").async_remove()
 
 
@@ -192,8 +212,8 @@ def _async_register_services(hass: HomeAssistant) -> None:
         return
 
     async def handle_scan(call: ServiceCall) -> None:
-        # OneDrive too, so the ↻ button in the panel picks up new recordings
-        # without waiting for the (longer) media sync interval.
+        # Media sources too, so the ↻ button in the panel picks up new
+        # recordings without waiting for the (longer) media sync interval.
         for media in media_coordinators(hass):
             await media.async_refresh()
         await _get_coordinator(hass).async_refresh()
