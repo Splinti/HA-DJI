@@ -1219,11 +1219,11 @@ class DjiFlightMapCard extends HTMLElement {
     const exports = f.points
       ? `<div class="links">${details}${["gpx", "kml", "geojson"].map((x) => `<a data-fmt="${x}">${x.toUpperCase()}</a>`).join("")}</div>`
       : `<div class="links">${details}<i>kein Track (verschlüsseltes Log ohne API-Key)</i></div>`;
-    // Recordings from OneDrive (only present when an account is connected).
+    // Recordings (only present when a media source is connected).
     const media = (f.media || []).length
       ? `<div class="media">${f.media
           .map(
-            (m) => `<a href="${esc(m.web_url || "#")}" target="_blank" rel="noopener" title="${esc(m.name)}">${
+            (m) => `<a href="${esc(m.web_url || m.play || m.download || "#")}" target="_blank" rel="noopener" title="${esc(m.name)}">${
               m.thumb ? `<img src="${esc(m.thumb)}" loading="lazy" alt="" onerror="this.remove()">` : ""
             }<span>${m.kind === "360" ? "360° " : ""}${m.duration_s ? esc(fmtDur(m.duration_s)) : m.kind === "photo" ? "Foto" : ""}</span></a>`,
           )

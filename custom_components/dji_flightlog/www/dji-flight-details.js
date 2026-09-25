@@ -5,7 +5,7 @@
  * track on a map, charts over the flight time (height, speed, distance from
  * home, battery, battery temperature) with the flight modes and flight
  * controller events, and the battery / recording / technical data.
- * With a OneDrive account connected, the recordings of the flight show in a
+ * With a media source (OneDrive, folder) connected, the recordings of the flight show in a
  * small player that can be enlarged to fill the window.
  *
  * The panel creates it, sets `hass`, hands over the (filtered) flight list
@@ -41,6 +41,17 @@ const fmtNum = (v, digits = 0, unit = "") =>
   v == null || Number.isNaN(v) ? "–" : `${Number(v).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}${unit ? ` ${unit}` : ""}`;
 const esc = (t) =>
   String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+/** Link to a recording at its source: OneDrive's web view, or the original as a download (local folder). */
+const sourceLink = (m, short = false) =>
+  m.web_url
+    ? `<a href="${esc(m.web_url)}" target="_blank" rel="noopener">${short ? "OneDrive" : "In OneDrive öffnen"}</a>`
+    : m.download
+      ? `<a href="${esc(m.download)}" download>${short ? "Download" : "Original herunterladen"}</a>`
+      : "";
+/** Where to look at a recording the browser cannot show. */
+const sourceHint = (m) =>
+  m.web_url ? "Über „In OneDrive öffnen“ ansehen oder herunterladen." : m.download ? "Das Original lässt sich herunterladen." : "";
 
 const CHARTS = [
   { key: "height", label: "Höhe über Start", unit: "m", color: "#4363d8", digits: 0, floor: 0 },
@@ -509,7 +520,7 @@ class DjiFlightDetails extends HTMLElement {
     return this._labels?.actionLabel ? this._labels.actionLabel(action) : action;
   }
 
-  // -- recordings (OneDrive) -------------------------------------------------
+  // -- recordings (OneDrive, folder) -----------------------------------------
 
   /** The shown flight's recordings; only the list summaries carry them, not the track response. */
   get _recordings() {
@@ -526,7 +537,7 @@ class DjiFlightDetails extends HTMLElement {
     this._mediaKey = key;
     this._setBig(false);
     const f = this._flight;
-    // No media array at all: no OneDrive account connected.
+    // No media array at all: no media source connected.
     if (!media || (!media.length && !(f?.video_time_s > 0 || f?.photo_num > 0))) {
       box.hidden = true;
       box.innerHTML = "";
@@ -534,7 +545,7 @@ class DjiFlightDetails extends HTMLElement {
     }
     box.hidden = false;
     if (!media.length) {
-      box.innerHTML = `<h3>Aufnahmen</h3><div class="muted">Laut Log wurde aufgenommen, in OneDrive liegt aber keine Datei zu diesem Flug.</div>`;
+      box.innerHTML = `<h3>Aufnahmen</h3><div class="muted">Laut Log wurde aufgenommen, zu diesem Flug wurde aber keine Aufnahme gefunden.</div>`;
       return;
     }
     box.innerHTML = `
@@ -571,7 +582,7 @@ class DjiFlightDetails extends HTMLElement {
     const big = stage.classList.contains("big");
     let screen;
     if (isVideo) {
-      // preload="none": nothing is fetched from OneDrive until play is pressed.
+      // preload="none": nothing is fetched until play is pressed.
       screen = `<video controls playsinline preload="none"${m.thumb ? ` poster="${esc(m.thumb)}"` : ""} src="${esc(m.play)}"></video>`;
     } else if (m.thumb || m.play) {
       // Photos: the small cover while small, the full picture once enlarged.
@@ -589,7 +600,7 @@ class DjiFlightDetails extends HTMLElement {
     ].filter(Boolean);
     let hint = "";
     if (m.kind === "360" && isVideo) hint = "360°-Vorschau der Kamera (beide Fisheye-Linsen nebeneinander). Das Original lässt sich in DJI Studio / LightCut bearbeiten.";
-    else if (!m.play) hint = "Im Browser nicht darstellbar (360°-Original ohne Proxy oder RAW), nur über OneDrive.";
+    else if (!m.play) hint = `Im Browser nicht darstellbar (360°-Original ohne Proxy oder RAW). ${sourceHint(m)}`;
     stage.innerHTML = `
       <div class="screen">
         ${screen}
@@ -597,7 +608,7 @@ class DjiFlightDetails extends HTMLElement {
       </div>
       <div class="cap">
         <span>${esc(facts.join(" · "))}</span>
-        ${m.web_url ? `<a href="${esc(m.web_url)}" target="_blank" rel="noopener">In OneDrive öffnen</a>` : ""}
+        ${sourceLink(m)}
       </div>
       <div class="muted" id="mhint">${esc(hint)}</div>`;
     const grow = stage.querySelector(".grow");
@@ -611,7 +622,7 @@ class DjiFlightDetails extends HTMLElement {
     if (video) {
       video.onerror = () => {
         stage.querySelector("#mhint").textContent =
-          "Dieses Video kann der Browser nicht abspielen (vermutlich H.265/HEVC ohne Hardware-Decoder). Über „In OneDrive öffnen“ ansehen oder herunterladen.";
+          `Dieses Video kann der Browser nicht abspielen (vermutlich H.265/HEVC ohne Hardware-Decoder). ${sourceHint(m)}`;
       };
     }
   }
