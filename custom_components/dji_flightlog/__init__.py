@@ -13,8 +13,11 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse, callback
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store
 from homeassistant.loader import async_get_integration
 
 from .const import (
@@ -22,10 +25,14 @@ from .const import (
     ATTR_FORMAT,
     ATTR_PATH,
     CARD_URL,
+    CONF_ENTRY_TYPE,
     CONF_SIDEBAR_PANEL,
     DEFAULT_SIDEBAR_PANEL,
     DOMAIN,
+    ENTRY_TYPE_ONEDRIVE,
     EXPORT_FORMATS,
+    MEDIA_STORAGE_KEY,
+    MEDIA_STORAGE_VERSION,
     PANEL_ELEMENT,
     PANEL_ICON,
     PANEL_TITLE,
@@ -38,11 +45,14 @@ from .const import (
 )
 from .coordinator import FlightLogCoordinator
 from .http import async_register_views, render_export
+from .media_coordinator import MediaCoordinator, media_coordinators
+from .onedrive import OneDriveClient
 from .storage import FlightStore
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON, Platform.GEO_LOCATION]
+ONEDRIVE_PLATFORMS: list[Platform] = [Platform.BUTTON, Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -72,8 +82,14 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     return True
 
 
+def _is_onedrive(entry: ConfigEntry) -> bool:
+    return entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_ONEDRIVE
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_setup(hass, {})
+    if _is_onedrive(entry):
+        return await _async_setup_onedrive(hass, entry)
 
     store = FlightStore(hass)
     await store.async_load()
@@ -84,21 +100,64 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
+    @callback
+    def _flights_changed() -> None:
+        # Recordings are matched to flights, so the OneDrive sensors follow the flight list.
+        for media in media_coordinators(hass):
+            media.async_update_listeners()
+
+    entry.async_on_unload(coordinator.async_add_listener(_flights_changed))
+    _flights_changed()
+
     _async_register_services(hass)
     await _async_register_lovelace_resource(hass)
     await _async_setup_panel(hass, entry)
     return True
 
 
+async def _async_setup_onedrive(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """A OneDrive account whose folder holds the recordings."""
+    try:
+        implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(hass, entry)
+    except ValueError as err:
+        # Application credentials removed or not loaded yet.
+        raise ConfigEntryNotReady(f"OneDrive credentials unavailable: {err}") from err
+    session = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
+
+    async def _token() -> str:
+        await session.async_ensure_token_valid()
+        return session.token["access_token"]
+
+    coordinator = MediaCoordinator(hass, entry, OneDriveClient(async_get_clientsession(hass), _token))
+    await coordinator.async_load()
+    await coordinator.async_config_entry_first_refresh()
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    await hass.config_entries.async_forward_entry_setups(entry, ONEDRIVE_PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    return True
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    if _is_onedrive(entry):
+        ok = await hass.config_entries.async_unload_platforms(entry, ONEDRIVE_PLATFORMS)
+        if ok:
+            hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        return ok
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
         _async_remove_panel(hass)
         hass.data[DOMAIN].pop(entry.entry_id, None)
-        if not hass.data[DOMAIN]:
+        if not any(isinstance(c, FlightLogCoordinator) for c in hass.data[DOMAIN].values()):
             for service in (SERVICE_SCAN, SERVICE_IMPORT_FILE, SERVICE_EXPORT_TRACK):
                 hass.services.async_remove(DOMAIN, service)
     return ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Drop the stored OneDrive listing when an account is removed."""
+    if _is_onedrive(entry):
+        await Store(hass, MEDIA_STORAGE_VERSION, f"{MEDIA_STORAGE_KEY}.{entry.entry_id}").async_remove()
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -109,7 +168,7 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 
 def _get_coordinator(hass: HomeAssistant) -> FlightLogCoordinator:
-    coordinators = list(hass.data.get(DOMAIN, {}).values())
+    coordinators = [c for c in hass.data.get(DOMAIN, {}).values() if isinstance(c, FlightLogCoordinator)]
     if not coordinators:
         raise HomeAssistantError("DJI Flight Log is not set up")
     return coordinators[0]
@@ -133,6 +192,10 @@ def _async_register_services(hass: HomeAssistant) -> None:
         return
 
     async def handle_scan(call: ServiceCall) -> None:
+        # OneDrive too, so the ↻ button in the panel picks up new recordings
+        # without waiting for the (longer) media sync interval.
+        for media in media_coordinators(hass):
+            await media.async_refresh()
         await _get_coordinator(hass).async_refresh()
 
     async def handle_import_file(call: ServiceCall) -> ServiceResponse:

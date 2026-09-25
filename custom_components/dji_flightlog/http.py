@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+from datetime import timedelta
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 from aiohttp import BodyPartReader, web
 from homeassistant.components.http import HomeAssistantView, require_admin
+from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
 
 from . import spots as spot_utils
@@ -16,12 +20,18 @@ from .const import (
     DOMAIN,
     EXPORT_FORMATS,
     MAX_LOG_FILE_BYTES,
+    MEDIA_URL_TTL_S,
     REASON_NOT_TXT,
     REASON_TOO_LARGE,
     UPLOAD_REJECTED,
 )
 from .coordinator import FlightLogCoordinator
+from .media import KIND_360, ROLE_ORIGINAL, ROLE_PROXY, ROLE_RAW
+from .media_coordinator import MediaCoordinator, media_coordinators, media_index, media_status
+from .onedrive import GraphError
 from .parser import _downsample, track_to_geojson, track_to_gpx, track_to_kml
+
+_LOGGER = logging.getLogger(__name__)
 
 API_BASE = f"/api/{DOMAIN}"
 
@@ -73,17 +83,25 @@ class FlightsView(HomeAssistantView):
         coordinator = _coordinator(request.app["hass"])
         if coordinator is None or coordinator.data is None:
             return self.json_message("Integration not ready", status_code=503)
+        hass: HomeAssistant = request.app["hass"]
         data = coordinator.data
-        return self.json(
-            {
-                "flights": _filter_flights(coordinator, request.query),
-                "aircraft": {sn: a.as_dict() for sn, a in data.aircraft.items()},
-                "totals": data.totals.as_dict(),
-                "attention": data.attention,
-                "last_import": data.last_import,
-                "last_scan": data.last_scan,
-            }
-        )
+        flights = _filter_flights(coordinator, request.query)
+        body: dict[str, Any] = {
+            "aircraft": {sn: a.as_dict() for sn, a in data.aircraft.items()},
+            "totals": data.totals.as_dict(),
+            "attention": data.attention,
+            "last_import": data.last_import,
+            "last_scan": data.last_scan,
+        }
+        if media_coordinators(hass):
+            index = media_index(hass, data.flights)
+            flights = [
+                {**f, "media": [_public_recording(hass, r) for r in index.by_flight.get(f["flight_id"], [])]}
+                for f in flights
+            ]
+            body["media"] = media_status(hass, index)
+        body["flights"] = flights
+        return self.json(body)
 
 
 class TracksView(HomeAssistantView):
@@ -305,6 +323,86 @@ async def _spots_changed(coordinator: FlightLogCoordinator) -> None:
     coordinator.async_update_listeners()
 
 
+def _public_recording(hass: HomeAssistant, rec: dict[str, Any]) -> dict[str, Any]:
+    """What the frontend gets per recording, with signed thumb/play URLs.
+
+    The URLs are signed because <img>/<video> cannot send the auth header.
+    OneDrive item ids only contain [A-Za-z0-9!], so the path needs no quoting
+    (and must not be quoted: the signature is checked against the decoded path).
+    """
+    ttl = timedelta(seconds=MEDIA_URL_TTL_S)
+    base = f"{API_BASE}/media/{rec['id']}"
+    playable = rec.get(ROLE_PROXY) or (rec["kind"] != KIND_360 and rec.get(ROLE_ORIGINAL))
+    original = rec.get(ROLE_ORIGINAL) or {}
+    return {
+        "id": rec["id"],
+        "kind": rec["kind"],
+        "name": rec["name"],
+        "start": rec.get("start"),
+        "duration_s": rec.get("duration_s"),
+        "size": original.get("size"),
+        "web_url": rec.get("web_url"),
+        "has_original": bool(original),
+        "has_raw": bool(rec.get(ROLE_RAW)),
+        "thumb": async_sign_path(hass, f"{base}/thumb", ttl),
+        "play": async_sign_path(hass, f"{base}/play", ttl) if playable else None,
+    }
+
+
+def _find_recording(hass: HomeAssistant, rec_id: str) -> tuple[MediaCoordinator, dict[str, Any]] | None:
+    for coordinator in media_coordinators(hass):
+        rec = coordinator.recording(rec_id)
+        if rec is not None:
+            return coordinator, rec
+    return None
+
+
+class MediaThumbView(HomeAssistantView):
+    """Cover image of a recording (cached on disk)."""
+
+    url = f"{API_BASE}/media/{{rec_id}}/thumb"
+    name = f"api:{DOMAIN}:media_thumb"
+    requires_auth = True
+
+    async def get(self, request: web.Request, rec_id: str) -> web.Response:
+        found = _find_recording(request.app["hass"], rec_id)
+        if found is None:
+            return self.json_message("Unknown recording", status_code=404)
+        coordinator, rec = found
+        try:
+            data = await coordinator.async_thumbnail(rec)
+        except (GraphError, aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.debug("Thumbnail for %s failed: %s", rec["name"], err)
+            return self.json_message("OneDrive not reachable", status_code=502)
+        if not data:
+            return self.json_message("No thumbnail", status_code=404)
+        return web.Response(
+            body=data, content_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"}
+        )
+
+
+class MediaPlayView(HomeAssistantView):
+    """Redirect to a short-lived OneDrive download URL of the playable file."""
+
+    url = f"{API_BASE}/media/{{rec_id}}/play"
+    name = f"api:{DOMAIN}:media_play"
+    requires_auth = True
+
+    async def get(self, request: web.Request, rec_id: str) -> web.Response:
+        found = _find_recording(request.app["hass"], rec_id)
+        if found is None:
+            return self.json_message("Unknown recording", status_code=404)
+        coordinator, rec = found
+        try:
+            url = await coordinator.async_play_url(rec)
+        except (GraphError, aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.debug("Download URL for %s failed: %s", rec["name"], err)
+            return self.json_message("OneDrive not reachable", status_code=502)
+        if not url:
+            return self.json_message("Nothing playable in the browser for this recording", status_code=404)
+        raise web.HTTPFound(url)
+
+
 def render_export(summary: dict[str, Any], track: dict[str, Any], fmt: str) -> tuple[str, str]:
     if fmt == "gpx":
         return track_to_gpx(summary, track), "application/gpx+xml"
@@ -323,5 +421,7 @@ def async_register_views(hass: HomeAssistant) -> None:
         SpotView,
         UploadView,
         AttentionDismissView,
+        MediaThumbView,
+        MediaPlayView,
     ):
         hass.http.register_view(view())

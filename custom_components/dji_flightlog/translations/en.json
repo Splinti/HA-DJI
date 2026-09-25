@@ -12,13 +12,38 @@
           "geo_location_limit": "Flights exposed as geo_location entities (0 = none; any of them makes Home Assistant add a map to the auto-generated Overview dashboard)",
           "sidebar_panel": "Show in sidebar"
         }
+      },
+      "onedrive_folder": {
+        "title": "OneDrive folder with recordings",
+        "description": "Signed in as {account}. Current folder: **{path}**{notice}\n\nClick a subfolder to open it, go up one level or use the current folder. Subfolders are read as well. Recordings are linked to a flight when their recording time overlaps the flight."
+      },
+      "reauth_confirm": {
+        "title": "Sign in to OneDrive again",
+        "description": "The OneDrive sign-in expired or was revoked. Sign in again to keep linking recordings."
+      },
+      "pick_implementation": {
+        "title": "Pick the application credentials"
       }
     },
     "error": {
-      "dir_not_found": "Folder does not exist"
+      "dir_not_found": "Folder does not exist",
+      "folder_not_found": "Folder not found in OneDrive",
+      "cannot_connect": "Could not reach OneDrive"
     },
     "abort": {
-      "already_configured": "Already configured"
+      "already_configured": "Already configured",
+      "cannot_connect": "Could not reach OneDrive",
+      "wrong_account": "Signed in with a different Microsoft account than before",
+      "reauth_successful": "Signed in again",
+      "missing_credentials": "Add the application credentials of your Azure app first",
+      "missing_configuration": "OneDrive is not configured; add application credentials first",
+      "authorize_url_timeout": "Timeout generating the authorize URL",
+      "no_url_available": "No URL available; check your Home Assistant external/internal URL",
+      "oauth_error": "Received invalid token data",
+      "oauth_failed": "Error while obtaining the access token",
+      "oauth_timeout": "Timeout resolving the OAuth token",
+      "oauth_unauthorized": "OAuth authorization error while obtaining the access token",
+      "user_rejected_authorize": "Access was not granted"
     }
   },
   "options": {
@@ -33,10 +58,25 @@
           "geo_location_limit": "Flights exposed as geo_location entities (0 = none; any of them makes Home Assistant add a map to the auto-generated Overview dashboard)",
           "sidebar_panel": "Show in sidebar"
         }
+      },
+      "media": {
+        "title": "OneDrive recordings",
+        "description": "Folder: **{path}**",
+        "data": {
+          "media_scan_interval": "Sync interval",
+          "match_tolerance": "Tolerance around a flight",
+          "change_folder": "Choose a different folder"
+        }
+      },
+      "folder": {
+        "title": "OneDrive folder with recordings",
+        "description": "Current folder: **{path}**{notice}\n\nClick a subfolder to open it, go up one level or use the current folder. Subfolders are read as well."
       }
     },
     "error": {
-      "dir_not_found": "Folder does not exist"
+      "dir_not_found": "Folder does not exist",
+      "folder_not_found": "Folder not found in OneDrive",
+      "cannot_connect": "Could not reach OneDrive"
     }
   },
   "device": {
@@ -131,11 +171,23 @@
       },
       "attention": {
         "name": "Pre-flight notices"
+      },
+      "onedrive_last_sync": {
+        "name": "Last sync"
+      },
+      "onedrive_recordings": {
+        "name": "Recordings"
+      },
+      "onedrive_unmatched": {
+        "name": "Recordings without flight"
       }
     },
     "button": {
       "scan": {
         "name": "Scan log folder"
+      },
+      "onedrive_sync": {
+        "name": "Sync OneDrive"
       }
     }
   },
@@ -172,5 +224,8 @@
         }
       }
     }
+  },
+  "application_credentials": {
+    "description": "Recordings are read from OneDrive through Microsoft Graph. Register an app at the [Microsoft Entra portal]({portal_url}): supported account types \"personal Microsoft accounts\" (or any, for OneDrive for Business), platform **Web** with redirect URI `{redirect_url}`, then create a client secret. Delegated permissions: Files.Read, offline_access."
   }
 }

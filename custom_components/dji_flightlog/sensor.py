@@ -29,8 +29,9 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_ENTRY_TYPE, DOMAIN, ENTRY_TYPE_ONEDRIVE
 from .coordinator import AircraftStats, BatteryStats, FlightData, FlightLogCoordinator
+from .media_coordinator import MediaCoordinator, onedrive_device_info, unmatched_recordings
 from .parser import INCIDENT_CRITICAL, INCIDENT_OK, INCIDENT_WARNING
 from .spots import maps_url, sorted_spots
 
@@ -351,6 +352,17 @@ BATTERY_SENSORS: tuple[BatterySensorDescription, ...] = (
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
+    if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_ONEDRIVE:
+        media: MediaCoordinator = hass.data[DOMAIN][entry.entry_id]
+        async_add_entities(
+            [
+                OneDriveLastSyncSensor(media, entry),
+                OneDriveRecordingsSensor(media, entry),
+                OneDriveUnmatchedSensor(media, entry),
+            ]
+        )
+        return
+
     coordinator: FlightLogCoordinator = hass.data[DOMAIN][entry.entry_id]
     known: set[str] = set()
 
@@ -685,3 +697,90 @@ def battery_device_info(entry: ConfigEntry, bat: BatteryStats) -> DeviceInfo:
         model="Intelligent Flight Battery",
         serial_number=bat.sn,
     )
+
+
+# -- OneDrive account -----------------------------------------------------------
+
+
+class _OneDriveSensor(CoordinatorEntity[MediaCoordinator], SensorEntity):
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: MediaCoordinator, entry: ConfigEntry, key: str) -> None:
+        super().__init__(coordinator)
+        self._attr_translation_key = f"onedrive_{key}"
+        self._attr_unique_id = f"{entry.entry_id}_onedrive_{key}"
+        self._attr_device_info = onedrive_device_info(entry)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.coordinator.data is not None
+
+
+class OneDriveLastSyncSensor(_OneDriveSensor):
+    """Time of the last successful sync; unavailable while syncing fails."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: MediaCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "last_sync")
+
+    @property
+    def native_value(self) -> datetime | None:
+        return _ts(self.coordinator.data.last_sync)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"folder": f"/{self.coordinator.folder_path}"}
+
+
+class OneDriveRecordingsSensor(_OneDriveSensor):
+    _attr_icon = "mdi:filmstrip-box-multiple"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: MediaCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "recordings")
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.data.recordings)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        kinds: dict[str, int] = {}
+        for rec in self.coordinator.data.recordings.values():
+            kinds[rec["kind"]] = kinds.get(rec["kind"], 0) + 1
+        return {
+            "folder": f"/{self.coordinator.folder_path}",
+            **{f"{k}_count": n for k, n in sorted(kinds.items())},
+        }
+
+
+class OneDriveUnmatchedSensor(_OneDriveSensor):
+    """Recordings no flight could be found for (clock off, flight log missing, ...)."""
+
+    _attr_icon = "mdi:link-variant-off"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: MediaCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "unmatched")
+
+    def _unmatched(self) -> list[dict[str, Any]]:
+        flights = next(
+            (
+                c.data.flights
+                for c in self.hass.data.get(DOMAIN, {}).values()
+                if isinstance(c, FlightLogCoordinator) and c.data
+            ),
+            None,
+        )
+        return unmatched_recordings(self.hass, self.coordinator, flights)
+
+    @property
+    def native_value(self) -> int:
+        return len(self._unmatched())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        # The newest ones; the full list could be long and attributes land in the recorder.
+        return {"recordings": [rec["name"] for rec in self._unmatched()[-20:]]}

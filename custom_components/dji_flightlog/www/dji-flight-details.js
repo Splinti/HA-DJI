@@ -5,6 +5,8 @@
  * track on a map, charts over the flight time (height, speed, distance from
  * home, battery, battery temperature) with the flight modes and flight
  * controller events, and the battery / recording / technical data.
+ * With a OneDrive account connected, the recordings of the flight show in a
+ * small player that can be enlarged to fill the window.
  *
  * The panel creates it, sets `hass`, hands over the (filtered) flight list
  * with `setFlights()` and picks one with `show(flightId)`. Prev/next inside
@@ -100,6 +102,13 @@ class DjiFlightDetails extends HTMLElement {
       if (fresh) this._flight = fresh;
     }
     this._renderHead();
+    this._renderMedia();
+  }
+
+  /** Stop playback and leave the enlarged player (the panel calls this when the view is left). */
+  pause() {
+    this._setBig(false);
+    this.shadowRoot.querySelector("#media video")?.pause();
   }
 
   async show(flightId) {
@@ -202,6 +211,45 @@ class DjiFlightDetails extends HTMLElement {
         .content[hidden], .empty[hidden] { display: none; }
         #banner { display: flex; flex-direction: column; gap: 8px; }
         #banner:empty { display: none; }
+
+        /* recordings */
+        #media[hidden] { display: none; }
+        #media h3 .count { color: var(--secondary-text-color); font-weight: 400; }
+        .mwrap { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+        .stage { flex: 0 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+        :host(.narrow) .stage { flex-basis: 100%; }
+        .screen { position: relative; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: #000; }
+        .screen video, .screen img { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+        .screen .ph { height: 100%; display: flex; align-items: center; justify-content: center; color: #bbb; font-size: 13px; }
+        .screen .grow {
+          position: absolute; top: 6px; right: 6px; z-index: 1; width: 32px; height: 32px; padding: 4px;
+          border: none; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; cursor: pointer; line-height: 0;
+        }
+        .screen .grow:hover { background: rgba(0,0,0,.8); }
+        .screen .grow svg { width: 24px; height: 24px; }
+        .stage .cap { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--secondary-text-color); }
+        .stage .cap a { color: var(--primary-color); text-decoration: none; white-space: nowrap; }
+        .stage .muted:empty { display: none; }
+        .stage.big {
+          position: fixed; inset: 0; z-index: 10; padding: 16px; box-sizing: border-box;
+          background: rgba(0,0,0,.88); align-items: center; justify-content: center;
+        }
+        .stage.big .screen { width: min(1400px, 100%); aspect-ratio: auto; height: calc(100dvh - 90px); border-radius: 0; }
+        .stage.big .cap, .stage.big .muted { width: min(1400px, 100%); color: #ddd; }
+        .stage.big .cap a { color: #8ab4f8; }
+        .strip { flex: 1 1 200px; display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; }
+        .strip .m {
+          position: relative; width: 112px; height: 63px; border-radius: 6px; overflow: hidden; cursor: pointer;
+          background: var(--divider-color, #ddd); display: flex; align-items: center; justify-content: center;
+          font-size: 11px; color: var(--secondary-text-color); outline-offset: 1px;
+        }
+        .strip .m img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+        .strip .m span {
+          position: absolute; right: 3px; bottom: 3px; font-size: 10px; line-height: 1; padding: 2px 4px;
+          border-radius: 3px; background: rgba(0,0,0,.6); color: #fff;
+        }
+        .strip .m:hover { outline: 2px solid var(--divider-color, #bbb); }
+        .strip .m.sel { outline: 2px solid var(--primary-color); }
       </style>
       <div class="wrap">
         <div class="head" id="head"></div>
@@ -217,6 +265,7 @@ class DjiFlightDetails extends HTMLElement {
               <div id="charts"></div>
             </div>
           </div>
+          <div class="card" id="media" hidden></div>
           <div class="info" id="info"></div>
         </div>
       </div>`;
@@ -262,6 +311,7 @@ class DjiFlightDetails extends HTMLElement {
     const f = this._flight;
     $("empty").hidden = !!f;
     $("content").hidden = !f;
+    this._renderMedia();
     if (!f) return;
     $("tiles").innerHTML = this._tilesHtml(f);
     $("banner").innerHTML = this._bannerHtml(f);
@@ -459,6 +509,133 @@ class DjiFlightDetails extends HTMLElement {
     return this._labels?.actionLabel ? this._labels.actionLabel(action) : action;
   }
 
+  // -- recordings (OneDrive) -------------------------------------------------
+
+  /** The shown flight's recordings; only the list summaries carry them, not the track response. */
+  get _recordings() {
+    return this._flights.find((x) => x.flight_id === this._id)?.media;
+  }
+
+  _renderMedia() {
+    const box = this.shadowRoot.getElementById("media");
+    const media = this._id ? this._recordings : undefined;
+    // Rebuild only when the flight or its recordings change: the summaries are
+    // re-sent after every refresh and must not restart a playing video.
+    const key = media ? `${this._id}:${media.map((m) => m.id).join(",")}` : "";
+    if (key === this._mediaKey) return;
+    this._mediaKey = key;
+    this._setBig(false);
+    const f = this._flight;
+    // No media array at all: no OneDrive account connected.
+    if (!media || (!media.length && !(f?.video_time_s > 0 || f?.photo_num > 0))) {
+      box.hidden = true;
+      box.innerHTML = "";
+      return;
+    }
+    box.hidden = false;
+    if (!media.length) {
+      box.innerHTML = `<h3>Aufnahmen</h3><div class="muted">Laut Log wurde aufgenommen, in OneDrive liegt aber keine Datei zu diesem Flug.</div>`;
+      return;
+    }
+    box.innerHTML = `
+      <h3>Aufnahmen <span class="count">${media.length}</span></h3>
+      <div class="mwrap">
+        <div class="stage" id="stage"></div>
+        ${
+          media.length > 1
+            ? `<div class="strip">${media
+                .map(
+                  (m, i) => `
+              <div class="m" data-i="${i}" title="${esc(m.name)}">
+                ${esc(KIND_LABEL[m.kind] || m.kind)}
+                ${m.thumb ? `<img src="${esc(m.thumb)}" loading="lazy" alt="">` : ""}
+                <span>${m.kind === "360" ? "360° " : ""}${m.duration_s ? esc(fmtClock(m.duration_s)) : m.kind === "photo" ? "Foto" : ""}</span>
+              </div>`,
+                )
+                .join("")}</div>`
+            : ""
+        }
+      </div>`;
+    for (const img of box.querySelectorAll(".strip img")) img.onerror = () => img.remove();
+    for (const el of box.querySelectorAll(".strip .m")) el.onclick = () => this._selectMedia(Number(el.dataset.i));
+    this._selectMedia(0);
+  }
+
+  _selectMedia(i) {
+    const m = this._recordings?.[i];
+    const stage = this.shadowRoot.getElementById("stage");
+    if (!m || !stage) return;
+    this._mediaIndex = i;
+    for (const el of this.shadowRoot.querySelectorAll(".strip .m")) el.classList.toggle("sel", Number(el.dataset.i) === i);
+    const isVideo = m.kind !== "photo" && !!m.play;
+    const big = stage.classList.contains("big");
+    let screen;
+    if (isVideo) {
+      // preload="none": nothing is fetched from OneDrive until play is pressed.
+      screen = `<video controls playsinline preload="none"${m.thumb ? ` poster="${esc(m.thumb)}"` : ""} src="${esc(m.play)}"></video>`;
+    } else if (m.thumb || m.play) {
+      // Photos: the small cover while small, the full picture once enlarged.
+      screen = `<img src="${esc((big && m.play) || m.thumb || m.play)}" alt="">`;
+    } else {
+      screen = `<div class="ph">${esc(KIND_LABEL[m.kind] || m.kind)}</div>`;
+    }
+    const offset = m.start && this._flight?.start_time ? (Date.parse(m.start) - Date.parse(this._flight.start_time)) / 1000 : null;
+    const facts = [
+      KIND_LABEL[m.kind] || m.kind,
+      m.start ? fmtDate(m.start, { timeStyle: "short" }) : null,
+      offset != null && offset >= 0 ? `bei ${fmtClock(offset)} im Flug` : null,
+      m.duration_s ? fmtClock(m.duration_s) : null,
+      m.has_raw ? "RAW" : null,
+    ].filter(Boolean);
+    let hint = "";
+    if (m.kind === "360" && isVideo) hint = "360°-Vorschau der Kamera (beide Fisheye-Linsen nebeneinander). Das Original lässt sich in DJI Studio / LightCut bearbeiten.";
+    else if (!m.play) hint = "Im Browser nicht darstellbar (360°-Original ohne Proxy oder RAW), nur über OneDrive.";
+    stage.innerHTML = `
+      <div class="screen">
+        ${screen}
+        ${isVideo || m.thumb || m.play ? `<button class="grow" title="${big ? "Verkleinern" : "Vergrößern"}">${svg(big ? ICON_SHRINK : ICON_EXPAND)}</button>` : ""}
+      </div>
+      <div class="cap">
+        <span>${esc(facts.join(" · "))}</span>
+        ${m.web_url ? `<a href="${esc(m.web_url)}" target="_blank" rel="noopener">In OneDrive öffnen</a>` : ""}
+      </div>
+      <div class="muted" id="mhint">${esc(hint)}</div>`;
+    const grow = stage.querySelector(".grow");
+    if (grow) grow.onclick = () => this._setBig(!stage.classList.contains("big"));
+    stage.onclick = (e) => {
+      if (e.target === stage) this._setBig(false); // backdrop of the enlarged player
+    };
+    const img = stage.querySelector(".screen img");
+    if (img) img.onerror = () => img.replaceWith(Object.assign(document.createElement("div"), { className: "ph", textContent: KIND_LABEL[m.kind] || m.kind }));
+    const video = stage.querySelector("video");
+    if (video) {
+      video.onerror = () => {
+        stage.querySelector("#mhint").textContent =
+          "Dieses Video kann der Browser nicht abspielen (vermutlich H.265/HEVC ohne Hardware-Decoder). Über „In OneDrive öffnen“ ansehen oder herunterladen.";
+      };
+    }
+  }
+
+  _setBig(big) {
+    const stage = this.shadowRoot.getElementById("stage");
+    if (!stage || stage.classList.contains("big") === big) return;
+    stage.classList.toggle("big", big);
+    const btn = stage.querySelector(".grow");
+    if (btn) {
+      btn.title = big ? "Verkleinern" : "Vergrößern";
+      btn.innerHTML = svg(big ? ICON_SHRINK : ICON_EXPAND);
+    }
+    // A photo swaps between cover and full picture; a video keeps playing as is.
+    const m = this._recordings?.[this._mediaIndex];
+    const img = stage.querySelector(".screen img");
+    if (img && m?.play) img.src = big ? m.play : m.thumb || m.play;
+    this._onKey ??= (e) => {
+      if (e.key === "Escape") this._setBig(false);
+    };
+    if (big) window.addEventListener("keydown", this._onKey);
+    else window.removeEventListener("keydown", this._onKey);
+  }
+
   // -- charts -----------------------------------------------------------------
 
   _renderCharts() {
@@ -624,6 +801,14 @@ class DjiFlightDetails extends HTMLElement {
     });
     this._ro.observe(this);
   }
+}
+
+const KIND_LABEL = { video: "Video", "360": "360°", photo: "Foto" };
+const ICON_EXPAND = "M10,21V19H6.41L10.91,14.5L9.5,13.09L5,17.59V14H3V21H10M14.5,10.91L19,6.41V10H21V3H14V5H17.59L13.09,9.5L14.5,10.91Z";
+const ICON_SHRINK = "M19.5,3.09L15,7.59V4H13V11H20V9H16.41L20.91,4.5L19.5,3.09M4,13V15H7.59L3.09,19.5L4.5,20.91L9,16.41V20H11V13H4Z";
+
+function svg(path) {
+  return `<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="${path}"/></svg>`;
 }
 
 function table(rows) {
