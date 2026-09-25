@@ -3,26 +3,36 @@
 from __future__ import annotations
 
 import os
+import shutil
 import struct
+import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
 
 from custom_components.dji_flightlog import local_media
 from custom_components.dji_flightlog.const import (
+    CONF_API_KEY,
+    CONF_ENTRY_TYPE,
+    CONF_IMPORT_LOGS,
     CONF_LOG_DIR,
     CONF_MATCH_TOLERANCE,
     CONF_MEDIA_FOLDER,
     CONF_MEDIA_SCAN_INTERVAL,
     DOMAIN,
+    ENTRY_TYPE_LOCAL,
+    EVENT_FLIGHT_IMPORTED,
 )
 from custom_components.dji_flightlog.local_media import item_id, mp4_duration_ms, scan_folder
 from custom_components.dji_flightlog.media_backend import MediaError, MediaNotFound
+
+from .test_integration import _fake_parse, _write_logs
 
 
 def _box(kind: bytes, payload: bytes) -> bytes:
@@ -215,6 +225,77 @@ async def test_local_folder_flow_and_playback(
         CONF_MEDIA_FOLDER: str(other),
         CONF_MEDIA_SCAN_INTERVAL: 600,
         CONF_MATCH_TOLERANCE: 60,
+        CONF_IMPORT_LOGS: False,
     }
     await hass.async_block_till_done()
     assert hass.data[DOMAIN][entry.entry_id].data.recordings == {}
+
+
+async def test_flight_records_are_copied_into_the_log_folder(hass: HomeAssistant, tmp_path: Path) -> None:
+    """A second pilot's logs in the media folder end up in the (authoritative) log folder."""
+    hass.config.config_dir = str(tmp_path / "config")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (mine,) = _write_logs(logs, 1)  # DJIFlightRecord_2026-09-01_0.txt
+    media = tmp_path / "media"
+    (media / "papa").mkdir(parents=True)
+    shutil.copy2(mine, media / mine.name)  # the same file again: no second copy
+    theirs = logs.parent / "staging"
+    theirs.mkdir()
+    new_old, new_fresh = _write_logs(theirs, 3)[1:]  # _1 (old) and _2 (made old below, then fresh)
+    shutil.copy2(new_old, media / "papa" / new_old.name)
+    fresh = media / "papa" / new_fresh.name
+    shutil.copy2(new_fresh, fresh)
+    now = time.time()
+    os.utime(fresh, (now, now))  # still being copied as far as the import can tell
+    (media / "papa" / "notes.txt").write_text("not a flight record")
+
+    events = async_capture_events(hass, EVENT_FLIGHT_IMPORTED)
+    flightlog = MockConfigEntry(
+        domain=DOMAIN, unique_id=DOMAIN, data={CONF_LOG_DIR: str(logs), CONF_API_KEY: "KEY"}
+    )
+    flightlog.add_to_hass(hass)
+    source = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=f"local_{media}",
+        title=str(media),
+        data={CONF_ENTRY_TYPE: ENTRY_TYPE_LOCAL},
+        options={CONF_MEDIA_FOLDER: str(media), CONF_IMPORT_LOGS: True},
+    )
+    source.add_to_hass(hass)
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
+        # Sets up both entries of the domain.
+        assert await hass.config_entries.async_setup(flightlog.entry_id)
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+        assert sorted(p.name for p in logs.iterdir()) == [mine.name, new_old.name]
+        flights = hass.data[DOMAIN][flightlog.entry_id]
+        assert set(flights.data.flights) == {"flight0000", "flight0001"}
+        # The flight log's own first scan, then the copied record (the duplicate adds nothing).
+        assert sorted(e.data["flight_id"] for e in events) == ["flight0000", "flight0001"]
+        media_coordinator = hass.data[DOMAIN][source.entry_id]
+        assert len(media_coordinator.imported_logs) == 2
+        # Flight records are not recordings.
+        assert media_coordinator.data.recordings == {}
+
+        # Once the fresh file has settled, the next sync takes it.
+        past = now - 300
+        os.utime(fresh, (past, past))
+        await media_coordinator.async_refresh()
+        await hass.async_block_till_done(wait_background_tasks=True)
+        assert new_fresh.name in {p.name for p in logs.iterdir()}
+        assert "flight0002" in flights.data.flights
+
+        # Nothing is copied twice, and the source is left alone.
+        before = sorted(p.name for p in logs.iterdir())
+        await media_coordinator.async_refresh()
+        await hass.async_block_till_done(wait_background_tasks=True)
+        assert sorted(p.name for p in logs.iterdir()) == before
+        assert len(events) == 3
+    assert sorted(p.name for p in (media / "papa").iterdir()) == sorted(
+        [new_old.name, new_fresh.name, "notes.txt"]
+    )
+
+    registry = er.async_get(hass)
+    sensor_id = registry.async_get_entity_id("sensor", DOMAIN, f"{source.entry_id}_local_last_sync")
+    assert hass.states.get(sensor_id).attributes["flight_records_imported"] == 3

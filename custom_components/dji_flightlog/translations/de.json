@@ -11,11 +11,12 @@
       },
       "local": {
         "title": "Ordner mit Aufnahmen",
-        "description": "Ein Ordner, den Home Assistant lesen kann. Unterordner werden mitgelesen.\n\n**NAS (SMB/CIFS oder NFS):** Die Freigabe zuerst unter Einstellungen → System → Speicher → *Netzwerkspeicher hinzufügen* mit der Verwendung **Medien** einbinden. Sie liegt dann unter `/media/<Name>`.\n\nVorschaubilder erzeugt ffmpeg; Aufnahmen werden über Home Assistant im Browser abgespielt.",
+        "description": "Ein Ordner, den Home Assistant lesen kann. Unterordner werden mitgelesen.\n\n**NAS (SMB/CIFS oder NFS):** Die Freigabe zuerst unter Einstellungen → System → Speicher → *Netzwerkspeicher hinzufügen* mit der Verwendung **Medien** einbinden. Sie liegt dann unter `/media/<Name>`.\n\nVorschaubilder erzeugt ffmpeg; Aufnahmen werden über Home Assistant im Browser abgespielt.\n\nMit der Übernahme der Flugaufzeichnungen werden DJI-Fly-Logs (`FlightRecord_*.txt`) aus diesem Ordner in den Log-Ordner kopiert und importiert, z. B. die eines zweiten Piloten. Maßgeblich bleibt der Log-Ordner: Hier wird nichts geändert oder gelöscht.",
         "data": {
           "media_folder": "Ordner",
           "media_scan_interval": "Scan-Intervall",
-          "match_tolerance": "Toleranz um einen Flug"
+          "match_tolerance": "Toleranz um einen Flug",
+          "import_logs": "Hier gefundene Flugaufzeichnungen (DJI Fly .txt) in den Log-Ordner übernehmen"
         }
       },
       "user": {
@@ -32,7 +33,7 @@
       },
       "onedrive_folder": {
         "title": "OneDrive-Ordner mit Aufnahmen",
-        "description": "Angemeldet als {account}. Aktueller Ordner: **{path}**{notice}\n\nUnterordner per Klick öffnen, eine Ebene höher gehen oder den aktuellen Ordner übernehmen. Unterordner werden mitgelesen. Eine Aufnahme wird einem Flug zugeordnet, wenn sich Aufnahme- und Flugzeit überschneiden."
+        "description": "Angemeldet als {account}. Aktueller Ordner: **{path}**{notice}\n\nUnterordner per Klick öffnen, eine Ebene höher gehen oder den aktuellen Ordner übernehmen. Unterordner werden mitgelesen. Eine Aufnahme wird einem Flug zugeordnet, wenn sich Aufnahme- und Flugzeit überschneiden.\n\nDJI-Fly-Flugaufzeichnungen (`FlightRecord_*.txt`) aus diesem Ordner lassen sich zusätzlich in den Log-Ordner übernehmen, z. B. die eines zweiten Piloten. Das wird in den Optionen eingeschaltet; in OneDrive wird dabei nichts geändert."
       },
       "reauth_confirm": {
         "title": "Erneut bei OneDrive anmelden",
@@ -83,7 +84,8 @@
         "data": {
           "media_scan_interval": "Sync-Intervall",
           "match_tolerance": "Toleranz um einen Flug",
-          "change_folder": "Anderen Ordner wählen"
+          "change_folder": "Anderen Ordner wählen",
+          "import_logs": "Hier gefundene Flugaufzeichnungen (DJI Fly .txt) in den Log-Ordner übernehmen"
         }
       },
       "folder": {
@@ -96,7 +98,8 @@
         "data": {
           "media_folder": "Ordner",
           "media_scan_interval": "Scan-Intervall",
-          "match_tolerance": "Toleranz um einen Flug"
+          "match_tolerance": "Toleranz um einen Flug",
+          "import_logs": "Hier gefundene Flugaufzeichnungen (DJI Fly .txt) in den Log-Ordner übernehmen"
         }
       }
     },

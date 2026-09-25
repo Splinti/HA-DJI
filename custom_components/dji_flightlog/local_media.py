@@ -26,7 +26,7 @@ from typing import Any, BinaryIO
 
 from homeassistant.core import HomeAssistant
 
-from .media import KIND_PHOTO, ROLE_COVER, ROLE_ORIGINAL, ROLE_PROXY, classify_name
+from .media import KIND_PHOTO, ROLE_COVER, ROLE_ORIGINAL, ROLE_PROXY, classify_name, is_flight_record
 from .media_backend import MediaError, MediaNotFound
 
 _LOGGER = logging.getLogger(__name__)
@@ -121,7 +121,7 @@ def item_id(root: Path, rel: str) -> str:
 
 
 def scan_folder(root: Path, previous: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """All media files below ``root`` as items for ``media.build_recordings``.
+    """All media files and flight records below ``root`` as items for ``media.build_recordings``.
 
     Blocking (runs in the executor). Raises :class:`MediaNotFound` if ``root``
     is missing and :class:`MediaError` if it is empty although files were
@@ -137,7 +137,7 @@ def scan_folder(root: Path, previous: dict[str, dict[str, Any]]) -> dict[str, di
         rel_dir = Path(dirpath).relative_to(root).as_posix()
         rel_dir = "" if rel_dir == "." else rel_dir
         for name in filenames:
-            if name.startswith(".") or classify_name(name) is None:
+            if name.startswith(".") or (classify_name(name) is None and not is_flight_record(name)):
                 continue
             rel = f"{rel_dir}/{name}" if rel_dir else name
             try:
@@ -215,12 +215,15 @@ async def ffmpeg_thumbnail(binary: str, path: Path, *, seek_s: float | None) -> 
     return out
 
 
-def _read_small(path: Path, limit: int) -> bytes | None:
+def _read_small(path: Path, limit: int, strict: bool = False) -> bytes | None:
+    """File content, or None if larger than ``limit``; read errors raise only if ``strict``."""
     try:
         if path.stat().st_size > limit:
             return None
         return path.read_bytes()
     except OSError:
+        if strict:
+            raise
         return None
 
 
@@ -273,6 +276,15 @@ class LocalFolderMedia:
                 if data:
                     return data
         return None
+
+    async def async_read(self, item: dict[str, Any], max_bytes: int) -> bytes | None:
+        path = self.path(item)
+        if path is None:
+            return None
+        try:
+            return await self.hass.async_add_executor_job(_read_small, path, max_bytes, True)
+        except OSError as err:
+            raise MediaError(str(err)) from err
 
     async def async_file(self, ref: dict[str, Any]) -> Path | None:
         path = self.path(ref)

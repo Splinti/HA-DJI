@@ -14,6 +14,7 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dji_flightlog.const import (
+    CONF_IMPORT_LOGS,
     CONF_LOG_DIR,
     CONF_MATCH_TOLERANCE,
     CONF_MEDIA_FOLDER,
@@ -233,7 +234,13 @@ async def test_onedrive_flow_picks_folder(
     assert result["step_id"] == "media"
     assert result["description_placeholders"]["path"] == "/Drohne/Medien"
     result = await options.async_configure(
-        result["flow_id"], {CONF_MEDIA_SCAN_INTERVAL: 600, CONF_MATCH_TOLERANCE: 60, "change_folder": True}
+        result["flow_id"],
+        {
+            CONF_MEDIA_SCAN_INTERVAL: 600,
+            CONF_MATCH_TOLERANCE: 60,
+            CONF_IMPORT_LOGS: True,
+            "change_folder": True,
+        },
     )
     assert result["step_id"] == "folder"
     assert result["type"] is FlowResultType.MENU
@@ -244,6 +251,7 @@ async def test_onedrive_flow_picks_folder(
         CONF_MEDIA_FOLDER: "Drohne",
         CONF_MEDIA_SCAN_INTERVAL: 600,
         CONF_MATCH_TOLERANCE: 60,
+        CONF_IMPORT_LOGS: True,
     }
 
 

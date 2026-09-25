@@ -11,11 +11,12 @@
       },
       "local": {
         "title": "Folder with recordings",
-        "description": "A folder Home Assistant can read. Subfolders are read as well.\n\n**NAS (SMB/CIFS or NFS):** first add the share under Settings → System → Storage → *Add network storage* with usage **Media**. It then appears as `/media/<name>`.\n\nThumbnails are made with ffmpeg; recordings play in the browser through Home Assistant.",
+        "description": "A folder Home Assistant can read. Subfolders are read as well.\n\n**NAS (SMB/CIFS or NFS):** first add the share under Settings → System → Storage → *Add network storage* with usage **Media**. It then appears as `/media/<name>`.\n\nThumbnails are made with ffmpeg; recordings play in the browser through Home Assistant.\n\nWith the flight record import on, DJI Fly logs (`FlightRecord_*.txt`) in this folder are copied into the log folder and imported, e.g. those of a second pilot. The log folder stays the source of truth: nothing is changed or deleted here.",
         "data": {
           "media_folder": "Folder",
           "media_scan_interval": "Scan interval",
-          "match_tolerance": "Tolerance around a flight"
+          "match_tolerance": "Tolerance around a flight",
+          "import_logs": "Import flight records found here (DJI Fly .txt) into the log folder"
         }
       },
       "user": {
@@ -32,7 +33,7 @@
       },
       "onedrive_folder": {
         "title": "OneDrive folder with recordings",
-        "description": "Signed in as {account}. Current folder: **{path}**{notice}\n\nClick a subfolder to open it, go up one level or use the current folder. Subfolders are read as well. Recordings are linked to a flight when their recording time overlaps the flight."
+        "description": "Signed in as {account}. Current folder: **{path}**{notice}\n\nClick a subfolder to open it, go up one level or use the current folder. Subfolders are read as well. Recordings are linked to a flight when their recording time overlaps the flight.\n\nDJI Fly flight records (`FlightRecord_*.txt`) in this folder can also be copied into the log folder, e.g. those of a second pilot. Switch it on in the options; nothing is changed in OneDrive."
       },
       "reauth_confirm": {
         "title": "Sign in to OneDrive again",
@@ -83,7 +84,8 @@
         "data": {
           "media_scan_interval": "Sync interval",
           "match_tolerance": "Tolerance around a flight",
-          "change_folder": "Choose a different folder"
+          "change_folder": "Choose a different folder",
+          "import_logs": "Import flight records found here (DJI Fly .txt) into the log folder"
         }
       },
       "folder": {
@@ -96,7 +98,8 @@
         "data": {
           "media_folder": "Folder",
           "media_scan_interval": "Scan interval",
-          "match_tolerance": "Tolerance around a flight"
+          "match_tolerance": "Tolerance around a flight",
+          "import_logs": "Import flight records found here (DJI Fly .txt) into the log folder"
         }
       }
     },

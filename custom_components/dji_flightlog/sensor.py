@@ -731,7 +731,10 @@ class MediaLastSyncSensor(_MediaSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {"folder": self.coordinator.folder_path}
+        attrs: dict[str, Any] = {"folder": self.coordinator.folder_path}
+        if self.coordinator.import_logs:
+            attrs["flight_records_imported"] = len(self.coordinator.imported_logs)
+        return attrs
 
 
 class MediaRecordingsSensor(_MediaSensor):

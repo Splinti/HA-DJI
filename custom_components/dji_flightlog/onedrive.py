@@ -10,7 +10,7 @@ from urllib.parse import quote
 import aiohttp
 
 from .const import GRAPH_URL
-from .media import ROLE_COVER, ROLE_ORIGINAL, ROLE_PROXY, classify_name
+from .media import ROLE_COVER, ROLE_ORIGINAL, ROLE_PROXY, classify_name, is_flight_record
 from .media_backend import MediaAuthError, MediaError, MediaNotFound
 
 _LOGGER = logging.getLogger(__name__)
@@ -197,11 +197,13 @@ class OneDriveClient:
 def normalize_item(raw: dict[str, Any]) -> dict[str, Any] | None:
     """Reduce a Graph driveItem to what the integration stores.
 
-    Returns None for folders, deleted items and files that are not media.
+    Returns None for folders, deleted items and files that are neither
+    media nor flight records.
     """
     if "folder" in raw or "deleted" in raw or "file" not in raw:
         return None
-    if classify_name(raw.get("name", "")) is None:
+    name = raw.get("name", "")
+    if classify_name(name) is None and not is_flight_record(name):
         return None
     video = raw.get("video") or {}
     image = raw.get("image") or {}
@@ -317,3 +319,6 @@ class OneDriveMedia:
 
     async def async_file(self, ref: dict[str, Any]) -> str | None:
         return await self.client.async_download_url(ref["item_id"])
+
+    async def async_read(self, item: dict[str, Any], max_bytes: int) -> bytes | None:
+        return await self.client.async_content(item["id"], max_bytes)

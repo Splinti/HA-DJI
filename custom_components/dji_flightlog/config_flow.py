@@ -18,6 +18,7 @@ from .const import (
     CONF_API_KEY,
     CONF_ENTRY_TYPE,
     CONF_GEO_LOCATION_LIMIT,
+    CONF_IMPORT_LOGS,
     CONF_LOG_DIR,
     CONF_MATCH_TOLERANCE,
     CONF_MAX_TRACK_POINTS,
@@ -26,6 +27,7 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_SIDEBAR_PANEL,
     DEFAULT_GEO_LOCATION_LIMIT,
+    DEFAULT_IMPORT_LOGS,
     DEFAULT_LOCAL_MEDIA_FOLDER,
     DEFAULT_LOG_DIR,
     DEFAULT_MATCH_TOLERANCE,
@@ -103,6 +105,9 @@ def _sync_fields(defaults: Mapping[str, Any]) -> dict[Any, Any]:
         ): selector.NumberSelector(
             selector.NumberSelectorConfig(min=0, max=3600, step=10, unit_of_measurement="s")
         ),
+        vol.Optional(
+            CONF_IMPORT_LOGS, default=defaults.get(CONF_IMPORT_LOGS, DEFAULT_IMPORT_LOGS)
+        ): selector.BooleanSelector(),
     }
 
 
@@ -123,6 +128,7 @@ def _local_options(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_MEDIA_FOLDER: os.path.normpath(user_input[CONF_MEDIA_FOLDER].strip()),
         CONF_MEDIA_SCAN_INTERVAL: int(user_input.get(CONF_MEDIA_SCAN_INTERVAL, DEFAULT_MEDIA_SCAN_INTERVAL)),
         CONF_MATCH_TOLERANCE: int(user_input.get(CONF_MATCH_TOLERANCE, DEFAULT_MATCH_TOLERANCE)),
+        CONF_IMPORT_LOGS: bool(user_input.get(CONF_IMPORT_LOGS, DEFAULT_IMPORT_LOGS)),
     }
 
 
@@ -363,6 +369,7 @@ class DjiFlightLogConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler,
                 CONF_MEDIA_FOLDER: folder,
                 CONF_MEDIA_SCAN_INTERVAL: DEFAULT_MEDIA_SCAN_INTERVAL,
                 CONF_MATCH_TOLERANCE: DEFAULT_MATCH_TOLERANCE,
+                CONF_IMPORT_LOGS: DEFAULT_IMPORT_LOGS,
             },
         )
 
@@ -423,6 +430,7 @@ class OneDriveOptionsFlow(OptionsFlow, _FolderMenu):
                 CONF_MEDIA_FOLDER: self._folder,
                 CONF_MEDIA_SCAN_INTERVAL: int(user_input[CONF_MEDIA_SCAN_INTERVAL]),
                 CONF_MATCH_TOLERANCE: int(user_input[CONF_MATCH_TOLERANCE]),
+                CONF_IMPORT_LOGS: bool(user_input.get(CONF_IMPORT_LOGS, DEFAULT_IMPORT_LOGS)),
             }
             if user_input.get(CONF_CHANGE_FOLDER):
                 return await self.async_step_folder()

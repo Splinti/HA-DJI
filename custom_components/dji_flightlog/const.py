@@ -105,12 +105,15 @@ MEDIA_ENTRY_TYPES = (ENTRY_TYPE_ONEDRIVE, ENTRY_TYPE_LOCAL)
 CONF_MEDIA_FOLDER = "media_folder"
 CONF_MEDIA_SCAN_INTERVAL = "media_scan_interval"
 CONF_MATCH_TOLERANCE = "match_tolerance"
+# Copy DJI flight records found at the media source into the log folder.
+CONF_IMPORT_LOGS = "import_logs"
 
 DEFAULT_MEDIA_FOLDER = "Drohne/Medien"
 # Local folders: where HAOS mounts network storage with usage "Media".
 DEFAULT_LOCAL_MEDIA_FOLDER = "/media"
 DEFAULT_MEDIA_SCAN_INTERVAL = 900  # seconds
 DEFAULT_MATCH_TOLERANCE = 120  # seconds around a flight that still count
+DEFAULT_IMPORT_LOGS = False
 
 OAUTH2_AUTHORIZE = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
 OAUTH2_TOKEN = "https://login.microsoftonline.com/common/oauth2/v2.0/token"

@@ -1,8 +1,15 @@
-"""Keeps the list of recordings of one media source (OneDrive, local folder) up to date."""
+"""Keeps the list of recordings of one media source (OneDrive, local folder) up to date.
+
+Optionally it also copies the DJI flight records found there into the log
+folder of the flight log (see ``_async_import_logs``). The log folder stays
+the source of truth: nothing is ever written to or deleted at the source.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -11,7 +18,7 @@ from typing import Any
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.storage import Store
@@ -20,16 +27,20 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_ENTRY_TYPE,
+    CONF_IMPORT_LOGS,
     CONF_MATCH_TOLERANCE,
     CONF_MEDIA_SCAN_INTERVAL,
+    DEFAULT_IMPORT_LOGS,
     DEFAULT_MATCH_TOLERANCE,
     DEFAULT_MEDIA_SCAN_INTERVAL,
     DOMAIN,
     ENTRY_TYPE_LOCAL,
+    MAX_LOG_FILE_BYTES,
     MEDIA_STORAGE_KEY,
     MEDIA_STORAGE_VERSION,
     STORAGE_SUBDIR,
 )
+from .coordinator import FlightLogCoordinator
 from .media import (
     KIND_360,
     ROLE_COVER,
@@ -37,11 +48,17 @@ from .media import (
     ROLE_PROXY,
     ROLE_RAW,
     build_recordings,
+    duplicate_recordings,
+    is_flight_record,
     match_recordings,
 )
 from .media_backend import MediaAuthError, MediaBackend, MediaError, MediaNotFound
 
 _LOGGER = logging.getLogger(__name__)
+
+# A flight record changed less than this long ago may still be being copied
+# into a local folder; it is picked up by the next sync.
+_LOG_MIN_AGE_S = 60
 
 
 @dataclass
@@ -69,6 +86,10 @@ class MediaCoordinator(DataUpdateCoordinator[MediaData]):
         )
         self.backend = backend
         self.tolerance_s = int(opts.get(CONF_MATCH_TOLERANCE, DEFAULT_MATCH_TOLERANCE))
+        self.import_logs = bool(opts.get(CONF_IMPORT_LOGS, DEFAULT_IMPORT_LOGS))
+        # Flight records already copied: item id -> size (a changed file is copied again).
+        self.imported_logs: dict[str, int | None] = {}
+        self._import_task: asyncio.Task[None] | None = None
         self._store: Store[dict[str, Any]] = Store(
             hass, MEDIA_STORAGE_VERSION, f"{MEDIA_STORAGE_KEY}.{entry.entry_id}"
         )
@@ -87,12 +108,21 @@ class MediaCoordinator(DataUpdateCoordinator[MediaData]):
         if data.get("folder_path") == self.folder_path:
             self.items = data.get("items", {})
             self.backend.load_state(data)
+        # Kept across folder changes: the ids stay the same for OneDrive, and
+        # the log folder recognises files it already has anyway.
+        self.imported_logs = data.get("imported_logs", {})
         await self.hass.async_add_executor_job(partial(self._thumb_dir.mkdir, parents=True, exist_ok=True))
 
+    def _data_to_save(self) -> dict[str, Any]:
+        return {
+            "folder_path": self.folder_path,
+            **self.backend.dump_state(),
+            "items": self.items,
+            "imported_logs": self.imported_logs,
+        }
+
     async def _async_save(self) -> None:
-        await self._store.async_save(
-            {"folder_path": self.folder_path, **self.backend.dump_state(), "items": self.items}
-        )
+        await self._store.async_save(self._data_to_save())
 
     # -- sync ----------------------------------------------------------------
 
@@ -108,10 +138,82 @@ class MediaCoordinator(DataUpdateCoordinator[MediaData]):
             raise UpdateFailed(f"{label}: {err}") from err
 
         await self._async_save()
+        self.async_schedule_log_import()
         recordings = build_recordings(self.items, dt_util.get_default_time_zone())
         return MediaData(
             recordings=recordings, last_sync=datetime.now(UTC).isoformat(), folder=self.folder_path
         )
+
+    # -- flight records ----------------------------------------------------------
+
+    @callback
+    def async_schedule_log_import(self) -> None:
+        """Copy new flight records, unless off, already running or the flight log is not loaded yet.
+
+        Runs in the background: the first sync of an account with a long
+        history may copy hundreds of logs, each with a DJI keychain fetch.
+        The flight log calls this too once it is set up, since config entries
+        load in no particular order.
+        """
+        if not self.import_logs or (self._import_task is not None and not self._import_task.done()):
+            return
+        if _flightlog(self.hass) is None:
+            return
+        self._import_task = self.config_entry.async_create_background_task(
+            self.hass, self._async_import_logs(), f"{DOMAIN} import flight records"
+        )
+
+    def pending_logs(self) -> list[dict[str, Any]]:
+        """Flight records at the source that were not copied yet, oldest name first."""
+        now_ns = time.time_ns()
+        return sorted(
+            (
+                item
+                for item in self.items.values()
+                if is_flight_record(item["name"])
+                and self.imported_logs.get(item["id"], -1) != item.get("size")
+                and not (item.get("mtime") and now_ns - item["mtime"] < _LOG_MIN_AGE_S * 1_000_000_000)
+            ),
+            key=lambda item: item["name"],
+        )
+
+    async def _async_import_logs(self) -> None:
+        """Copy new flight records into the log folder and import them.
+
+        Goes through the flight log's upload path: a file it already has
+        (same name and content) is not saved twice, a different file with the
+        same name gets a suffix, and a failed keychain fetch is retried by its
+        next scan because the file is already in the log folder then.
+        """
+        flightlog = _flightlog(self.hass)
+        if flightlog is None:
+            return
+        counts: dict[str, int] = {}
+        for item in self.pending_logs():
+            size = item.get("size")
+            data: bytes | None = None
+            if size is None or size <= MAX_LOG_FILE_BYTES:
+                try:
+                    data = await self.backend.async_read(item, MAX_LOG_FILE_BYTES)
+                except (MediaError, aiohttp.ClientError, TimeoutError) as err:
+                    _LOGGER.warning(
+                        "%s: could not read %s, retrying next sync: %s", self.backend.label, item["name"], err
+                    )
+                    break
+            if data is None:
+                _LOGGER.warning(
+                    "%s: %s is larger than a flight record can be, skipped", self.backend.label, item["name"]
+                )
+                status = "too_large"
+            else:
+                status = (await flightlog.async_import_upload(item["name"], data))["status"]
+            self.imported_logs[item["id"]] = size
+            counts[status] = counts.get(status, 0) + 1
+            self._store.async_delay_save(self._data_to_save, 10)
+        if counts:
+            _LOGGER.info("%s: flight records copied to the log folder: %s", self.backend.label, counts)
+            await self._async_save()
+            self.async_update_listeners()
 
     # -- thumbnails / files ----------------------------------------------------
 
@@ -136,6 +238,10 @@ class MediaCoordinator(DataUpdateCoordinator[MediaData]):
         return await self.backend.async_file(ref) if ref else None
 
 
+def _flightlog(hass: HomeAssistant) -> FlightLogCoordinator | None:
+    return next((c for c in hass.data.get(DOMAIN, {}).values() if isinstance(c, FlightLogCoordinator)), None)
+
+
 def playable_ref(rec: dict[str, Any]) -> dict[str, Any] | None:
     """The file the browser can show: the proxy, else a normal video/photo (not a 360° original)."""
     ref = rec.get(ROLE_PROXY)
@@ -156,6 +262,8 @@ class MediaIndex:
     by_flight: dict[str, list[dict[str, Any]]]
     recordings: dict[str, tuple[MediaCoordinator, dict[str, Any]]]
     unmatched: int
+    # Copies of a recording another source holds as well (left out above).
+    duplicates: set[str] = field(default_factory=set)
 
 
 _INDEX_CACHE = f"{DOMAIN}_media_index"
@@ -184,10 +292,11 @@ def media_index(hass: HomeAssistant, flights: dict[str, dict[str, Any]] | None) 
     recordings: dict[str, tuple[MediaCoordinator, dict[str, Any]]] = {}
     by_flight: dict[str, list[dict[str, Any]]] = {}
     matched: set[str] = set()
+    duplicates = duplicate_recordings([c.data.recordings for c in coordinators if c.data])
     for coordinator in coordinators:
         if not coordinator.data:
             continue
-        recs = coordinator.data.recordings
+        recs = {k: v for k, v in coordinator.data.recordings.items() if k not in duplicates}
         for rec_id, rec in recs.items():
             recordings[rec_id] = (coordinator, rec)
         for fid, rec_ids in match_recordings(
@@ -198,7 +307,12 @@ def media_index(hass: HomeAssistant, flights: dict[str, dict[str, Any]] | None) 
     for recs in by_flight.values():
         recs.sort(key=lambda r: r.get("start") or "")
 
-    index = MediaIndex(by_flight=by_flight, recordings=recordings, unmatched=len(recordings) - len(matched))
+    index = MediaIndex(
+        by_flight=by_flight,
+        recordings=recordings,
+        unmatched=len(recordings) - len(matched),
+        duplicates=duplicates,
+    )
     hass.data[_INDEX_CACHE] = (key, index)
     return index
 
@@ -206,12 +320,16 @@ def media_index(hass: HomeAssistant, flights: dict[str, dict[str, Any]] | None) 
 def unmatched_recordings(
     hass: HomeAssistant, coordinator: MediaCoordinator, flights: dict[str, dict[str, Any]] | None
 ) -> list[dict[str, Any]]:
-    """Recordings of one account that belong to no flight, oldest first."""
+    """Recordings of one source that belong to no flight, oldest first (copies left out)."""
     if not coordinator.data:
         return []
     index = media_index(hass, flights)
     matched = {rec["id"] for recs in index.by_flight.values() for rec in recs}
-    left = [rec for rec in coordinator.data.recordings.values() if rec["id"] not in matched]
+    left = [
+        rec
+        for rec in coordinator.data.recordings.values()
+        if rec["id"] not in matched and rec["id"] not in index.duplicates
+    ]
     return sorted(left, key=lambda rec: rec.get("start") or "")
 
 
@@ -247,6 +365,7 @@ def media_status(hass: HomeAssistant, index: MediaIndex) -> dict[str, Any]:
                 "last_sync": c.data.last_sync if c.data else None,
                 "ok": c.last_update_success,
                 "recordings": len(c.data.recordings) if c.data else 0,
+                "flight_records": len(c.imported_logs) if c.import_logs else None,
             }
             for c in media_coordinators(hass)
         ],

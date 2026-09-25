@@ -44,7 +44,7 @@ Zusammengehörige Dateien (gleicher Name ohne Endung, im selben Ordner) werden z
 
 ### 2. In Home Assistant
 
-1. *Einstellungen → Geräte & Dienste → Integration hinzufügen → DJI Flight Log*. Da das Flugbuch schon eingerichtet ist, startet jetzt die OneDrive-Anmeldung.
+1. *Einstellungen → Geräte & Dienste → Integration hinzufügen → DJI Flight Log*. Da das Flugbuch schon eingerichtet ist, fragt HA nach dem Speicherort: **OneDrive** wählen.
 2. Beim ersten Mal fragt HA nach den *Anwendungsanmeldedaten*: Client-ID und geheimen Schlüssel aus Schritt 1 eintragen.
 3. Bei Microsoft anmelden und den Lesezugriff bestätigen.
 4. Ordner wählen: Die Auswahl zeigt die Unterordner des aktuellen Ordners, ein Klick öffnet einen, „⬆ Eine Ebene höher“ geht zurück, „✓ … verwenden“ übernimmt den aktuellen Ordner. Sie startet in `Drohne/Medien`, falls es den Ordner gibt, sonst im OneDrive-Stamm. Unterordner werden mitgelesen.
@@ -56,10 +56,11 @@ Optionen (später unter *Konfigurieren* änderbar):
 | Ordner | `Drohne/Medien` | Wird rekursiv gelesen; ändern über „Anderen Ordner wählen“ |
 | Sync-Intervall | 900 s | Abgleich per Delta-Abfrage, d. h. nach dem ersten Mal werden nur Änderungen geladen |
 | Toleranz um einen Flug | 120 s | Aufnahmen, die kurz vor dem Start/nach der Landung beginnen, zählen noch zum Flug |
+| Flugaufzeichnungen übernehmen | aus | DJI-Fly-Logs aus dem Ordner in den Log-Ordner kopieren, siehe [unten](#flugaufzeichnungen-übernehmen-z-b-zweiter-pilot) |
 
 Der ↻-Button im Panel bzw. `dji_flightlog.scan` gleicht OneDrive sofort mit ab.
 
-Mehrere OneDrive-Konten sind möglich (Integration erneut hinzufügen). Läuft die Anmeldung ab, zeigt HA das an der Integration an und bietet die erneute Anmeldung an.
+Mehrere OneDrive-Konten sind möglich (Integration erneut hinzufügen, siehe [Mehrere Konten und Speicherorte](#mehrere-konten-und-speicherorte)). Läuft die Anmeldung ab, zeigt HA das an der Integration an und bietet die erneute Anmeldung an.
 
 ### 3. PC-Skript
 
@@ -88,14 +89,39 @@ ffmpeg z. B. per `winget install Gyan.FFmpeg`.
 
 > Speicherplatz: 360°-Originale haben mehrere GB pro Clip. Mit OneDrive „Dateien bei Bedarf“ kann Windows die lokale Kopie nach dem Upload freigeben (Rechtsklick → *Speicherplatz freigeben*).
 
+## Mehrere Konten und Speicherorte
+
+Beliebig viele OneDrive-Konten und Ordner lassen sich gleichzeitig verbinden (Integration jeweils erneut hinzufügen). Das Panel führt alle Aufnahmen zusammen, z. B. die eigenen vom NAS und die eines zweiten Piloten aus dessen OneDrive.
+
+**Dieselbe Aufnahme an zwei Orten** (gleicher Dateiname, gleiche Größe) wird nur einmal angezeigt. Es bleibt die Kopie mit den meisten Begleitdateien (Proxy, Titelbild, RAW, …), bei Gleichstand die des zuerst eingerichteten Speicherorts. In „Aufnahmen ohne Flug“ zählen solche Kopien nicht mit.
+
+### Flugaufzeichnungen übernehmen (z. B. zweiter Pilot)
+
+Aufnahmen werden nur Flügen zugeordnet, die im eigenen Log-Ordner liegen. Damit die Flüge eines zweiten Piloten dort ankommen, ohne dass er Zugriff auf das eigene Heimnetz braucht, kann ein Speicherort auch dessen **Flugaufzeichnungen** liefern:
+
+1. Er legt seine DJI-Fly-Logs mit in den verbundenen Ordner, z. B. mit dem Sync-Skript auf seinem PC:
+   ```powershell
+   .\scripts\Sync-DjiFlightRecords.ps1 -Register -IntervalMinutes 10 `
+       -Target "$env:OneDrive\Drohne\Medien\Flugaufzeichnungen" -MediaTarget "$env:OneDrive\Drohne\Medien"
+   ```
+2. In den Optionen seines Speicherorts **„Hier gefundene Flugaufzeichnungen … übernehmen“** einschalten.
+
+Bei jedem Abgleich werden neue `FlightRecord_*.txt` bzw. `DJIFlightRecord_*.txt` (irgendwo unterhalb des Ordners) in den eigenen Log-Ordner **kopiert** und importiert, wie beim Upload im Panel:
+
+- **Source of Truth bleibt der Log-Ordner.** Am Speicherort wird nichts geändert oder gelöscht; umgekehrt entfernt das Löschen dort keinen Flug.
+- Jede Datei wird einmal kopiert (ändert sich ihre Größe, noch einmal). Liegt dieselbe Datei schon im Log-Ordner, entsteht keine zweite Kopie; eine andere Datei gleichen Namens bekommt `_2`.
+- Verschlüsselte Logs werden mit dem eigenen DJI-API-Key entschlüsselt. Schlägt das fehl, holt der nächste Scan des Log-Ordners es nach.
+- Der Import läuft im Hintergrund; bei einer langen Flughistorie kann der erste Durchlauf dauern. Der Sensor „Letzter Abgleich“ zeigt im Attribut `flight_records_imported`, wie viele Dateien übernommen wurden.
+- Seine Drohnen und Akkus erscheinen als eigene Geräte; die Gesamtstatistik zählt beide Piloten.
+
 ## Anzeige
 
 - **Panel**: Flüge mit Aufnahmen tragen ein Kamerasymbol mit Anzahl. Nach Auswahl des Flugs erscheint darunter eine Leiste mit Vorschaubildern:
   Klick spielt den Proxy bzw. das Video im Overlay ab, „OneDrive“ öffnet die Datei in OneDrive. Steht im Flugprotokoll, dass aufgenommen wurde, aber es gibt keine passende Datei, zeigt der Flug einen Hinweis.
 - **Karte**: Das Popup eines Flugs zeigt die Vorschaubilder; Klick öffnet OneDrive.
-- **API**: `/api/dji_flightlog/flights` liefert je Flug `media: [{id, kind, name, start, duration_s, web_url, thumb, play, has_raw, …}]` sowie `media` (Status je Konto). `thumb`/`play` sind signierte URLs (6 h gültig), damit `<img>`/`<video>` ohne Auth-Header funktionieren.
+- **API**: `/api/dji_flightlog/flights` liefert je Flug `media: [{id, kind, name, start, duration_s, web_url, thumb, play, download, has_raw, …}]` sowie `media` (Status je Konto bzw. Ordner). `download` gibt es nur bei Quellen ohne `web_url` (lokaler Ordner). `thumb`/`play` sind signierte URLs (6 h gültig), damit `<img>`/`<video>` ohne Auth-Header funktionieren.
 
 ## Datenschutz / Rechte
 
-- Nur Lesezugriff (`Files.Read`) auf das eigene OneDrive; die Integration schreibt nichts.
+- Nur Lesezugriff (`Files.Read`) auf das eigene OneDrive; die Integration schreibt nichts dorthin (Flugaufzeichnungen werden nur heruntergeladen).
 - Gespeichert werden Dateiliste des Ordners (`/config/.storage/dji_flightlog.media.<entry_id>`) und Vorschaubilder (`/config/.storage/dji_flightlog/thumbs/`), beides im HA-Backup enthalten.

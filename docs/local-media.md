@@ -42,8 +42,9 @@ Ohne NAS geht jeder lokale Ordner, z. B. `/media/drohne` (per Samba-Add-on unter
 | Ordner | `/media` | Absoluter Pfad; Unterordner werden mitgelesen |
 | Scan-Intervall | 900 s | Wie oft der Ordner neu eingelesen wird. Der Button „Ordner einlesen“ und ↻ im Panel lösen es sofort aus |
 | Toleranz um einen Flug | 120 s | Wie bei OneDrive |
+| Flugaufzeichnungen übernehmen | aus | DJI-Fly-Logs aus dem Ordner in den Log-Ordner kopieren |
 
-Man kann mehrere Ordner (und OneDrive-Konten) gleichzeitig verbinden.
+Man kann mehrere Ordner (und OneDrive-Konten) gleichzeitig verbinden. Wie Kopien derselben Aufnahme zusammengeführt und Flugaufzeichnungen übernommen werden, steht in [`onedrive.md`](onedrive.md#mehrere-konten-und-speicherorte). Ein Log, der gerade erst geändert wurde (< 60 s), wird erst beim nächsten Abgleich übernommen, damit keine halb kopierte Datei ankommt.
 
 ## Was die Integration dabei tut
 

@@ -43,6 +43,8 @@ class MediaBackend(Protocol):
     async def async_sync(self, items: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """Return the current items (id -> normalized file, see ``media.build_recordings``).
 
+        Items are media files and DJI flight records (``media.is_flight_record``).
+
         ``items`` is the previous result; the backend may reuse or update it.
         """
 
@@ -51,3 +53,6 @@ class MediaBackend(Protocol):
 
     async def async_file(self, ref: dict[str, Any]) -> str | Path | None:
         """One file of a recording: a URL to redirect to, or a local path to serve."""
+
+    async def async_read(self, item: dict[str, Any], max_bytes: int) -> bytes | None:
+        """Content of a stored item (flight records), or None if it is larger than ``max_bytes``."""

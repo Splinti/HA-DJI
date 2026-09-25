@@ -114,6 +114,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(coordinator.async_add_listener(_flights_changed))
     _flights_changed()
+    # Media entries set up before the flight log could not hand over their flight records yet.
+    for media in media_coordinators(hass):
+        media.async_schedule_log_import()
 
     _async_register_services(hass)
     await _async_register_lovelace_resource(hass)
