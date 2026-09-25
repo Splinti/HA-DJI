@@ -13,6 +13,7 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -250,6 +251,30 @@ def media_index(hass: HomeAssistant, flights: dict[str, dict[str, Any]] | None) 
     index = MediaIndex(by_flight=by_flight, recordings=recordings, unmatched=len(recordings) - len(matched))
     hass.data[_INDEX_CACHE] = (key, index)
     return index
+
+
+def unmatched_recordings(
+    hass: HomeAssistant, coordinator: MediaCoordinator, flights: dict[str, dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Recordings of one account that belong to no flight, oldest first."""
+    if not coordinator.data:
+        return []
+    index = media_index(hass, flights)
+    matched = {rec["id"] for recs in index.by_flight.values() for rec in recs}
+    left = [rec for rec in coordinator.data.recordings.values() if rec["id"] not in matched]
+    return sorted(left, key=lambda rec: rec.get("start") or "")
+
+
+def onedrive_device_info(entry: ConfigEntry) -> DeviceInfo:
+    """One device per OneDrive account, holding its button and sensors."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, f"{entry.entry_id}_onedrive")},
+        name=entry.title,
+        manufacturer="Microsoft",
+        model="OneDrive",
+        entry_type=DeviceEntryType.SERVICE,
+        configuration_url="https://onedrive.live.com",
+    )
 
 
 def media_status(hass: HomeAssistant, index: MediaIndex) -> dict[str, Any]:

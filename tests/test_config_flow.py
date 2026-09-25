@@ -7,8 +7,9 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from homeassistant.components.application_credentials import ClientCredential, async_import_client_credential
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -165,6 +166,47 @@ async def test_onedrive_flow_picks_folder(
     assert entry.state is ConfigEntryState.LOADED
     coordinator = hass.data[DOMAIN][entry.entry_id]
     assert len(coordinator.data.recordings) == 1
+
+    # Sensors on the account's device. The flight log (loaded along with the
+    # integration) has no flights, so nothing is matched.
+    registry = er.async_get(hass)
+
+    def state(key: str) -> State:
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_onedrive_{key}")
+        assert entity_id is not None, key
+        return hass.states.get(entity_id)
+
+    assert state("recordings").state == "1"
+    assert state("recordings").attributes["folder"] == "/Drohne/Medien"
+    assert state("unmatched").state == "1"
+    assert state("unmatched").attributes["recordings"] == ["DJI_20260921190306_0001_D.MP4"]
+    assert state("last_sync").state not in ("unknown", "unavailable")
+
+    flightlog = hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, DOMAIN)
+    assert flightlog.state is ConfigEntryState.LOADED
+
+    # A flight during the recording shows up (as after an import): now it is matched.
+    rec_start = coordinator.data.recordings["v1"]["start"]
+    flights = hass.data[DOMAIN][flightlog.entry_id]
+    flights.data.flights = {
+        **flights.data.flights,
+        "f1": {"flight_id": "f1", "start_time": rec_start, "duration_s": 300},
+    }
+    flights.async_update_listeners()
+    await hass.async_block_till_done()
+    assert state("unmatched").state == "0"
+
+    # The account's device carries a button that syncs right away.
+    button_id = registry.async_get_entity_id("button", DOMAIN, f"{entry.entry_id}_onedrive_sync")
+    assert button_id is not None
+
+    def delta_calls() -> int:
+        return sum(1 for call in aioclient_mock.mock_calls if "/delta" in str(call[1]))
+
+    before = delta_calls()
+    assert before == 1  # the first sync after setup
+    await hass.services.async_call("button", "press", {"entity_id": button_id}, blocking=True)
+    assert delta_calls() == before + 1
 
     # Playback redirects to the short-lived URL Graph hands out for /content.
     aioclient_mock.get(

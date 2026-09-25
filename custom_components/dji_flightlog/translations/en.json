@@ -171,11 +171,23 @@
       },
       "attention": {
         "name": "Pre-flight notices"
+      },
+      "onedrive_last_sync": {
+        "name": "Last sync"
+      },
+      "onedrive_recordings": {
+        "name": "Recordings"
+      },
+      "onedrive_unmatched": {
+        "name": "Recordings without flight"
       }
     },
     "button": {
       "scan": {
         "name": "Scan log folder"
+      },
+      "onedrive_sync": {
+        "name": "Sync OneDrive"
       }
     }
   },

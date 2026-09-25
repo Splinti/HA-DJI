@@ -171,11 +171,23 @@
       },
       "attention": {
         "name": "Hinweise vor dem nächsten Flug"
+      },
+      "onedrive_last_sync": {
+        "name": "Letzter Abgleich"
+      },
+      "onedrive_recordings": {
+        "name": "Aufnahmen"
+      },
+      "onedrive_unmatched": {
+        "name": "Aufnahmen ohne Flug"
       }
     },
     "button": {
       "scan": {
         "name": "Log-Ordner scannen"
+      },
+      "onedrive_sync": {
+        "name": "OneDrive abgleichen"
       }
     }
   },

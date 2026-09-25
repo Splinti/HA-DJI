@@ -52,6 +52,7 @@ from .storage import FlightStore
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON, Platform.GEO_LOCATION]
+ONEDRIVE_PLATFORMS: list[Platform] = [Platform.BUTTON, Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -99,6 +100,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
+    @callback
+    def _flights_changed() -> None:
+        # Recordings are matched to flights, so the OneDrive sensors follow the flight list.
+        for media in media_coordinators(hass):
+            media.async_update_listeners()
+
+    entry.async_on_unload(coordinator.async_add_listener(_flights_changed))
+    _flights_changed()
+
     _async_register_services(hass)
     await _async_register_lovelace_resource(hass)
     await _async_setup_panel(hass, entry)
@@ -123,14 +133,17 @@ async def _async_setup_onedrive(hass: HomeAssistant, entry: ConfigEntry) -> bool
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    await hass.config_entries.async_forward_entry_setups(entry, ONEDRIVE_PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if _is_onedrive(entry):
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-        return True
+        ok = await hass.config_entries.async_unload_platforms(entry, ONEDRIVE_PLATFORMS)
+        if ok:
+            hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        return ok
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
         _async_remove_panel(hass)
