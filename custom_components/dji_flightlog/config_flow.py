@@ -26,6 +26,7 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_SIDEBAR_PANEL,
     DEFAULT_GEO_LOCATION_LIMIT,
+    DEFAULT_LOCAL_MEDIA_FOLDER,
     DEFAULT_LOG_DIR,
     DEFAULT_MATCH_TOLERANCE,
     DEFAULT_MAX_TRACK_POINTS,
@@ -34,6 +35,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SIDEBAR_PANEL,
     DOMAIN,
+    ENTRY_TYPE_LOCAL,
     ENTRY_TYPE_ONEDRIVE,
     ONEDRIVE_SCOPES,
 )
@@ -87,22 +89,57 @@ def _normalize(user_input: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _sync_fields(defaults: Mapping[str, Any]) -> dict[Any, Any]:
+    return {
+        vol.Optional(
+            CONF_MEDIA_SCAN_INTERVAL,
+            default=defaults.get(CONF_MEDIA_SCAN_INTERVAL, DEFAULT_MEDIA_SCAN_INTERVAL),
+        ): selector.NumberSelector(
+            selector.NumberSelectorConfig(min=60, max=86400, step=60, unit_of_measurement="s")
+        ),
+        vol.Optional(
+            CONF_MATCH_TOLERANCE,
+            default=defaults.get(CONF_MATCH_TOLERANCE, DEFAULT_MATCH_TOLERANCE),
+        ): selector.NumberSelector(
+            selector.NumberSelectorConfig(min=0, max=3600, step=10, unit_of_measurement="s")
+        ),
+    }
+
+
+def _local_schema(defaults: Mapping[str, Any]) -> vol.Schema:
+    """Folder path, sync interval and matching tolerance of a local folder."""
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_MEDIA_FOLDER, default=defaults.get(CONF_MEDIA_FOLDER, DEFAULT_LOCAL_MEDIA_FOLDER)
+            ): str,
+            **_sync_fields(defaults),
+        }
+    )
+
+
+def _local_options(user_input: dict[str, Any]) -> dict[str, Any]:
+    return {
+        CONF_MEDIA_FOLDER: os.path.normpath(user_input[CONF_MEDIA_FOLDER].strip()),
+        CONF_MEDIA_SCAN_INTERVAL: int(user_input.get(CONF_MEDIA_SCAN_INTERVAL, DEFAULT_MEDIA_SCAN_INTERVAL)),
+        CONF_MATCH_TOLERANCE: int(user_input.get(CONF_MATCH_TOLERANCE, DEFAULT_MATCH_TOLERANCE)),
+    }
+
+
+async def _async_check_local_folder(hass: HomeAssistant, folder: str) -> str | None:
+    """Error key for the folder field, or None."""
+    if not os.path.isabs(folder):
+        return "dir_not_absolute"
+    if not await hass.async_add_executor_job(os.path.isdir, folder):
+        return "dir_not_found"
+    return None
+
+
 def _media_schema(defaults: Mapping[str, Any]) -> vol.Schema:
     """Sync interval and matching tolerance; the folder has its own picker step."""
     return vol.Schema(
         {
-            vol.Optional(
-                CONF_MEDIA_SCAN_INTERVAL,
-                default=defaults.get(CONF_MEDIA_SCAN_INTERVAL, DEFAULT_MEDIA_SCAN_INTERVAL),
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(min=60, max=86400, step=60, unit_of_measurement="s")
-            ),
-            vol.Optional(
-                CONF_MATCH_TOLERANCE,
-                default=defaults.get(CONF_MATCH_TOLERANCE, DEFAULT_MATCH_TOLERANCE),
-            ): selector.NumberSelector(
-                selector.NumberSelectorConfig(min=0, max=3600, step=10, unit_of_measurement="s")
-            ),
+            **_sync_fields(defaults),
             vol.Optional(CONF_CHANGE_FOLDER, default=False): selector.BooleanSelector(),
         }
     )
@@ -202,10 +239,10 @@ def _static_token(token: str) -> TokenProvider:
 
 
 class DjiFlightLogConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, _FolderMenu, domain=DOMAIN):
-    """Flight log (single instance) and OneDrive accounts for the recordings.
+    """Flight log (single instance) and media sources for the recordings.
 
     The first "Add integration" sets up the flight log; once that exists,
-    adding the integration again connects a OneDrive account.
+    adding the integration again connects a OneDrive account or a folder.
     """
 
     DOMAIN = DOMAIN
@@ -227,8 +264,12 @@ class DjiFlightLogConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler,
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is None and self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, DOMAIN):
-            return await self.async_step_onedrive()
+            return await self.async_step_media_source()
         return await self.async_step_flightlog(user_input)
+
+    async def async_step_media_source(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Where the recordings are: a folder (incl. network storage) or OneDrive."""
+        return self.async_show_menu(step_id="media_source", menu_options=["local", "onedrive"])
 
     async def async_step_flightlog(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         await self.async_set_unique_id(DOMAIN)
@@ -243,6 +284,25 @@ class DjiFlightLogConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler,
                 return self.async_create_entry(title="DJI Flight Log", data=data)
 
         return self.async_show_form(step_id="user", data_schema=_schema(user_input or {}), errors=errors)
+
+    # -- local folder (incl. network storage mounted by Home Assistant) ----------
+
+    async def async_step_local(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            options = _local_options(user_input)
+            folder = options[CONF_MEDIA_FOLDER]
+            if error := await _async_check_local_folder(self.hass, folder):
+                errors[CONF_MEDIA_FOLDER] = error
+            else:
+                await self.async_set_unique_id(f"local_{folder}")
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=folder, data={CONF_ENTRY_TYPE: ENTRY_TYPE_LOCAL}, options=options
+                )
+        return self.async_show_form(
+            step_id="local", data_schema=_local_schema(user_input or {}), errors=errors
+        )
 
     # -- OneDrive -------------------------------------------------------------
 
@@ -317,8 +377,11 @@ class DjiFlightLogConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler,
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        if config_entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_ONEDRIVE:
+        entry_type = config_entry.data.get(CONF_ENTRY_TYPE)
+        if entry_type == ENTRY_TYPE_ONEDRIVE:
             return OneDriveOptionsFlow()
+        if entry_type == ENTRY_TYPE_LOCAL:
+            return LocalFolderOptionsFlow()
         return DjiFlightLogOptionsFlow()
 
 
@@ -395,3 +458,25 @@ class OneDriveOptionsFlow(OptionsFlow, _FolderMenu):
         if folder is None:
             return await self.async_step_folder()
         return self.async_create_entry(title="", data={**self._options, CONF_MEDIA_FOLDER: folder})
+
+
+class LocalFolderOptionsFlow(OptionsFlow):
+    """Folder, sync interval and matching tolerance of a local folder."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        # Own step id: the translations for "init" are the flight log's options.
+        return await self.async_step_local()
+
+    async def async_step_local(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            options = _local_options(user_input)
+            if error := await _async_check_local_folder(self.hass, options[CONF_MEDIA_FOLDER]):
+                errors[CONF_MEDIA_FOLDER] = error
+            else:
+                return self.async_create_entry(title="", data=options)
+        return self.async_show_form(
+            step_id="local",
+            data_schema=_local_schema(user_input or self.config_entry.options),
+            errors=errors,
+        )

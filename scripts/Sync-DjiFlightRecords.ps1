@@ -2,7 +2,7 @@
 .SYNOPSIS
     Copies new DJI Fly flight records from any USB-attached Android device
     (DJI RC 2, phone) to a target folder, e.g. the Home Assistant /share.
-    Optionally also copies the videos/photos into a (OneDrive) folder.
+    Optionally also copies the videos/photos into a folder (OneDrive, NAS share).
 
 .DESCRIPTION
     Android devices show up in Windows as MTP "portable devices", not as drive
@@ -39,7 +39,8 @@
     Destination folder of the flight records. Default is the HAOS Samba share.
 
 .PARAMETER MediaTarget
-    Destination root of the recordings, e.g. "$env:OneDrive\Drohne\Medien".
+    Destination root of the recordings, e.g. "$env:OneDrive\Drohne\Medien" or a
+    share like '\\nas\drohne\medien'.
     Empty (default) = recordings are not copied.
 
 .PARAMETER MediaSource

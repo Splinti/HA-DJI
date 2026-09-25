@@ -1,4 +1,4 @@
-"""Keeps the list of recordings in one OneDrive folder up to date."""
+"""Keeps the list of recordings of one media source (OneDrive, local folder) up to date."""
 
 from __future__ import annotations
 
@@ -19,19 +19,27 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_ENTRY_TYPE,
     CONF_MATCH_TOLERANCE,
-    CONF_MEDIA_FOLDER,
     CONF_MEDIA_SCAN_INTERVAL,
     DEFAULT_MATCH_TOLERANCE,
-    DEFAULT_MEDIA_FOLDER,
     DEFAULT_MEDIA_SCAN_INTERVAL,
     DOMAIN,
+    ENTRY_TYPE_LOCAL,
     MEDIA_STORAGE_KEY,
     MEDIA_STORAGE_VERSION,
     STORAGE_SUBDIR,
 )
-from .media import ROLE_COVER, ROLE_ORIGINAL, ROLE_PROXY, build_recordings, match_recordings
-from .onedrive import GraphAuthError, GraphError, GraphNotFound, OneDriveClient, normalize_item
+from .media import (
+    KIND_360,
+    ROLE_COVER,
+    ROLE_ORIGINAL,
+    ROLE_PROXY,
+    ROLE_RAW,
+    build_recordings,
+    match_recordings,
+)
+from .media_backend import MediaAuthError, MediaBackend, MediaError, MediaNotFound
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,11 +52,11 @@ class MediaData:
 
 
 class MediaCoordinator(DataUpdateCoordinator[MediaData]):
-    """Polls one OneDrive folder (delta query where available)."""
+    """Polls one media backend and groups its files into recordings."""
 
     config_entry: ConfigEntry
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, client: OneDriveClient) -> None:
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, backend: MediaBackend) -> None:
         opts = {**entry.data, **entry.options}
         super().__init__(
             hass,
@@ -59,17 +67,18 @@ class MediaCoordinator(DataUpdateCoordinator[MediaData]):
             ),
             config_entry=entry,
         )
-        self.client = client
-        self.folder_path: str = str(opts.get(CONF_MEDIA_FOLDER, DEFAULT_MEDIA_FOLDER)).strip().strip("/")
+        self.backend = backend
         self.tolerance_s = int(opts.get(CONF_MATCH_TOLERANCE, DEFAULT_MATCH_TOLERANCE))
         self._store: Store[dict[str, Any]] = Store(
             hass, MEDIA_STORAGE_VERSION, f"{MEDIA_STORAGE_KEY}.{entry.entry_id}"
         )
         self._thumb_dir = Path(hass.config.path(".storage", STORAGE_SUBDIR, "thumbs"))
         self.items: dict[str, dict[str, Any]] = {}
-        self._folder_id: str | None = None
-        self._delta_link: str | None = None
-        self._use_delta = True
+
+    @property
+    def folder_path(self) -> str:
+        """The folder as shown to the user."""
+        return self.backend.folder_display
 
     # -- persistence ---------------------------------------------------------
 
@@ -77,83 +86,26 @@ class MediaCoordinator(DataUpdateCoordinator[MediaData]):
         data = await self._store.async_load() or {}
         if data.get("folder_path") == self.folder_path:
             self.items = data.get("items", {})
-            self._folder_id = data.get("folder_id")
-            self._delta_link = data.get("delta_link")
-            self._use_delta = data.get("use_delta", True)
+            self.backend.load_state(data)
         await self.hass.async_add_executor_job(partial(self._thumb_dir.mkdir, parents=True, exist_ok=True))
 
     async def _async_save(self) -> None:
         await self._store.async_save(
-            {
-                "folder_path": self.folder_path,
-                "folder_id": self._folder_id,
-                "delta_link": self._delta_link,
-                "use_delta": self._use_delta,
-                "items": self.items,
-            }
+            {"folder_path": self.folder_path, **self.backend.dump_state(), "items": self.items}
         )
 
     # -- sync ----------------------------------------------------------------
 
-    def _apply_delta(self, raw_items: list[dict[str, Any]], full: bool) -> None:
-        if full:
-            self.items = {}
-        for raw in raw_items:
-            item_id = raw.get("id")
-            if not item_id or item_id == self._folder_id:
-                continue
-            if "deleted" in raw:
-                self.items.pop(item_id, None)
-                # A deleted folder is not always followed by its children.
-                for key in [k for k, v in self.items.items() if v.get("folder") == item_id]:
-                    self.items.pop(key, None)
-                continue
-            item = normalize_item(raw)
-            if item is None:
-                self.items.pop(item_id, None)
-            else:
-                self.items[item_id] = item
-
-    async def _async_sync(self) -> None:
-        if self._folder_id is None:
-            folder = await self.client.async_get_folder(self.folder_path)
-            self._folder_id = folder["id"]
-            self._delta_link = None
-
-        if self._use_delta:
-            try:
-                raw, self._delta_link, full = await self.client.async_delta(self._folder_id, self._delta_link)
-            except GraphAuthError:
-                raise
-            except GraphNotFound:
-                # The folder was deleted or moved; resolve the path again next time.
-                self._folder_id = None
-                raise
-            except GraphError as err:
-                _LOGGER.info("OneDrive delta not available (%s), falling back to full listings", err)
-                self._use_delta = False
-                self._delta_link = None
-            else:
-                self._apply_delta(raw, full)
-                return
-
-        raw = await self.client.async_list_recursive(self._folder_id)
-        self._apply_delta(raw, full=True)
-
     async def _async_update_data(self) -> MediaData:
+        label = self.backend.label
         try:
-            await self._async_sync()
-        except GraphAuthError as err:
-            raise ConfigEntryAuthFailed(str(err)) from err
-        except aiohttp.ClientResponseError as err:
-            # Raised by the token refresh when the grant was revoked.
-            if err.status in (400, 401):
-                raise ConfigEntryAuthFailed(f"OneDrive token refresh failed: {err}") from err
-            raise UpdateFailed(f"OneDrive: {err}") from err
-        except GraphNotFound as err:
-            raise UpdateFailed(f"OneDrive folder '{self.folder_path}' not found") from err
-        except (GraphError, aiohttp.ClientError, TimeoutError) as err:
-            raise UpdateFailed(f"OneDrive: {err}") from err
+            self.items = await self.backend.async_sync(self.items)
+        except MediaAuthError as err:
+            raise ConfigEntryAuthFailed(f"{label}: {err}") from err
+        except MediaNotFound as err:
+            raise UpdateFailed(f"{label}: folder '{self.folder_path}' not found") from err
+        except (MediaError, aiohttp.ClientError, TimeoutError) as err:
+            raise UpdateFailed(f"{label}: {err}") from err
 
         await self._async_save()
         recordings = build_recordings(self.items, dt_util.get_default_time_zone())
@@ -161,47 +113,45 @@ class MediaCoordinator(DataUpdateCoordinator[MediaData]):
             recordings=recordings, last_sync=datetime.now(UTC).isoformat(), folder=self.folder_path
         )
 
-    # -- thumbnails / playback -------------------------------------------------
+    # -- thumbnails / files ----------------------------------------------------
 
     def recording(self, rec_id: str) -> dict[str, Any] | None:
         return self.data.recordings.get(rec_id) if self.data else None
 
     async def async_thumbnail(self, rec: dict[str, Any]) -> bytes | None:
         """Cover image of a recording, cached on disk."""
-        # A cover uploaded after the first request must not be hidden by the
-        # cached OneDrive thumbnail of the proxy, hence the suffix.
+        # A cover added after the first request must not be hidden by the
+        # cached thumbnail of the proxy, hence the suffix.
         path = self._thumb_dir / f"{rec['id']}{'_cover' if rec.get(ROLE_COVER) else ''}.jpg"
         cached = await self.hass.async_add_executor_job(_read_if_exists, path)
         if cached is not None:
             return cached
-
-        data: bytes | None = None
-        if cover := rec.get(ROLE_COVER):
-            # Extracted by the sync script from the .OSV (OneDrive cannot
-            # thumbnail 360° originals). Let OneDrive scale it down.
-            data = await self.client.async_thumbnail(cover["item_id"]) or await self.client.async_content(
-                cover["item_id"]
-            )
-        for role in (ROLE_PROXY, ROLE_ORIGINAL):
-            if data is None and (ref := rec.get(role)):
-                data = await self.client.async_thumbnail(ref["item_id"])
+        data = await self.backend.async_thumbnail(rec)
         if data:
             await self.hass.async_add_executor_job(_write, path, data)
         return data
 
-    async def async_play_url(self, rec: dict[str, Any]) -> str | None:
-        """Direct URL of the browser-friendly file: the proxy, else a normal video/photo."""
-        ref = rec.get(ROLE_PROXY)
-        if ref is None and rec.get("kind") != "360":
-            ref = rec.get(ROLE_ORIGINAL)
-        if ref is None:
-            return None
-        return await self.client.async_download_url(ref["item_id"])
+    async def async_file(self, ref: dict[str, Any] | None) -> str | Path | None:
+        """URL to redirect to, or local path to serve, for one file of a recording."""
+        return await self.backend.async_file(ref) if ref else None
+
+
+def playable_ref(rec: dict[str, Any]) -> dict[str, Any] | None:
+    """The file the browser can show: the proxy, else a normal video/photo (not a 360° original)."""
+    ref = rec.get(ROLE_PROXY)
+    if ref is None and rec.get("kind") != KIND_360:
+        ref = rec.get(ROLE_ORIGINAL)
+    return ref
+
+
+def original_ref(rec: dict[str, Any]) -> dict[str, Any] | None:
+    """The original file of a recording, or the raw photo if there is nothing else."""
+    return rec.get(ROLE_ORIGINAL) or rec.get(ROLE_RAW)
 
 
 @dataclass
 class MediaIndex:
-    """Recordings of all OneDrive entries, matched to the flights."""
+    """Recordings of all media entries, matched to the flights."""
 
     by_flight: dict[str, list[dict[str, Any]]]
     recordings: dict[str, tuple[MediaCoordinator, dict[str, Any]]]
@@ -265,8 +215,15 @@ def unmatched_recordings(
     return sorted(left, key=lambda rec: rec.get("start") or "")
 
 
-def onedrive_device_info(entry: ConfigEntry) -> DeviceInfo:
-    """One device per OneDrive account, holding its button and sensors."""
+def media_device_info(entry: ConfigEntry) -> DeviceInfo:
+    """One device per media entry (OneDrive account or folder), holding its button and sensors."""
+    if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_LOCAL:
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{entry.entry_id}_local")},
+            name=entry.title,
+            model="Local folder",
+            entry_type=DeviceEntryType.SERVICE,
+        )
     return DeviceInfo(
         identifiers={(DOMAIN, f"{entry.entry_id}_onedrive")},
         name=entry.title,
@@ -278,13 +235,14 @@ def onedrive_device_info(entry: ConfigEntry) -> DeviceInfo:
 
 
 def media_status(hass: HomeAssistant, index: MediaIndex) -> dict[str, Any]:
-    """Connection state per OneDrive entry, for the panel."""
+    """Connection state per media entry, for the panel."""
     return {
         "connected": bool(media_coordinators(hass)),
         "unmatched": index.unmatched,
         "accounts": [
             {
                 "title": c.config_entry.title,
+                "source": c.backend.kind,
                 "folder": c.folder_path,
                 "last_sync": c.data.last_sync if c.data else None,
                 "ok": c.last_update_success,

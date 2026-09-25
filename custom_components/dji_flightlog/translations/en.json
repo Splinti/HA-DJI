@@ -1,6 +1,23 @@
 {
   "config": {
     "step": {
+      "media_source": {
+        "title": "Add recordings",
+        "description": "Where are the videos and photos of your flights stored? They are linked to a flight when their recording time overlaps the flight.",
+        "menu_options": {
+          "local": "Folder or network storage (SMB, NFS)",
+          "onedrive": "OneDrive"
+        }
+      },
+      "local": {
+        "title": "Folder with recordings",
+        "description": "A folder Home Assistant can read. Subfolders are read as well.\n\n**NAS (SMB/CIFS or NFS):** first add the share under Settings → System → Storage → *Add network storage* with usage **Media**. It then appears as `/media/<name>`.\n\nThumbnails are made with ffmpeg; recordings play in the browser through Home Assistant.",
+        "data": {
+          "media_folder": "Folder",
+          "media_scan_interval": "Scan interval",
+          "match_tolerance": "Tolerance around a flight"
+        }
+      },
       "user": {
         "title": "DJI Flight Log",
         "description": "Folder that receives the DJI Fly flight records (*.txt). Newer logs (v13+) are encrypted; a free DJI Developer API key is needed to decode the GPS track and telemetry. Without it only the header data (time, duration, distance, max height) is imported.",
@@ -28,7 +45,8 @@
     "error": {
       "dir_not_found": "Folder does not exist",
       "folder_not_found": "Folder not found in OneDrive",
-      "cannot_connect": "Could not reach OneDrive"
+      "cannot_connect": "Could not reach OneDrive",
+      "dir_not_absolute": "Enter an absolute path, e.g. /media/nas/drone"
     },
     "abort": {
       "already_configured": "Already configured",
@@ -71,12 +89,22 @@
       "folder": {
         "title": "OneDrive folder with recordings",
         "description": "Current folder: **{path}**{notice}\n\nClick a subfolder to open it, go up one level or use the current folder. Subfolders are read as well."
+      },
+      "local": {
+        "title": "Folder with recordings",
+        "description": "A folder Home Assistant can read, e.g. network storage under `/media/<name>`. Subfolders are read as well.",
+        "data": {
+          "media_folder": "Folder",
+          "media_scan_interval": "Scan interval",
+          "match_tolerance": "Tolerance around a flight"
+        }
       }
     },
     "error": {
       "dir_not_found": "Folder does not exist",
       "folder_not_found": "Folder not found in OneDrive",
-      "cannot_connect": "Could not reach OneDrive"
+      "cannot_connect": "Could not reach OneDrive",
+      "dir_not_absolute": "Enter an absolute path, e.g. /media/nas/drone"
     }
   },
   "device": {
@@ -172,13 +200,13 @@
       "attention": {
         "name": "Pre-flight notices"
       },
-      "onedrive_last_sync": {
+      "media_last_sync": {
         "name": "Last sync"
       },
-      "onedrive_recordings": {
+      "media_recordings": {
         "name": "Recordings"
       },
-      "onedrive_unmatched": {
+      "media_unmatched": {
         "name": "Recordings without flight"
       }
     },
@@ -188,6 +216,9 @@
       },
       "onedrive_sync": {
         "name": "Sync OneDrive"
+      },
+      "local_sync": {
+        "name": "Scan folder"
       }
     }
   },

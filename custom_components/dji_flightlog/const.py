@@ -91,19 +91,24 @@ UPLOAD_RETRY = "retry"  # DJI keychain fetch failed; the next scan tries again
 UPLOAD_REJECTED = "rejected"
 REASON_NOT_TXT = "not_txt"
 
-# -- OneDrive recordings -------------------------------------------------------
-# The integration has two kinds of config entries: the flight log (one) and
-# OneDrive accounts holding the videos/photos (any number). Entries created
-# before this existed have no entry_type and are flight logs.
+# -- Recordings (OneDrive, local folder) ----------------------------------------
+# The integration has several kinds of config entries: the flight log (one)
+# and media sources holding the videos/photos (any number): OneDrive accounts
+# and local folders (which include SMB/NFS shares mounted by Home Assistant).
+# Entries created before this existed have no entry_type and are flight logs.
 CONF_ENTRY_TYPE = "entry_type"
 ENTRY_TYPE_FLIGHTLOG = "flightlog"
 ENTRY_TYPE_ONEDRIVE = "onedrive"
+ENTRY_TYPE_LOCAL = "local"
+MEDIA_ENTRY_TYPES = (ENTRY_TYPE_ONEDRIVE, ENTRY_TYPE_LOCAL)
 
 CONF_MEDIA_FOLDER = "media_folder"
 CONF_MEDIA_SCAN_INTERVAL = "media_scan_interval"
 CONF_MATCH_TOLERANCE = "match_tolerance"
 
 DEFAULT_MEDIA_FOLDER = "Drohne/Medien"
+# Local folders: where HAOS mounts network storage with usage "Media".
+DEFAULT_LOCAL_MEDIA_FOLDER = "/media"
 DEFAULT_MEDIA_SCAN_INTERVAL = 900  # seconds
 DEFAULT_MATCH_TOLERANCE = 120  # seconds around a flight that still count
 

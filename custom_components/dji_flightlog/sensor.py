@@ -29,9 +29,9 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_ENTRY_TYPE, DOMAIN, ENTRY_TYPE_ONEDRIVE
+from .const import CONF_ENTRY_TYPE, DOMAIN, MEDIA_ENTRY_TYPES
 from .coordinator import AircraftStats, BatteryStats, FlightData, FlightLogCoordinator
-from .media_coordinator import MediaCoordinator, onedrive_device_info, unmatched_recordings
+from .media_coordinator import MediaCoordinator, media_device_info, unmatched_recordings
 from .parser import INCIDENT_CRITICAL, INCIDENT_OK, INCIDENT_WARNING
 from .spots import maps_url, sorted_spots
 
@@ -352,13 +352,13 @@ BATTERY_SENSORS: tuple[BatterySensorDescription, ...] = (
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    if entry.data.get(CONF_ENTRY_TYPE) == ENTRY_TYPE_ONEDRIVE:
+    if entry.data.get(CONF_ENTRY_TYPE) in MEDIA_ENTRY_TYPES:
         media: MediaCoordinator = hass.data[DOMAIN][entry.entry_id]
         async_add_entities(
             [
-                OneDriveLastSyncSensor(media, entry),
-                OneDriveRecordingsSensor(media, entry),
-                OneDriveUnmatchedSensor(media, entry),
+                MediaLastSyncSensor(media, entry),
+                MediaRecordingsSensor(media, entry),
+                MediaUnmatchedSensor(media, entry),
             ]
         )
         return
@@ -699,24 +699,24 @@ def battery_device_info(entry: ConfigEntry, bat: BatteryStats) -> DeviceInfo:
     )
 
 
-# -- OneDrive account -----------------------------------------------------------
+# -- media source (OneDrive account, local folder) ------------------------------
 
 
-class _OneDriveSensor(CoordinatorEntity[MediaCoordinator], SensorEntity):
+class _MediaSensor(CoordinatorEntity[MediaCoordinator], SensorEntity):
     _attr_has_entity_name = True
 
     def __init__(self, coordinator: MediaCoordinator, entry: ConfigEntry, key: str) -> None:
         super().__init__(coordinator)
-        self._attr_translation_key = f"onedrive_{key}"
-        self._attr_unique_id = f"{entry.entry_id}_onedrive_{key}"
-        self._attr_device_info = onedrive_device_info(entry)
+        self._attr_translation_key = f"media_{key}"
+        self._attr_unique_id = f"{entry.entry_id}_{coordinator.backend.kind}_{key}"
+        self._attr_device_info = media_device_info(entry)
 
     @property
     def available(self) -> bool:
         return super().available and self.coordinator.data is not None
 
 
-class OneDriveLastSyncSensor(_OneDriveSensor):
+class MediaLastSyncSensor(_MediaSensor):
     """Time of the last successful sync; unavailable while syncing fails."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
@@ -731,10 +731,10 @@ class OneDriveLastSyncSensor(_OneDriveSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {"folder": f"/{self.coordinator.folder_path}"}
+        return {"folder": self.coordinator.folder_path}
 
 
-class OneDriveRecordingsSensor(_OneDriveSensor):
+class MediaRecordingsSensor(_MediaSensor):
     _attr_icon = "mdi:filmstrip-box-multiple"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
@@ -751,12 +751,12 @@ class OneDriveRecordingsSensor(_OneDriveSensor):
         for rec in self.coordinator.data.recordings.values():
             kinds[rec["kind"]] = kinds.get(rec["kind"], 0) + 1
         return {
-            "folder": f"/{self.coordinator.folder_path}",
+            "folder": self.coordinator.folder_path,
             **{f"{k}_count": n for k, n in sorted(kinds.items())},
         }
 
 
-class OneDriveUnmatchedSensor(_OneDriveSensor):
+class MediaUnmatchedSensor(_MediaSensor):
     """Recordings no flight could be found for (clock off, flight log missing, ...)."""
 
     _attr_icon = "mdi:link-variant-off"

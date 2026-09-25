@@ -1,4 +1,4 @@
-"""Recordings (videos/photos) in OneDrive and their link to flights.
+"""Recordings (videos/photos) and their link to flights.
 
 Pure functions only (no Home Assistant, no network) so they are easy to test:
 
@@ -130,20 +130,24 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def _file_ref(item: dict[str, Any]) -> dict[str, Any]:
-    """The part of a stored OneDrive item the frontend needs."""
-    return {
+    """The part of a stored item needed to show or fetch the file."""
+    ref = {
         "item_id": item["id"],
         "name": item["name"],
         "size": item.get("size"),
         "web_url": item.get("web_url"),
     }
+    if item.get("path"):
+        ref["path"] = item["path"]  # local folder: relative to the folder
+    return ref
 
 
 def build_recordings(items: dict[str, dict[str, Any]], tz: tzinfo) -> dict[str, dict[str, Any]]:
-    """Group stored OneDrive items into recordings.
+    """Group stored items into recordings.
 
     ``items`` maps item id to ``{"id", "name", "size", "web_url", "folder",
-    "taken_at", "duration_ms", "width", "height"}`` (see ``onedrive.py``).
+    "taken_at", "duration_ms", "width", "height"}`` (see ``onedrive.py``;
+    ``local_media.py`` adds ``path`` and ``mtime``).
     ``tz`` is the zone the camera clock runs in (Home Assistant's zone).
     Files are grouped per folder, so a re-used DJI counter in another folder
     never merges two shots.

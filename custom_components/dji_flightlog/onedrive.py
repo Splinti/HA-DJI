@@ -10,7 +10,8 @@ from urllib.parse import quote
 import aiohttp
 
 from .const import GRAPH_URL
-from .media import classify_name
+from .media import ROLE_COVER, ROLE_ORIGINAL, ROLE_PROXY, classify_name
+from .media_backend import MediaAuthError, MediaError, MediaNotFound
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ _TIMEOUT = aiohttp.ClientTimeout(total=60)
 _SELECT = "id,name,size,webUrl,file,folder,deleted,parentReference,photo,video,image"
 
 
-class GraphError(Exception):
+class GraphError(MediaError):
     """A Graph request failed."""
 
     def __init__(self, status: int, message: str) -> None:
@@ -27,11 +28,11 @@ class GraphError(Exception):
         self.status = status
 
 
-class GraphAuthError(GraphError):
+class GraphAuthError(GraphError, MediaAuthError):
     """The token was rejected; the user has to sign in again."""
 
 
-class GraphNotFound(GraphError):
+class GraphNotFound(GraphError, MediaNotFound):
     """Item or path does not exist."""
 
 
@@ -215,3 +216,104 @@ def normalize_item(raw: dict[str, Any]) -> dict[str, Any] | None:
         "width": video.get("width") or image.get("width"),
         "height": video.get("height") or image.get("height"),
     }
+
+
+class OneDriveMedia:
+    """Media backend for one folder in OneDrive (delta query where available)."""
+
+    kind = "onedrive"
+    label = "OneDrive"
+
+    def __init__(self, client: OneDriveClient, folder_path: str) -> None:
+        self.client = client
+        self.folder_path = folder_path.strip().strip("/")
+        self._folder_id: str | None = None
+        self._delta_link: str | None = None
+        self._use_delta = True
+
+    @property
+    def folder_display(self) -> str:
+        return f"/{self.folder_path}"
+
+    def load_state(self, data: dict[str, Any]) -> None:
+        self._folder_id = data.get("folder_id")
+        self._delta_link = data.get("delta_link")
+        self._use_delta = data.get("use_delta", True)
+
+    def dump_state(self) -> dict[str, Any]:
+        return {"folder_id": self._folder_id, "delta_link": self._delta_link, "use_delta": self._use_delta}
+
+    # -- sync ----------------------------------------------------------------
+
+    async def async_sync(self, items: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        try:
+            return await self._async_sync(items)
+        except aiohttp.ClientResponseError as err:
+            # Raised by the token refresh when the grant was revoked.
+            if err.status in (400, 401):
+                raise GraphAuthError(err.status, f"token refresh failed: {err.message}") from err
+            raise GraphError(err.status, err.message) from err
+
+    async def _async_sync(self, items: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        if self._folder_id is None:
+            folder = await self.client.async_get_folder(self.folder_path)
+            self._folder_id = folder["id"]
+            self._delta_link = None
+
+        if self._use_delta:
+            try:
+                raw, self._delta_link, full = await self.client.async_delta(self._folder_id, self._delta_link)
+            except GraphAuthError:
+                raise
+            except GraphNotFound:
+                # The folder was deleted or moved; resolve the path again next time.
+                self._folder_id = None
+                raise GraphNotFound(404, f"folder '{self.folder_path}' not found") from None
+            except GraphError as err:
+                _LOGGER.info("OneDrive delta not available (%s), falling back to full listings", err)
+                self._use_delta = False
+                self._delta_link = None
+            else:
+                return self._apply_delta({} if full else items, raw)
+
+        raw = await self.client.async_list_recursive(self._folder_id)
+        return self._apply_delta({}, raw)
+
+    def _apply_delta(
+        self, items: dict[str, dict[str, Any]], raw_items: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        for raw in raw_items:
+            item_id = raw.get("id")
+            if not item_id or item_id == self._folder_id:
+                continue
+            if "deleted" in raw:
+                items.pop(item_id, None)
+                # A deleted folder is not always followed by its children.
+                for key in [k for k, v in items.items() if v.get("folder") == item_id]:
+                    items.pop(key, None)
+                continue
+            item = normalize_item(raw)
+            if item is None:
+                items.pop(item_id, None)
+            else:
+                items[item_id] = item
+        return items
+
+    # -- thumbnails / files ----------------------------------------------------
+
+    async def async_thumbnail(self, rec: dict[str, Any]) -> bytes | None:
+        if cover := rec.get(ROLE_COVER):
+            # Extracted by the sync script from the .OSV (OneDrive cannot
+            # thumbnail 360° originals). Let OneDrive scale it down.
+            data = await self.client.async_thumbnail(cover["item_id"]) or await self.client.async_content(
+                cover["item_id"]
+            )
+            if data:
+                return data
+        for role in (ROLE_PROXY, ROLE_ORIGINAL):
+            if (ref := rec.get(role)) and (data := await self.client.async_thumbnail(ref["item_id"])):
+                return data
+        return None
+
+    async def async_file(self, ref: dict[str, Any]) -> str | None:
+        return await self.client.async_download_url(ref["item_id"])
