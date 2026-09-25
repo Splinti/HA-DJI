@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -147,6 +148,7 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             config_entry=entry,
         )
         self.store = store
+        self._scan_lock = asyncio.Lock()
         self.log_dir = Path(entry.options.get(CONF_LOG_DIR, entry.data[CONF_LOG_DIR]))
         self.api_key: str | None = entry.options.get(CONF_API_KEY, entry.data.get(CONF_API_KEY)) or None
         self.max_track_points = int(
@@ -232,12 +234,14 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         self.store.files[str(path)] = record
         return summary_dict, is_new
 
-    def _scan(self) -> tuple[list[dict[str, Any]], int, bool]:
-        """Blocking full scan. Returns (new flight summaries, pending count, dir ok)."""
+    def _collect(self) -> tuple[list[Path], bool, bool]:
+        """Blocking: list the files that need parsing.
+
+        Returns (files to parse, dir ok, bookkeeping changed).
+        """
         if not self.log_dir.is_dir():
-            return [], 0, False
-        new_flights: list[dict[str, Any]] = []
-        pending = 0
+            return [], False, False
+        todo: list[Path] = []
         present: set[str] = set()
         for path in self._list_log_files():
             present.add(str(path))
@@ -245,20 +249,15 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
                 stat = path.stat()
             except OSError:
                 continue
-            if not self._needs_processing(path, stat):
-                continue
-            summary, is_new = self._process_file(path)
-            if summary is None and str(path) not in self.store.files:
-                pending += 1
-            elif summary is not None and is_new:
-                new_flights.append(summary)
+            if self._needs_processing(path, stat):
+                todo.append(path)
 
         # Forget bookkeeping for files that disappeared (flights are kept:
         # deleting a raw log must not erase the logbook).
-        for known in list(self.store.files):
-            if known not in present:
-                self.store.files.pop(known, None)
-        return new_flights, pending, True
+        gone = [known for known in self.store.files if known not in present]
+        for known in gone:
+            self.store.files.pop(known, None)
+        return todo, True, bool(gone)
 
     async def async_import_file(self, path: Path) -> dict[str, Any] | None:
         """Import a single file on demand (service call)."""
@@ -356,20 +355,58 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
 
     # -- coordinator API ------------------------------------------------------
 
+    async def async_start(self) -> None:
+        """Show the stored flights right away and scan the folder in the background.
+
+        A scan can take minutes (every log is re-read after a parser update),
+        which must neither hold up HA's start nor get lost when HA restarts
+        in the middle of it.
+        """
+        data = self._aggregate()
+        data.log_dir_ok = await self.hass.async_add_executor_job(self.log_dir.is_dir)
+        self.data = data
+        self.config_entry.async_create_background_task(
+            self.hass, self.async_refresh(), f"{DOMAIN} scan {self.log_dir}"
+        )
+
     async def _async_update_data(self) -> FlightData:
+        # The first scan runs in the background, so the scan button can overlap it.
+        async with self._scan_lock:
+            return await self._async_scan()
+
+    async def _async_scan(self) -> FlightData:
         try:
-            new_flights, pending, dir_ok = await self.hass.async_add_executor_job(self._scan)
+            todo, dir_ok, changed = await self.hass.async_add_executor_job(self._collect)
         except OSError as err:
             raise UpdateFailed(f"Scanning {self.log_dir} failed: {err}") from err
 
         if not dir_ok:
             _LOGGER.warning("Log directory %s does not exist (yet)", self.log_dir)
+        if len(todo) > 5:
+            _LOGGER.info("Reading %d flight logs in %s", len(todo), self.log_dir)
 
-        if new_flights:
-            await self.store.async_save()
-            for summary in new_flights:
+        # One file per executor job, saved as it goes: an interrupted scan
+        # resumes where it stopped instead of starting over.
+        imported = 0
+        pending = 0
+        for path in todo:
+            try:
+                summary, is_new = await self.hass.async_add_executor_job(self._process_file, path)
+            except OSError as err:
+                _LOGGER.debug("Skipping %s: %s", path.name, err)
+                continue
+            self.store.async_delay_save()
+            changed = True
+            if summary is None and str(path) not in self.store.files:
+                pending += 1
+            elif summary is not None and is_new:
+                imported += 1
                 self._fire_imported(summary)
-            _LOGGER.info("Imported %d new flight(s) from %s", len(new_flights), self.log_dir)
+
+        if changed:
+            await self.store.async_save()
+        if imported:
+            _LOGGER.info("Imported %d new flight(s) from %s", imported, self.log_dir)
 
         data = self._aggregate()
         data.pending_files = pending
