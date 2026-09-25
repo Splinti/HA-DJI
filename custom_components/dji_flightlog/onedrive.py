@@ -10,7 +10,7 @@ from urllib.parse import quote
 import aiohttp
 
 from .const import GRAPH_URL
-from .media import ROLE_COVER, ROLE_ORIGINAL, ROLE_PROXY, classify_name, is_flight_record
+from .media import ROLE_COVER, ROLE_EQUIRECT, ROLE_ORIGINAL, ROLE_PROXY, classify_name, is_flight_record
 from .media_backend import MediaAuthError, MediaError, MediaNotFound
 
 _LOGGER = logging.getLogger(__name__)
@@ -312,7 +312,8 @@ class OneDriveMedia:
             )
             if data:
                 return data
-        for role in (ROLE_PROXY, ROLE_ORIGINAL):
+        # The 360° render shows a panorama instead of two fisheye circles.
+        for role in (ROLE_EQUIRECT, ROLE_PROXY, ROLE_ORIGINAL):
             if (ref := rec.get(role)) and (data := await self.client.async_thumbnail(ref["item_id"])):
                 return data
         return None

@@ -23,14 +23,22 @@
 
     Per recording:
         .LRF (low-res proxy of the camera)  -> <name>_proxy.mp4 (plays in browsers
-                                               with H.265 support), unless -NoProxy
+                                               with H.265 support), unless -NoProxy.
+                                               With ffmpeg it is remuxed losslessly
+                                               with the index at the start (faststart,
+                                               playback starts sooner), unless -NoFaststart
         .OSV (360° original, Avata 360)     -> copied as is, plus <name>_cover.jpg
                                                (the cover frame embedded in the file;
                                                needs ffmpeg), unless -NoCover
-        -Stitch360                          -> the proxy of a 360° recording is
-                                               re-encoded from dual fisheye to an
-                                               equirectangular H.264 video (ffmpeg,
-                                               slow: roughly real time)
+        -Stitch360                          -> additionally <name>_360.mp4: the dual
+                                               fisheye proxy of a 360° recording
+                                               re-encoded to an equirectangular H.264
+                                               video (ffmpeg, a fraction of the clip
+                                               length up to real time). The integration
+                                               plays it instead of the proxy.
+
+    Files are written under a temporary name and renamed when complete, so an
+    aborted run leaves nothing half-written; the next run redoes what is missing.
 
     Run it manually, or register a scheduled task that polls every few minutes
     (`-Register`). When nothing is attached the script exits immediately.
@@ -46,6 +54,13 @@
 .PARAMETER MediaSource
     Additional folders to take recordings from (searched recursively).
 
+.PARAMETER FisheyeFov
+    Field of view of one fisheye lens in degrees, for -Stitch360 (see Get-StitchFilter).
+
+.PARAMETER FfmpegPath
+    ffmpeg.exe to use. Default: ffmpeg from PATH. Without ffmpeg proxies are
+    copied as they are, and there are no covers and no stitching.
+
 .PARAMETER Register / Unregister
     Create / remove a scheduled task "DJI Flight Record Sync" that runs this
     script every -IntervalMinutes minutes for the current user.
@@ -53,6 +68,7 @@
 .EXAMPLE
     .\Sync-DjiFlightRecords.ps1 -Target '\\homeassistant\share\dji\flightrecords'
     .\Sync-DjiFlightRecords.ps1 -MediaTarget "$env:OneDrive\Drohne\Medien" -MediaSource 'E:\DJI Avata 360' -WhatIf
+    .\Sync-DjiFlightRecords.ps1 -MediaTarget '\\nas\drohne\medien' -Stitch360 -FfmpegPath 'C:\ffmpeg\bin\ffmpeg.exe'
     .\Sync-DjiFlightRecords.ps1 -Register -IntervalMinutes 10 -MediaTarget "$env:OneDrive\Drohne\Medien"
 #>
 [CmdletBinding()]
@@ -62,8 +78,9 @@ param(
     [string[]]$MediaSource = @(),
     [switch]$NoProxy,
     [switch]$NoCover,
+    [switch]$NoFaststart,
     [switch]$Stitch360,
-    [int]$FisheyeFov = 190,
+    [double]$FisheyeFov = 194.5,
     [string]$FfmpegPath = '',
     [switch]$Register,
     [switch]$Unregister,
@@ -110,6 +127,7 @@ if ($Register) {
         if ($MediaSource.Count) { $argList += " -MediaSource `"$($MediaSource -join ';')`"" }
         if ($NoProxy) { $argList += ' -NoProxy' }
         if ($NoCover) { $argList += ' -NoCover' }
+        if ($NoFaststart) { $argList += ' -NoFaststart' }
         if ($Stitch360) { $argList += " -Stitch360 -FisheyeFov $FisheyeFov" }
         if ($FfmpegPath) { $argList += " -FfmpegPath `"$FfmpegPath`"" }
     }
@@ -304,6 +322,59 @@ function Invoke-Ffmpeg {
     if ($LASTEXITCODE -ne 0) { throw "ffmpeg failed: $output" }
 }
 
+function Get-VideoCodec {
+    <# Codec of the first video stream (hevc, h264, ...) from ffmpeg's stream list, or $null. #>
+    param([string]$Path)
+    # ffmpeg without an output file exits with an error and writes to stderr.
+    $ErrorActionPreference = 'Continue'
+    $info = & $script:Ffmpeg -hide_banner -i $Path 2>&1 | ForEach-Object { "$_" }
+    foreach ($line in $info) {
+        if ($line -match 'Stream #\d+:\d+.*: Video: (\w+)') { return $Matches[1] }
+    }
+    return $null
+}
+
+function Publish-File {
+    <# Moves a finished file into place: under a temporary name next to the target
+       first (a move to a network share is a copy), then renamed in one step.
+       The integration ignores names starting with a dot. #>
+    param([string]$Source, [string]$Dest)
+    $part = Join-Path (Split-Path $Dest) ('.' + (Split-Path $Dest -Leaf) + '.partial')
+    Move-Item -LiteralPath $Source -Destination $part -Force
+    Move-Item -LiteralPath $part -Destination $Dest -Force
+}
+
+function Save-Proxy {
+    <# LRF -> <name>_proxy.mp4, remuxed losslessly with faststart (moov first).
+       Only the video (and audio, if any): the DJI metadata tracks (djmd/camd)
+       cannot go into an MP4 and are a fifth of the file. hvc1 is the H.265
+       tag Safari and Chrome play. Without ffmpeg or with -NoFaststart: copied as is. #>
+    param([string]$LrfPath, [string]$DestPath)
+    $tmp = Join-Path $staging ([IO.Path]::GetFileName($DestPath))
+    if ($script:Ffmpeg -and -not $NoFaststart) {
+        try {
+            $tag = if ((Get-VideoCodec -Path $LrfPath) -eq 'hevc') { @('-tag:v', 'hvc1') } else { @() }
+            Invoke-Ffmpeg (@('-i', $LrfPath, '-map', '0:v:0', '-map', '0:a?', '-c', 'copy') + $tag +
+                @('-movflags', '+faststart', '-f', 'mp4', $tmp))
+            Publish-File -Source $tmp -Dest $DestPath
+            return
+        } catch {
+            Write-Log "Remuxing $LrfPath failed, copying it as is: $($_.Exception.Message)"
+        }
+    }
+    Copy-Item -LiteralPath $LrfPath -Destination $tmp -Force
+    Publish-File -Source $tmp -Dest $DestPath
+}
+
+function Get-StitchFilter {
+    <# ffmpeg filter from the dual fisheye 360° proxy to equirectangular.
+       The lenses point up (left circle) and down (right circle), the drone's
+       front is at the bottom of both circles: pitch=-90 with roll=180 puts the
+       sky up and the front in the middle of the picture. 194.5 degrees gave the
+       cleanest seam on a real Avata 360 proxy. #>
+    return "v360=input=dfisheye:output=equirect:ih_fov=${FisheyeFov}:iv_fov=${FisheyeFov}:pitch=-90:roll=180"
+}
+
 function Save-Cover {
     <# <base>_cover.jpg: the cover frame embedded in 360° originals, else a frame of the video. #>
     param([string]$VideoPath, [string]$CoverPath)
@@ -319,20 +390,20 @@ function Save-Cover {
     } else {
         Invoke-Ffmpeg @('-ss', '2', '-i', $VideoPath, '-frames:v', '1', '-vf', 'scale=960:-2', '-q:v', '4', $tmp)
     }
-    Move-Item -Path $tmp -Destination $CoverPath -Force
+    Publish-File -Source $tmp -Dest $CoverPath
 }
 
-function Save-StitchedProxy {
-    <# Dual fisheye LRF -> equirectangular H.264 (the lenses point up and down, hence pitch=90). #>
+function Save-Equirect {
+    <# Dual fisheye LRF -> <name>_360.mp4, equirectangular H.264 that every browser plays. #>
     param([string]$LrfPath, [string]$DestPath)
     $tmp = Join-Path $staging ([IO.Path]::GetFileName($DestPath))
     Invoke-Ffmpeg @(
         '-i', $LrfPath, '-map', '0:v:0', '-map', '0:a?',
-        '-vf', "v360=input=dfisheye:output=equirect:ih_fov=${FisheyeFov}:iv_fov=${FisheyeFov}:pitch=90",
+        '-vf', (Get-StitchFilter),
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-movflags', '+faststart', $tmp
     )
-    Move-Item -Path $tmp -Destination $DestPath -Force
+    Publish-File -Source $tmp -Dest $DestPath
 }
 
 function Sync-Media {
@@ -344,8 +415,8 @@ function Sync-Media {
         return
     }
     $script:Ffmpeg = Find-Ffmpeg
-    if (-not $script:Ffmpeg -and (-not $NoCover -or $Stitch360)) {
-        Write-Log 'ffmpeg not found (PATH or -FfmpegPath): no cover images, no stitching.'
+    if (-not $script:Ffmpeg -and (-not $NoCover -or $Stitch360 -or -not $NoFaststart)) {
+        Write-Log 'ffmpeg not found (PATH or -FfmpegPath): no cover images, no stitching, proxies copied as they are.'
     }
     # Stems of 360° originals, to recognise their proxies.
     $stems360 = @{}
@@ -358,52 +429,74 @@ function Sync-Media {
         $stem = [IO.Path]::GetFileNameWithoutExtension($f.Name)
         $ext = [IO.Path]::GetExtension($f.Name).ToLower()
         $destDir = Get-MediaDestDir -Name $f.Name
-        $isProxy = $ext -eq '.lrf'
-        if ($isProxy -and $NoProxy) { continue }
-        $destName = if ($isProxy) { "${stem}_proxy.mp4" } else { $f.Name }
-        $dest = Join-Path $destDir $destName
-        $stitch = $isProxy -and $Stitch360 -and $script:Ffmpeg -and $stems360.ContainsKey($stem)
-
-        # A stitched proxy has another size than the LRF; existence is enough.
-        $done = (Test-Path $dest) -and ($stitch -or (Get-Item $dest).Length -eq $f.Size)
+        # An LRF becomes <stem>_proxy.mp4 and, for 360° recordings with -Stitch360,
+        # <stem>_360.mp4. Both differ in size from the LRF (remuxed / re-encoded),
+        # so existence is enough; they only appear complete (see Publish-File).
+        $dest = $null; $proxy = $null; $equirect = $null
+        if ($ext -eq '.lrf') {
+            if (-not $NoProxy) { $proxy = Join-Path $destDir "${stem}_proxy.mp4" }
+            # The original may have been copied by an earlier run and be gone from the card.
+            $is360 = $stems360.ContainsKey($stem) -or (Test-Path (Join-Path $destDir "$stem.OSV"))
+            if ($Stitch360 -and $script:Ffmpeg -and $is360) { $equirect = Join-Path $destDir "${stem}_360.mp4" }
+        } else {
+            $dest = Join-Path $destDir $f.Name
+        }
+        $needCopy = $dest -and -not ((Test-Path $dest) -and (Get-Item $dest).Length -eq $f.Size)
+        $needProxy = $proxy -and -not (Test-Path $proxy)
+        $needEquirect = $equirect -and -not (Test-Path $equirect)
         $wantCover = (-not $NoCover) -and $script:Ffmpeg -and ($ext -in '.osv', '.mp4', '.mov')
         $cover = Join-Path $destDir "${stem}_cover.jpg"
         $needCover = $wantCover -and -not (Test-Path $cover)
-        if ($done -and -not $needCover) { continue }
+        if (-not ($needCopy -or $needProxy -or $needEquirect -or $needCover)) { continue }
 
         if ($WhatIf) {
-            if (-not $done) { Write-Log "Would copy $($f.Name) ($([math]::Round($f.Size / 1MB)) MB) -> $dest$(if ($stitch) { ' (stitched)' })" }
+            $mb = [math]::Round($f.Size / 1MB)
+            if ($needCopy) { Write-Log "Would copy $($f.Name) ($mb MB) -> $dest" }
+            if ($needProxy) {
+                $how = if ($script:Ffmpeg -and -not $NoFaststart) { ' (remuxed, faststart)' } else { '' }
+                Write-Log "Would copy $($f.Name) ($mb MB) -> $proxy$how"
+            }
+            if ($needEquirect) { Write-Log "Would stitch $($f.Name) -> $equirect" }
             if ($needCover) { Write-Log "Would extract $cover" }
             continue
         }
+        $local = $null
         try {
             if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-            $local = $null
-            if (-not $done) {
-                $local = Get-LocalCopy -File $f
-                if ($stitch) {
-                    Write-Log "Stitching $($f.Name) (this takes a while)"
-                    Save-StitchedProxy -LrfPath $local -DestPath $dest
-                } elseif ($f.Path) {
-                    # Copy next to the target first so OneDrive never uploads a half-written file.
-                    $tmp = Join-Path $staging $destName
+            if ($needCopy -or $needProxy -or $needEquirect) { $local = Get-LocalCopy -File $f }
+            if ($needCopy) {
+                if ($f.Path) {
+                    # Copy to staging first so OneDrive never uploads a half-written file.
+                    $tmp = Join-Path $staging $f.Name
                     Copy-Item -LiteralPath $f.Path -Destination $tmp -Force
-                    Move-Item -LiteralPath $tmp -Destination $dest -Force
+                    Publish-File -Source $tmp -Dest $dest
                 } else {
-                    Move-Item -LiteralPath $local -Destination $dest -Force
+                    Publish-File -Source $local -Dest $dest
                     $local = $dest
                 }
                 $copied++
                 Write-Log "Copied $($f.Name) from $($f.Source) -> $dest"
             }
+            if ($needProxy) {
+                Save-Proxy -LrfPath $local -DestPath $proxy
+                $copied++
+                Write-Log "Copied $($f.Name) from $($f.Source) -> $proxy"
+            }
+            if ($needEquirect) {
+                Write-Log "Stitching $($f.Name) (this takes a while)"
+                Save-Equirect -LrfPath $local -DestPath $equirect
+                $copied++
+                Write-Log "Stitched $($f.Name) -> $equirect"
+            }
             if ($needCover) {
                 Save-Cover -VideoPath $(if ($local -and (Test-Path $local)) { $local } else { $dest }) -CoverPath $cover
                 Write-Log "Cover $cover"
             }
-            # Drop MTP staging copies that were only needed for ffmpeg.
-            if ($local -and -not $f.Path -and $local -ne $dest -and (Test-Path $local)) { Remove-Item -LiteralPath $local -Force }
         } catch {
             Write-Log "ERROR $($f.Name): $($_.Exception.Message)"
+        } finally {
+            # Drop MTP staging copies that were only needed for ffmpeg.
+            if ($local -and -not $f.Path -and $local -ne $dest -and (Test-Path $local)) { Remove-Item -LiteralPath $local -Force }
         }
     }
     Write-Log "Recordings done, $copied new file(s)."

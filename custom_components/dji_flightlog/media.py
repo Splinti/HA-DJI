@@ -4,7 +4,8 @@ Pure functions only (no Home Assistant, no network) so they are easy to test:
 
 * :func:`classify_name` tells what a file is from its name alone.
 * :func:`build_recordings` groups the files of one shot (original, proxy,
-  cover image, raw, subtitle telemetry) into one *recording*.
+  equirectangular render, cover image, raw, subtitle telemetry) into one
+  *recording*.
 * :func:`match_recordings` assigns recordings to flights by time.
 
 Naming conventions handled (DJI cameras write the local time of the
@@ -13,6 +14,7 @@ recording start into the name)::
     DJI_20260921190306_0001_D.OSV        360° original (Avata 360: two fisheye streams)
     DJI_20260921190306_0001_D.LRF        low-res proxy (MP4 container, HEVC)
     DJI_20260921190306_0001_D_proxy.mp4  proxy renamed by the PC sync script
+    DJI_20260921190306_0001_D_360.mp4    360° proxy stitched to equirect (H.264) by the sync script
     DJI_20260921190306_0001_D_cover.jpg  cover frame extracted by the PC sync script
     DJI_20260921190306_0001_D.MP4        normal video
     DJI_20260921190306_0001_D.JPG/.DNG   photo / raw photo
@@ -34,13 +36,20 @@ from typing import Any
 
 ROLE_ORIGINAL = "original"
 ROLE_PROXY = "proxy"
+ROLE_EQUIRECT = "equirect"  # 360° proxy stitched to an equirectangular video
 ROLE_COVER = "cover"
 ROLE_RAW = "raw"
 ROLE_SRT = "srt"
 
+_ROLES = (ROLE_ORIGINAL, ROLE_PROXY, ROLE_EQUIRECT, ROLE_COVER, ROLE_RAW, ROLE_SRT)
+
 KIND_VIDEO = "video"
 KIND_360 = "360"
 KIND_PHOTO = "photo"
+
+# How the browser has to project the played file (see media_coordinator.play_projection).
+PROJECTION_EQUIRECT = "equirect"
+PROJECTION_DFISHEYE = "dfisheye"  # two fisheye circles side by side (the raw 360° proxy)
 
 _EXT_VIDEO = {".mp4", ".mov"}
 _EXT_360 = {".osv", ".360", ".insv"}
@@ -50,12 +59,12 @@ _EXT_PROXY = {".lrf"}
 _EXT_SRT = {".srt"}
 MEDIA_EXTENSIONS = _EXT_VIDEO | _EXT_360 | _EXT_PHOTO | _EXT_RAW | _EXT_PROXY | _EXT_SRT
 
-# DJI_<yyyymmddHHMMSS>_<nnnn>[_<lens/type letter>][_proxy|_cover]
+# DJI_<yyyymmddHHMMSS>_<nnnn>[_<lens/type letter>][_proxy|_cover|_360]
 _DJI_NAME = re.compile(
-    r"^(?P<key>DJI_(?P<ts>\d{14})_(?P<seq>\d{3,4})(?:_[A-Z])?)(?:_(?P<suffix>proxy|cover))?$",
+    r"^(?P<key>DJI_(?P<ts>\d{14})_(?P<seq>\d{3,4})(?:_[A-Z])?)(?:_(?P<suffix>proxy|cover|360))?$",
     re.IGNORECASE,
 )
-_SUFFIX = re.compile(r"^(?P<key>.+?)[_-](?P<suffix>proxy|cover)$", re.IGNORECASE)
+_SUFFIX = re.compile(r"^(?P<key>.+?)[_-](?P<suffix>proxy|cover|360)$", re.IGNORECASE)
 # 20260921_190306, 2026-09-21 19.03.06, 20260921190306, ...
 _GENERIC_TS = re.compile(
     r"(?<!\d)(?P<y>20\d{2})[-_.]?(?P<mo>\d{2})[-_.]?(?P<d>\d{2})[-_. T]?"
@@ -108,6 +117,10 @@ def classify_name(name: str) -> NameInfo | None:
         return NameInfo(key, ROLE_COVER, None, local_time)
     if ext in _EXT_PROXY or (suffix == "proxy" and ext in _EXT_VIDEO):
         return NameInfo(key, ROLE_PROXY, None, local_time)
+    if suffix == "360" and ext in _EXT_VIDEO:
+        # No kind: next to an .OSV it changes nothing, without one the
+        # recording still becomes 360° (see build_recordings).
+        return NameInfo(key, ROLE_EQUIRECT, None, local_time)
     if ext in _EXT_SRT:
         return NameInfo(key, ROLE_SRT, None, local_time)
     if ext in _EXT_RAW:
@@ -172,10 +185,11 @@ def build_recordings(items: dict[str, dict[str, Any]], tz: tzinfo) -> dict[str, 
     recordings: dict[str, dict[str, Any]] = {}
     for (_folder, _key), group in groups.items():
         files = group["files"]
-        main = files.get(ROLE_ORIGINAL) or files.get(ROLE_RAW) or files.get(ROLE_PROXY)
+        main = _main_file(files)
         if main is None:
             continue  # only a cover or subtitles
-        kind = group["kind"] or KIND_VIDEO  # proxy only
+        # Proxy only: a stitched 360° render tells what it was.
+        kind = group["kind"] or (KIND_360 if ROLE_EQUIRECT in files else KIND_VIDEO)
 
         if group["local_time"] is not None:
             start = group["local_time"].replace(tzinfo=tz)
@@ -190,7 +204,7 @@ def build_recordings(items: dict[str, dict[str, Any]], tz: tzinfo) -> dict[str, 
         duration_ms = next(
             (
                 f.get("duration_ms")
-                for f in (files.get(ROLE_ORIGINAL), files.get(ROLE_PROXY))
+                for f in (files.get(ROLE_ORIGINAL), files.get(ROLE_PROXY), files.get(ROLE_EQUIRECT))
                 if f and f.get("duration_ms")
             ),
             None,
@@ -207,6 +221,14 @@ def build_recordings(items: dict[str, dict[str, Any]], tz: tzinfo) -> dict[str, 
             **{role: _file_ref(f) for role, f in files.items()},
         }
     return recordings
+
+
+def _main_file(files: dict[str, Any]) -> dict[str, Any] | None:
+    """The file that names a recording (its id, name and size come from it)."""
+    for role in (ROLE_ORIGINAL, ROLE_RAW, ROLE_PROXY, ROLE_EQUIRECT):
+        if files.get(role):
+            return files[role]
+    return None
 
 
 def match_recordings(
@@ -269,7 +291,7 @@ def is_flight_record(name: str) -> bool:
 
 
 def _dedupe_key(rec: dict[str, Any]) -> tuple[str, int] | None:
-    main = rec.get(ROLE_ORIGINAL) or rec.get(ROLE_RAW) or rec.get(ROLE_PROXY) or {}
+    main = _main_file(rec) or {}
     size = main.get("size")
     return (rec["name"].lower(), size) if size else None
 
@@ -300,4 +322,4 @@ def duplicate_recordings(sources: list[dict[str, dict[str, Any]]]) -> set[str]:
 
 
 def _richness(rec: dict[str, Any]) -> int:
-    return sum(1 for role in (ROLE_ORIGINAL, ROLE_PROXY, ROLE_COVER, ROLE_RAW, ROLE_SRT) if rec.get(role))
+    return sum(1 for role in _ROLES if rec.get(role))

@@ -26,7 +26,15 @@ from typing import Any, BinaryIO
 
 from homeassistant.core import HomeAssistant
 
-from .media import KIND_PHOTO, ROLE_COVER, ROLE_ORIGINAL, ROLE_PROXY, classify_name, is_flight_record
+from .media import (
+    KIND_PHOTO,
+    ROLE_COVER,
+    ROLE_EQUIRECT,
+    ROLE_ORIGINAL,
+    ROLE_PROXY,
+    classify_name,
+    is_flight_record,
+)
 from .media_backend import MediaError, MediaNotFound
 
 _LOGGER = logging.getLogger(__name__)
@@ -266,7 +274,8 @@ class LocalFolderMedia:
             data = await self.hass.async_add_executor_job(_read_small, path, _MAX_RAW_THUMB_BYTES)
             if data:
                 return data
-        for role in (ROLE_PROXY, ROLE_ORIGINAL):
+        # The 360° render shows a panorama instead of two fisheye circles.
+        for role in (ROLE_EQUIRECT, ROLE_PROXY, ROLE_ORIGINAL):
             if (ref := rec.get(role)) and (path := self.path(ref)):
                 seek = None if rec.get("kind") == KIND_PHOTO and role == ROLE_ORIGINAL else 1.0
                 data = await ffmpeg_thumbnail(binary, path, seek_s=seek)

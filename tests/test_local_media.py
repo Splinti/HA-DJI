@@ -197,6 +197,7 @@ async def test_local_folder_flow_and_playback(
     (media_json,) = [m for m in body["flights"][0]["media"] if m["id"] == video["id"]]
     assert media_json["web_url"] is None
     assert media_json["play"].startswith(f"{base}/play?authSig=")
+    assert media_json["projection"] is None
     assert media_json["download"].startswith(f"{base}/original?authSig=")
     assert body["media"]["accounts"][0]["source"] == "local"
 

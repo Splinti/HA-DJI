@@ -37,6 +37,7 @@ from .media_coordinator import (
     media_index,
     media_status,
     original_ref,
+    play_projection,
     playable_ref,
 )
 from .parser import _downsample, track_to_geojson, track_to_gpx, track_to_kml
@@ -360,6 +361,8 @@ def _public_recording(hass: HomeAssistant, rec: dict[str, Any]) -> dict[str, Any
         "has_raw": bool(rec.get(ROLE_RAW)),
         "thumb": async_sign_path(hass, f"{base}/thumb", ttl),
         "play": async_sign_path(hass, f"{base}/play", ttl) if playable_ref(rec) else None,
+        # "equirect" / "dfisheye": play as a 360° video; None: flat.
+        "projection": play_projection(rec),
         "download": async_sign_path(hass, f"{base}/original", ttl) if download else None,
     }
 
