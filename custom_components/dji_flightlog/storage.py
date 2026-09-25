@@ -50,10 +50,20 @@ class FlightStore:
                     flight[key] = clean_place(flight[key])
         await self._hass.async_add_executor_job(partial(self._tracks_dir.mkdir, parents=True, exist_ok=True))
 
+    def _data(self) -> dict[str, Any]:
+        return {
+            "flights": self.flights,
+            "files": self.files,
+            "spots": self.spots,
+            "dismissed": self.dismissed,
+        }
+
     async def async_save(self) -> None:
-        await self._store.async_save(
-            {"flights": self.flights, "files": self.files, "spots": self.spots, "dismissed": self.dismissed}
-        )
+        await self._store.async_save(self._data())
+
+    def async_delay_save(self, delay: float = 10) -> None:
+        """Save soon; HA also writes it out when it stops."""
+        self._store.async_delay_save(self._data, delay)
 
     # -- tracks -------------------------------------------------------------
 

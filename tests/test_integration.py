@@ -99,7 +99,7 @@ async def setup_entry(hass: HomeAssistant, log_dir: Path, tmp_path: Path):
         entry.add_to_hass(hass)
         with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
             assert await hass.config_entries.async_setup(entry.entry_id)
-            await hass.async_block_till_done()
+            await hass.async_block_till_done(wait_background_tasks=True)
         return entry
 
     return _setup
@@ -157,13 +157,13 @@ async def test_geo_location_off_by_default(hass: HomeAssistant, setup_entry):
     # Turning it on creates them ...
     with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
         hass.config_entries.async_update_entry(entry, options={**entry.data, CONF_GEO_LOCATION_LIMIT: 10})
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
     assert len(hass.states.async_all("geo_location")) == 2
 
     # ... and turning it off again leaves nothing behind, registry included.
     with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
         hass.config_entries.async_update_entry(entry, options={**entry.data, CONF_GEO_LOCATION_LIMIT: 0})
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.async_all("geo_location") == []
     registry = er.async_get(hass)
     assert [
@@ -175,7 +175,7 @@ async def test_event_and_rescan(hass: HomeAssistant, setup_entry, log_dir: Path)
     events = []
     hass.bus.async_listen(EVENT_FLIGHT_IMPORTED, lambda e: events.append(e))
     await setup_entry(1)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert len(events) == 1
     assert events[0].data["flight_id"] == "flight0000"
     assert events[0].data["status"] == STATUS_OK
@@ -219,7 +219,7 @@ async def test_unsupported_file_is_reported(hass: HomeAssistant, setup_entry, lo
         await hass.services.async_call(
             "button", "press", {"entity_id": "button.dji_flight_log_scan_log_folder"}, blocking=True
         )
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
         m.assert_not_called()  # never read a 60 MB bundle into memory
 
     state = hass.states.get("sensor.dji_flight_log_unsupported_files")
@@ -237,7 +237,7 @@ async def test_scan_button(hass: HomeAssistant, setup_entry, log_dir: Path):
         await hass.services.async_call(
             "button", "press", {"entity_id": "button.dji_flight_log_scan_log_folder"}, blocking=True
         )
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get("sensor.dji_flight_log_flights").state == "2"
 
 
@@ -341,7 +341,7 @@ async def test_saved_spots(hass: HomeAssistant, setup_entry, hass_client):
     assert spot["name"] == "Wasserkuppe"
     assert spot["note"] == ""
     assert spot["maps_url"] == "https://www.google.com/maps/dir/?api=1&destination=50.497900,9.937600"
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     state = hass.states.get("sensor.dji_flight_log_saved_spots")
     assert state.state == "1"
@@ -365,12 +365,12 @@ async def test_saved_spots(hass: HomeAssistant, setup_entry, hass_client):
     # Survives a reload of the entry (persisted in the store).
     entry = hass.config_entries.async_entries(DOMAIN)[0]
     assert await hass.config_entries.async_reload(entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get("sensor.dji_flight_log_saved_spots").state == "1"
 
     resp = await client.delete(f"/api/{DOMAIN}/spots/{spot['id']}")
     assert resp.status == 200
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get("sensor.dji_flight_log_saved_spots").state == "0"
     resp = await client.delete(f"/api/{DOMAIN}/spots/{spot['id']}")
     assert resp.status == 404
@@ -406,7 +406,7 @@ async def test_upload(hass: HomeAssistant, setup_entry, hass_client, log_dir: Pa
         assert res["status"] == "imported"
         assert res["saved_as"] == name
         assert res["flight"]["flight_id"] == "flight0005"
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
         assert (log_dir / name).read_bytes() == b"\x02" * 50
         assert len(events) == 1
         assert hass.states.get("sensor.dji_flight_log_flights").state == "2"
@@ -437,7 +437,7 @@ async def test_upload(hass: HomeAssistant, setup_entry, hass_client, log_dir: Pa
         assert dat == {"file": "DJI_Avata_360.DAT", "status": "rejected", "reason": "not_txt"}
         assert notes["status"] == "failed"  # _fake_parse cannot read it
         assert (log_dir / "notes.txt").is_file()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert len(events) == 2
     assert not list(log_dir.glob(".*"))  # no temp files left behind
 
@@ -477,7 +477,7 @@ async def test_missing_dir_does_not_break_setup(hass: HomeAssistant, tmp_path: P
     entry = MockConfigEntry(domain=DOMAIN, data={CONF_LOG_DIR: str(tmp_path / "missing")}, unique_id=DOMAIN)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get("sensor.dji_flight_log_flights").state == "0"
     li = hass.states.get("sensor.dji_flight_log_last_import")
     assert li.attributes["log_dir_ok"] is False
@@ -532,7 +532,7 @@ async def test_lovelace_resource_registered(hass: HomeAssistant, setup_entry):
     entry = hass.config_entries.async_entries(DOMAIN)[0]
     with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
         await hass.config_entries.async_reload(entry.entry_id)
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
     urls = [r["url"] for r in resources.async_items()]
     assert sum(u.startswith("/dji_flightlog_static/") for u in urls) == 1
 
@@ -564,7 +564,7 @@ async def test_pre_flight_notices(hass: HomeAssistant, setup_entry, hass_client)
         incident_actions=["SMART_POWER_GO_HOME"],
     )
     coordinator._publish()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     codes = [(i["code"], i["flight_id"]) for i in coordinator.data.attention]
     assert codes == [
         ("incident", "flight0002"),
@@ -583,7 +583,7 @@ async def test_pre_flight_notices(hass: HomeAssistant, setup_entry, hass_client)
     resp = await client.post(f"/api/{DOMAIN}/attention/dismiss", json={"keys": [sd_key, "gone:flight9999"]})
     assert resp.status == 200
     assert [i["code"] for i in (await resp.json())["attention"]] == ["incident", "battery_hot"]
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get("sensor.dji_flight_log_pre_flight_notices").state == "2"
     # Unknown keys are not kept.
     assert coordinator.store.dismissed == [sd_key]
@@ -638,14 +638,19 @@ async def test_outdated_parser_reparses_without_event(hass: HomeAssistant, setup
 
     events = []
     hass.bus.async_listen(EVENT_FLIGHT_IMPORTED, events.append)
-    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as parse:
+    with (
+        patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as parse,
+        patch.object(coordinator.store, "async_save", wraps=coordinator.store.async_save) as save,
+    ):
         await coordinator.async_refresh()
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
 
     assert parse.call_count == 2
     assert coordinator.data.flights["flight0001"]["duration_s"] == 50.0
     assert all(r["parser"] == PARSER_VERSION for r in coordinator.store.files.values())
     assert events == []
+    # Saved although no flight is new, or every restart would parse them all again.
+    assert save.called
 
     # Up to date now: the next scan leaves the files alone.
     with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as parse:
@@ -690,7 +695,7 @@ async def test_api_key_added_later_backfills_tracks(hass: HomeAssistant, log_dir
     entry.add_to_hass(hass)
     with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=parse):
         assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
 
     coordinator = hass.data[DOMAIN][entry.entry_id]
     assert coordinator.data.flights["flight0000"]["status"] == STATUS_HEADER_ONLY
@@ -702,7 +707,7 @@ async def test_api_key_added_later_backfills_tracks(hass: HomeAssistant, log_dir
         hass.config_entries.async_update_entry(
             entry, options={CONF_LOG_DIR: str(log_dir), CONF_API_KEY: "KEY"}
         )
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
 
     coordinator = hass.data[DOMAIN][entry.entry_id]
     flight = coordinator.data.flights["flight0000"]
@@ -742,7 +747,7 @@ async def test_sidebar_panel(hass: HomeAssistant, setup_entry, hass_client):
     # Reloading must not raise "panel already registered".
     with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
         await hass.config_entries.async_reload(entry.entry_id)
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
     assert PANEL_URL_PATH in hass.data[DATA_PANELS]
 
     # Turning the option off removes the sidebar entry.
@@ -751,5 +756,5 @@ async def test_sidebar_panel(hass: HomeAssistant, setup_entry, hass_client):
             entry,
             options={**entry.data, CONF_SIDEBAR_PANEL: False},
         )
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
     assert PANEL_URL_PATH not in hass.data[DATA_PANELS]
