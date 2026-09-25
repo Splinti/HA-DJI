@@ -16,7 +16,9 @@ from aiohttp import BodyPartReader, web
 from homeassistant.components.http import HomeAssistantView, require_admin
 from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 
+from . import pilots as pilot_utils
 from . import spots as spot_utils
 from .const import (
     DOMAIN,
@@ -46,6 +48,9 @@ _LOGGER = logging.getLogger(__name__)
 
 API_BASE = f"/api/{DOMAIN}"
 
+MAX_NOTE_LEN = 2000
+NOTE_SCHEMA = vol.Schema({vol.Required("note"): vol.All(cv.string, vol.Strip, vol.Length(max=MAX_NOTE_LEN))})
+
 
 def _coordinator(hass: HomeAssistant) -> FlightLogCoordinator | None:
     entries = hass.data.get(DOMAIN, {})
@@ -55,11 +60,19 @@ def _coordinator(hass: HomeAssistant) -> FlightLogCoordinator | None:
     return None
 
 
-def _filter_flights(coordinator: FlightLogCoordinator, query: Any) -> list[dict[str, Any]]:
+def _user_id(request: web.Request) -> str | None:
+    user = request.get("hass_user")
+    return user.id if user else None
+
+
+def _filter_flights(
+    coordinator: FlightLogCoordinator, query: Any, user_id: str | None = None
+) -> list[dict[str, Any]]:
     flights = list(coordinator.data.flights.values()) if coordinator.data else []
     since = query.get("since")
     until = query.get("until")
     aircraft = query.get("aircraft")
+    pilot = query.get("pilot")
     ids = query.get("ids")
     if since:
         flights = [f for f in flights if f["start_time"] >= since]
@@ -73,6 +86,11 @@ def _filter_flights(coordinator: FlightLogCoordinator, query: Any) -> list[dict[
             if needle in (f.get("aircraft_name") or "").lower()
             or needle == (f.get("aircraft_sn") or "").lower()
         ]
+    if pilot:
+        # Unknown pilot (or "me" without a linked pilot): no flights rather than all of them.
+        pilot_id = pilot_utils.resolve(pilot, coordinator.store.pilots, user_id)
+        wanted_pilot = None if pilot_id == pilot_utils.NO_PILOT else pilot_id
+        flights = [f for f in flights if pilot_id is not None and f.get("pilot_id") == wanted_pilot]
     if ids:
         wanted = set(ids.split(","))
         flights = [f for f in flights if f["flight_id"] in wanted]
@@ -96,9 +114,10 @@ class FlightsView(HomeAssistantView):
             return self.json_message("Integration not ready", status_code=503)
         hass: HomeAssistant = request.app["hass"]
         data = coordinator.data
-        flights = _filter_flights(coordinator, request.query)
+        flights = _filter_flights(coordinator, request.query, _user_id(request))
         body: dict[str, Any] = {
             "aircraft": {sn: a.as_dict() for sn, a in data.aircraft.items()},
+            "pilots": pilot_utils.sorted_pilots(coordinator.store.pilots),
             "totals": data.totals.as_dict(),
             "attention": data.attention,
             "last_import": data.last_import,
@@ -127,7 +146,7 @@ class TracksView(HomeAssistantView):
         coordinator = _coordinator(hass)
         if coordinator is None or coordinator.data is None:
             return self.json_message("Integration not ready", status_code=503)
-        flights = _filter_flights(coordinator, request.query)
+        flights = _filter_flights(coordinator, request.query, _user_id(request))
         max_points = int(request.query.get("max_points", "0") or 0)
 
         def _load() -> list[dict[str, Any]]:
@@ -249,6 +268,137 @@ class SpotView(HomeAssistantView):
             return self.json_message("Unknown spot", status_code=404)
         await _spots_changed(coordinator)
         return self.json({"deleted": spot_id})
+
+
+class PilotsView(HomeAssistantView):
+    """List pilots or add one (admins)."""
+
+    url = f"{API_BASE}/pilots"
+    name = f"api:{DOMAIN}:pilots"
+    requires_auth = True
+
+    async def get(self, request: web.Request) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None:
+            return self.json_message("Integration not ready", status_code=503)
+        return self.json({"pilots": pilot_utils.sorted_pilots(coordinator.store.pilots)})
+
+    @require_admin
+    async def post(self, request: web.Request) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None:
+            return self.json_message("Integration not ready", status_code=503)
+        try:
+            data = pilot_utils.CREATE_SCHEMA(await request.json())
+        except (ValueError, vol.Invalid) as err:
+            return self.json_message(f"Invalid pilot: {err}", status_code=400)
+        pilot = pilot_utils.new_pilot(data)
+        pilots = coordinator.store.pilots
+        pilots[pilot["id"]] = pilot
+        pilot_utils.claim(pilots, pilot)
+        await coordinator.async_flights_changed()
+        return self.json({"pilot": pilot}, status_code=201)
+
+
+class PilotView(HomeAssistantView):
+    """Edit or delete one pilot (admins)."""
+
+    url = f"{API_BASE}/pilots/{{pilot_id}}"
+    name = f"api:{DOMAIN}:pilot"
+    requires_auth = True
+
+    @require_admin
+    async def patch(self, request: web.Request, pilot_id: str) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None:
+            return self.json_message("Integration not ready", status_code=503)
+        pilots = coordinator.store.pilots
+        pilot = pilots.get(pilot_id)
+        if pilot is None:
+            return self.json_message("Unknown pilot", status_code=404)
+        try:
+            data = pilot_utils.UPDATE_SCHEMA(await request.json())
+        except (ValueError, vol.Invalid) as err:
+            return self.json_message(f"Invalid pilot: {err}", status_code=400)
+        pilot.update(data)
+        pilot_utils.claim(pilots, pilot)
+        await coordinator.async_flights_changed()
+        return self.json({"pilot": pilot})
+
+    @require_admin
+    async def delete(self, request: web.Request, pilot_id: str) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None:
+            return self.json_message("Integration not ready", status_code=503)
+        store = coordinator.store
+        if store.pilots.pop(pilot_id, None) is None:
+            return self.json_message("Unknown pilot", status_code=404)
+        # Their flights fall back to the aircraft's pilot.
+        store.flight_pilots = {fid: pid for fid, pid in store.flight_pilots.items() if pid != pilot_id}
+        await coordinator.async_flights_changed()
+        return self.json({"deleted": pilot_id})
+
+
+class FlightPilotView(HomeAssistantView):
+    """Assign flights to a pilot: ``{"flight_ids": [...], "pilot_id": id | null | "auto"}``.
+
+    ``null`` means nobody flew it (as far as the log book goes), ``"auto"``
+    drops the assignment so the flight follows its aircraft's pilot again.
+    """
+
+    url = f"{API_BASE}/flights/pilot"
+    name = f"api:{DOMAIN}:flight_pilot"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None or coordinator.data is None:
+            return self.json_message("Integration not ready", status_code=503)
+        try:
+            data = pilot_utils.ASSIGN_SCHEMA(await request.json())
+        except (ValueError, vol.Invalid) as err:
+            return self.json_message(f"Invalid assignment: {err}", status_code=400)
+        store = coordinator.store
+        pilot_id = data["pilot_id"]
+        if pilot_id not in (None, pilot_utils.AUTO) and pilot_id not in store.pilots:
+            return self.json_message("Unknown pilot", status_code=404)
+        unknown = [fid for fid in data["flight_ids"] if fid not in store.flights]
+        if unknown:
+            return self.json_message(f"Unknown flight(s): {', '.join(unknown[:5])}", status_code=404)
+        for fid in data["flight_ids"]:
+            if pilot_id == pilot_utils.AUTO:
+                store.flight_pilots.pop(fid, None)
+            else:
+                store.flight_pilots[fid] = pilot_id
+        await coordinator.async_flights_changed()
+        flights = coordinator.data.flights
+        return self.json({"flights": [flights[fid] for fid in data["flight_ids"]]})
+
+
+class FlightNoteView(HomeAssistantView):
+    """Set the note on a flight: ``{"note": "..."}``; an empty note removes it."""
+
+    url = f"{API_BASE}/flights/{{flight_id}}/note"
+    name = f"api:{DOMAIN}:flight_note"
+    requires_auth = True
+
+    async def put(self, request: web.Request, flight_id: str) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None or coordinator.data is None:
+            return self.json_message("Integration not ready", status_code=503)
+        store = coordinator.store
+        if flight_id not in store.flights:
+            return self.json_message("Unknown flight", status_code=404)
+        try:
+            note = NOTE_SCHEMA(await request.json())["note"]
+        except (ValueError, vol.Invalid) as err:
+            return self.json_message(f"Invalid note: {err}", status_code=400)
+        if note:
+            store.flight_notes[flight_id] = note
+        else:
+            store.flight_notes.pop(flight_id, None)
+        await coordinator.async_flights_changed()
+        return self.json({"flight": coordinator.data.flights[flight_id]})
 
 
 class AttentionDismissView(HomeAssistantView):
@@ -473,6 +623,10 @@ def async_register_views(hass: HomeAssistant) -> None:
         ExportView,
         SpotsView,
         SpotView,
+        PilotsView,
+        PilotView,
+        FlightPilotView,
+        FlightNoteView,
         UploadView,
         AttentionDismissView,
         MediaThumbView,

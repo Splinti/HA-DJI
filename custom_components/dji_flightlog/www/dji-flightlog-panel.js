@@ -10,6 +10,10 @@
  * Flight records can be uploaded with the upload button or by dropping files /
  * folders onto the page (admins only).
  *
+ * Pilots: admins add them in a dialog, link each to a Home Assistant user and
+ * the aircraft it flies. The panel starts with the flights of the user's own
+ * pilot; the filter switches to everyone, another pilot or unassigned flights.
+ *
  * Registered by the integration via panel_custom; the maps are
  * dji-flight-map-card elements, loaded on demand like the detail view.
  *
@@ -113,7 +117,9 @@ class DjiFlightLogPanel extends HTMLElement {
     this._selected = null;
     this._loading = false;
     this._lastKey = null;
-    this._filters = { days: "0", aircraft: "", heatmap: false, dipul: false };
+    // pilot: null until the user's own pilot is known (see _initPilot), "" for all.
+    this._filters = { days: "0", aircraft: "", pilot: null, heatmap: false, dipul: false };
+    this._pilots = [];
     this._view = loadView() || "flights";
     this._planFlights = false;
     this._spots = [];
@@ -127,6 +133,7 @@ class DjiFlightLogPanel extends HTMLElement {
     this._hass = hass;
     if (!this._rendered) this._render();
     this.shadowRoot.getElementById("upload").hidden = !hass.user?.is_admin;
+    this.shadowRoot.getElementById("pilotsbtn").hidden = !hass.user?.is_admin;
     // Only once the cards are upgraded and configured (see _setupCard).
     if (this._cardReady) this._card.hass = hass;
     if (this._planReady) this._planCard.hass = hass;
@@ -239,6 +246,7 @@ class DjiFlightLogPanel extends HTMLElement {
 
         .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px 0; }
         .filters label { font-size: 13px; color: var(--secondary-text-color); display: flex; align-items: center; gap: 6px; }
+        .filters [hidden] { display: none; }
         .filters select {
           font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 8px;
           background: var(--card-background-color, #fff); color: inherit;
@@ -295,6 +303,7 @@ class DjiFlightLogPanel extends HTMLElement {
         .row .main { flex: 1; min-width: 0; }
         .row .t { font-size: 14px; }
         .row .d { font-size: 12px; color: var(--secondary-text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .row .nt { font-size: 12px; font-style: italic; color: var(--secondary-text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .row .warn { font-size: 11px; color: var(--warning-color, #ffa600); }
         .row .warn.crit { color: var(--error-color, #db4437); }
         .row .pin { flex: 0 0 auto; color: #ff9800; line-height: 0; }
@@ -400,6 +409,41 @@ class DjiFlightLogPanel extends HTMLElement {
           background: var(--card-background-color, #fff);
         }
         #upbar[hidden], #drop[hidden] { display: none; }
+
+        #pilotdlg[hidden] { display: none; }
+        #pilotdlg {
+          position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.5);
+          display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box;
+        }
+        #pilotdlg .box {
+          width: min(560px, 100%); max-height: 100%; display: flex; flex-direction: column;
+          background: var(--card-background-color, #fff); border-radius: 12px; overflow: hidden;
+        }
+        #pilotdlg .bar { display: flex; align-items: center; padding: 8px 8px 8px 16px; font-size: 16px; font-weight: 500; }
+        #pilotdlg .bar span { flex: 1; }
+        #pilotdlg .bar button, #pilotdlg .del { background: none; border: none; color: inherit; cursor: pointer; padding: 6px; border-radius: 50%; line-height: 0; }
+        #pilotdlg .bar button:hover, #pilotdlg .del:hover { background: var(--secondary-background-color, #f2f2f2); }
+        #pilotdlg .dbody { overflow-y: auto; padding: 0 16px 16px; font-size: 14px; }
+        #pilotdlg .dbody > .hint { padding: 0 0 12px; }
+        #pilotdlg .pil { border-top: 1px solid var(--divider-color, #e0e0e0); padding: 10px 0; display: flex; flex-direction: column; gap: 8px; }
+        #pilotdlg .pil .top { display: flex; gap: 8px; align-items: center; }
+        #pilotdlg input[type=text], #pilotdlg select {
+          font: inherit; font-size: 14px; padding: 6px 8px; border-radius: 8px; box-sizing: border-box;
+          background: var(--card-background-color, #fff); color: inherit;
+          border: 1px solid var(--divider-color, #e0e0e0);
+        }
+        #pilotdlg .pil .top input { flex: 1 1 auto; min-width: 0; }
+        #pilotdlg .pil .top select { flex: 0 1 200px; min-width: 0; }
+        #pilotdlg .acs { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--secondary-text-color); }
+        #pilotdlg .acs label { display: inline-flex; align-items: center; gap: 4px; color: var(--primary-text-color); }
+        #pilotdlg form { display: flex; gap: 8px; border-top: 1px solid var(--divider-color, #e0e0e0); padding-top: 12px; }
+        #pilotdlg form input { flex: 1 1 auto; min-width: 0; }
+        #pilotdlg form button {
+          font: inherit; font-size: 14px; padding: 6px 14px; border-radius: 8px; cursor: pointer; border: none;
+          background: var(--primary-color); color: var(--text-primary-color, #fff);
+        }
+        #pilotdlg .err { color: var(--error-color, #db4437); font-size: 13px; padding-top: 8px; }
+        #pilotdlg .err:empty { display: none; }
         #drop small { display: block; margin-top: 6px; font-size: 13px; color: var(--secondary-text-color); }
       </style>
       <div class="layout page">
@@ -433,6 +477,10 @@ class DjiFlightLogPanel extends HTMLElement {
             <label id="aclabel" hidden>Drohne
               <select id="aircraft"><option value="">Alle</option></select>
             </label>
+            <label id="pilabel" hidden>Pilot
+              <select id="pilot"></select>
+            </label>
+            <button id="pilotsbtn" title="Piloten verwalten" hidden>${svg(ICON_PILOTS)}</button>
             <label><input type="checkbox" id="heat"> Heatmap</label>
             <label title="Geografische Gebiete für Drohnen (DFS / dipul)"><input type="checkbox" id="dipul"> DIPUL-Zonen</label>
           </div>
@@ -466,7 +514,8 @@ class DjiFlightLogPanel extends HTMLElement {
         </section>
       </div>
       <div id="drop" hidden><div>Flugaufzeichnungen hier ablegen<small>DJIFlightRecord_*.txt oder der Ordner FlightRecord</small></div></div>
-      <div id="player" hidden></div>`;
+      <div id="player" hidden></div>
+      <div id="pilotdlg" hidden></div>`;
 
     this.shadowRoot.getElementById("menu").onclick = () => this._fireMenu();
     this.shadowRoot.getElementById("scan").onclick = () => this._scan();
@@ -486,6 +535,11 @@ class DjiFlightLogPanel extends HTMLElement {
       this._filters.aircraft = e.target.value;
       this._applyFilters();
     };
+    this.shadowRoot.getElementById("pilot").onchange = (e) => {
+      this._filters.pilot = e.target.value;
+      this._applyFilters();
+    };
+    this.shadowRoot.getElementById("pilotsbtn").onclick = () => this._openPilots();
     this.shadowRoot.getElementById("heat").onchange = (e) => {
       this._filters.heatmap = e.target.checked;
       this._card?.updateOptions({ heatmap: e.target.checked });
@@ -506,6 +560,10 @@ class DjiFlightLogPanel extends HTMLElement {
     this.shadowRoot.addEventListener("dji-spots-changed", () => this._loadSpots());
     // "Details" in a flight's popup on the overview map.
     this.shadowRoot.addEventListener("dji-flight-details", (e) => this._openDetails(e.detail.flight_id));
+    // A flight got another pilot in the detail view.
+    this.shadowRoot.addEventListener("dji-flight-pilot", () => this._pilotsChanged());
+    // A note was saved: the list shows it (the maps keep their view and pick it up on their next load).
+    this.shadowRoot.addEventListener("dji-flight-note", () => this._load());
     // Prev/next inside the detail view: keep the list selection in step.
     this.shadowRoot.addEventListener("dji-flight-selected", (e) => {
       this._selected = e.detail.flight_id;
@@ -521,10 +579,14 @@ class DjiFlightLogPanel extends HTMLElement {
     this._onKey = (e) => {
       if (e.key === "Escape") this._closePlayer();
     };
+    this._onPilotsKey = (e) => {
+      if (e.key === "Escape") this._closePilots();
+    };
   }
 
   disconnectedCallback() {
     this._closePlayer();
+    this._closePilots();
     this._details?.pause?.();
   }
 
@@ -541,7 +603,8 @@ class DjiFlightLogPanel extends HTMLElement {
   }
 
   async _setupCard() {
-    await loadCard();
+    // The pilot filter first, or the map would load everyone's flights once.
+    await Promise.all([loadCard(), this._initPilot()]);
     const card = this._card;
     if (!card) return;
     // HA may not have attached the panel yet, and custom elements in a
@@ -552,6 +615,7 @@ class DjiFlightLogPanel extends HTMLElement {
       mode: "all",
       height: 100, // overridden by CSS; the card fills the flex area
       heatmap: this._filters.heatmap,
+      pilot: this._filters.pilot || null,
       scan_button: false,
       refresh_seconds: 0, // the panel drives reloads
       fit: true,
@@ -628,9 +692,13 @@ class DjiFlightLogPanel extends HTMLElement {
       if (this._hass) el.hass = this._hass;
     }
     const flights = this._data?.flights || [];
+    this._details.setPilots?.(this._pilots);
     this._details.setFlights(flights);
-    // Nothing picked yet: the newest flight.
-    const id = this._selected && flights.some((f) => f.flight_id === this._selected) ? this._selected : flights[0]?.flight_id;
+    // Nothing picked yet: the newest flight. A flight that just went to
+    // another pilot stays on screen although the filter no longer lists it.
+    const keep =
+      this._selected && (this._selected === this._detailsId || flights.some((f) => f.flight_id === this._selected));
+    const id = keep ? this._selected : flights[0]?.flight_id;
     if (id !== this._detailsId) {
       this._detailsId = id;
       this._details.show(id || null);
@@ -724,6 +792,7 @@ class DjiFlightLogPanel extends HTMLElement {
     return {
       days: this._filters.days === "0" ? null : Number(this._filters.days),
       aircraft: this._filters.aircraft || null,
+      pilot: this._filters.pilot || null,
       heatmap: this._filters.heatmap,
     };
   }
@@ -734,6 +803,7 @@ class DjiFlightLogPanel extends HTMLElement {
       q.set("since", new Date(Date.now() - Number(this._filters.days) * 86400e3).toISOString());
     }
     if (this._filters.aircraft) q.set("aircraft", this._filters.aircraft);
+    if (this._filters.pilot) q.set("pilot", this._filters.pilot);
     return q;
   }
 
@@ -745,13 +815,18 @@ class DjiFlightLogPanel extends HTMLElement {
     }
     this._loading = true;
     try {
+      await this._initPilot();
       this._data = await this._hass.callApi("GET", `${API}/flights?${this._query()}`);
+      this._pilots = this._data.pilots || [];
       this._renderStats();
       this._renderList();
       this._renderNote();
       this._renderAttention();
       if (this._view === "flight") this._showDetails();
-      else this._details?.setFlights(this._data.flights || []);
+      else {
+        this._details?.setPilots?.(this._pilots);
+        this._details?.setFlights(this._data.flights || []);
+      }
     } catch (err) {
       console.error("dji-flightlog-panel:", err);
       const list = this.shadowRoot.getElementById("list");
@@ -787,6 +862,162 @@ class DjiFlightLogPanel extends HTMLElement {
     } finally {
       setTimeout(() => btn.classList.remove("busy"), 3000);
     }
+  }
+
+  // -- pilots ---------------------------------------------------------------
+
+  /** Once per panel: start with the flights of the pilot linked to this HA user. */
+  _initPilot() {
+    this._pilotInit ??= (async () => {
+      try {
+        const res = await this._hass.callApi("GET", `${API}/pilots`);
+        this._pilots = res.pilots || [];
+      } catch (err) {
+        console.error("dji-flightlog-panel pilots:", err);
+      }
+      this._filters.pilot = this._ownPilot()?.id || "";
+    })();
+    return this._pilotInit;
+  }
+
+  _ownPilot() {
+    const uid = this._hass?.user?.id;
+    return uid ? this._pilots.find((p) => p.user_id === uid) || null : null;
+  }
+
+  /** Pilots or assignments changed: reload list, stats and maps. */
+  _pilotsChanged() {
+    this._load();
+    if (this._cardReady) this._card.updateOptions({});
+    if (this._planReady && this._planFlights) this._planCard.updateOptions({});
+  }
+
+  async _openPilots() {
+    const dlg = this.shadowRoot.getElementById("pilotdlg");
+    dlg.hidden = false;
+    dlg.onclick = (e) => {
+      if (e.target === dlg) this._closePilots();
+    };
+    window.addEventListener("keydown", this._onPilotsKey);
+    if (!this._users) {
+      this._renderPilots();
+      try {
+        const users = await this._hass.callWS({ type: "config/auth/list" });
+        this._users = users.filter((u) => !u.system_generated && u.is_active !== false);
+      } catch (err) {
+        console.error("dji-flightlog-panel users:", err);
+        this._users = [];
+      }
+    }
+    this._renderPilots();
+  }
+
+  _closePilots() {
+    const dlg = this.shadowRoot?.getElementById("pilotdlg");
+    if (dlg && !dlg.hidden) {
+      dlg.hidden = true;
+      dlg.innerHTML = "";
+    }
+    if (this._onPilotsKey) window.removeEventListener("keydown", this._onPilotsKey);
+  }
+
+  _renderPilots(error = "") {
+    const dlg = this.shadowRoot.getElementById("pilotdlg");
+    if (dlg.hidden) return;
+    const users = this._users || [];
+    const aircraft = Object.values(this._data?.aircraft || {});
+    const userName = (u) => u.name || u.username || u.id;
+    const pilots = this._pilots
+      .map((p) => {
+        // A linked user this panel cannot list (deleted, or the list failed) stays selectable.
+        const known = !p.user_id || users.some((u) => u.id === p.user_id);
+        const userOpts =
+          `<option value="">Kein Benutzer</option>` +
+          users.map((u) => `<option value="${esc(u.id)}">${esc(userName(u))}</option>`).join("") +
+          (known ? "" : `<option value="${esc(p.user_id)}">(unbekannter Benutzer)</option>`);
+        const acs = aircraft.length
+          ? `<div class="acs">Fliegt: ${aircraft
+              .map(
+                (a) =>
+                  `<label title="Flüge dieser Drohne gehören automatisch ${esc(p.name)}"><input type="checkbox" value="${esc(a.sn)}"${
+                    (p.aircraft || []).includes(a.sn) ? " checked" : ""
+                  }> ${esc(a.name)}</label>`,
+              )
+              .join("")}</div>`
+          : "";
+        return `
+          <div class="pil" data-id="${esc(p.id)}">
+            <div class="top">
+              <input type="text" class="name" value="${esc(p.name)}" maxlength="60" aria-label="Name">
+              <select class="user" title="Home-Assistant-Benutzer: sieht beim Öffnen des Panels die Flüge dieses Piloten">${userOpts}</select>
+              <button class="del" title="Pilot löschen">${svg(ICON_DELETE)}</button>
+            </div>
+            ${acs}
+          </div>`;
+      })
+      .join("");
+    dlg.innerHTML = `
+      <div class="box" role="dialog" aria-label="Piloten">
+        <div class="bar"><span>Piloten</span><button class="close" title="Schließen">${svg(ICON_CLOSE)}</button></div>
+        <div class="dbody">
+          <div class="hint">Flüge einer Drohne gehören automatisch dem Piloten, bei dem sie angehakt ist; jeder Flug lässt sich in der Ansicht „Flug“ auch einzeln zuordnen. Wer als Home-Assistant-Benutzer verknüpft ist, sieht beim Öffnen des Panels seine eigenen Flüge.</div>
+          ${pilots}
+          <form class="add">
+            <input type="text" placeholder="Name des neuen Piloten" maxlength="60" required aria-label="Name des neuen Piloten">
+            <button type="submit">Hinzufügen</button>
+          </form>
+          <div class="err">${esc(error)}</div>
+        </div>
+      </div>`;
+    dlg.querySelector(".close").onclick = () => this._closePilots();
+    const form = dlg.querySelector("form.add");
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const name = form.querySelector("input").value.trim();
+      if (name) this._savePilot(null, { name });
+    };
+    for (const row of dlg.querySelectorAll(".pil")) {
+      const id = row.dataset.id;
+      const pilot = this._pilots.find((p) => p.id === id);
+      const user = row.querySelector("select.user");
+      user.value = pilot.user_id || "";
+      user.onchange = () => this._savePilot(id, { user_id: user.value || null });
+      const name = row.querySelector("input.name");
+      name.onchange = () => {
+        if (name.value.trim()) this._savePilot(id, { name: name.value });
+        else name.value = pilot.name;
+      };
+      for (const box of row.querySelectorAll(".acs input")) {
+        box.onchange = () =>
+          this._savePilot(id, { aircraft: [...row.querySelectorAll(".acs input:checked")].map((b) => b.value) });
+      }
+      row.querySelector(".del").onclick = () => {
+        if (confirm(`Pilot „${pilot.name}“ löschen? Die Flüge bleiben, nur die Zuordnung entfällt.`)) this._savePilot(id, null);
+      };
+    }
+  }
+
+  /** Create (id null), update (data) or delete (data null) a pilot, then refresh everything. */
+  async _savePilot(id, data) {
+    try {
+      if (!id) await this._hass.callApi("POST", `${API}/pilots`, data);
+      else if (data) await this._hass.callApi("PATCH", `${API}/pilots/${id}`, data);
+      else await this._hass.callApi("DELETE", `${API}/pilots/${id}`);
+      const res = await this._hass.callApi("GET", `${API}/pilots`);
+      this._pilots = res.pilots || [];
+    } catch (err) {
+      console.error("dji-flightlog-panel save pilot:", err);
+      this._renderPilots(`Speichern fehlgeschlagen: ${err.body?.message || err.message || err}`);
+      return;
+    }
+    // Deleted the pilot the list is filtered by: show everyone instead of nothing.
+    if (id && !data && this._filters.pilot === id) {
+      this._filters.pilot = "";
+      this._card?.updateOptions(this._cardFilters());
+    }
+    this._renderPilots();
+    this._renderPilotFilter();
+    this._pilotsChanged();
   }
 
   // -- search ---------------------------------------------------------------
@@ -1084,6 +1315,25 @@ class DjiFlightLogPanel extends HTMLElement {
         aircraft.map((a) => `<option value="${esc(a.sn)}">${esc(a.name)}</option>`).join("");
       select.value = this._filters.aircraft;
     }
+    this._renderPilotFilter();
+  }
+
+  /** "Pilot" filter: all, each pilot, unassigned; only once there are pilots. */
+  _renderPilotFilter() {
+    const label = this.shadowRoot.getElementById("pilabel");
+    const select = this.shadowRoot.getElementById("pilot");
+    const pilots = this._pilots;
+    // A filter on a pilot deleted meanwhile must stay visible, or it could not be undone.
+    label.hidden = !pilots.length && !this._filters.pilot;
+    const own = this._ownPilot();
+    select.innerHTML =
+      `<option value="">Alle</option>` +
+      pilots.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}${p.id === own?.id ? " (ich)" : ""}</option>`).join("") +
+      `<option value="none">Ohne Pilot</option>`;
+    if (this._filters.pilot && ![...select.options].some((o) => o.value === this._filters.pilot)) {
+      select.insertAdjacentHTML("beforeend", `<option value="${esc(this._filters.pilot)}">(gelöscht)</option>`);
+    }
+    select.value = this._filters.pilot || "";
   }
 
   _renderList() {
@@ -1095,6 +1345,8 @@ class DjiFlightLogPanel extends HTMLElement {
       return;
     }
     const mediaConnected = !!this._data?.media?.connected;
+    // The pilot's name only helps while the list shows more than one pilot.
+    const showPilot = !this._filters.pilot || this._filters.pilot === "none";
     let html = "";
     let day = null;
     for (const f of flights) {
@@ -1116,9 +1368,10 @@ class DjiFlightLogPanel extends HTMLElement {
           <div class="dot" style="background:${esc(colorFor(f, flights))}"></div>
           <div class="main">
             <div class="t">${esc(time)} · ${esc(fmtDur(f.duration_s))} · ${esc(fmtDist(f.distance_m))}</div>
-            <div class="d">${esc(f.aircraft_name || "DJI")} · max ${Math.round(f.max_height_m || 0)} m${
-              f.city ? ` · ${esc(f.city)}` : ""
-            }</div>
+            <div class="d">${esc(f.aircraft_name || "DJI")}${
+              showPilot && f.pilot_name ? ` · ${esc(f.pilot_name)}` : ""
+            } · max ${Math.round(f.max_height_m || 0)} m${f.city ? ` · ${esc(f.city)}` : ""}</div>
+            ${f.note ? `<div class="nt" title="${esc(f.note)}">${esc(f.note.split("\n")[0])}</div>` : ""}
             ${f.status === "header_only" ? `<div class="warn">kein GPS-Track</div>` : ""}
             ${
               f.incident === "critical" || f.incident === "warning"
@@ -1328,6 +1581,9 @@ function fillPanel(card) {
 }
 
 const ICON_VIDEO = "M17,10.5V7A1,1 0 0,0 16,6H4A1,1 0 0,0 3,7V17A1,1 0 0,0 4,18H16A1,1 0 0,0 17,17V13.5L21,17.5V6.5L17,10.5Z";
+const ICON_PILOTS =
+  "M16,13C15.71,13 15.38,13 15.03,13.05C16.19,13.89 17,15 17,16.5V19H23V16.5C23,14.17 18.33,13 16,13M8,13C5.67,13 1,14.17 1,16.5V19H15V16.5C15,14.17 10.33,13 8,13M8,11A3,3 0 0,0 11,8A3,3 0 0,0 8,5A3,3 0 0,0 5,8A3,3 0 0,0 8,11M16,11A3,3 0 0,0 19,8A3,3 0 0,0 16,5A3,3 0 0,0 13,8A3,3 0 0,0 16,11Z";
+const ICON_DELETE = "M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z";
 const ICON_CLOSE = "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z";
 
 // Same palette the card uses, so list dots match the tracks.

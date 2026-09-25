@@ -376,6 +376,145 @@ async def test_saved_spots(hass: HomeAssistant, setup_entry, hass_client):
     assert resp.status == 404
 
 
+async def test_pilots(hass: HomeAssistant, setup_entry, hass_client, hass_admin_user, log_dir: Path):
+    """Flights 0/2 are the Neo's, 1/3 the Avata's (see _fake_parse)."""
+    entry = await setup_entry(4)
+    client = await hass_client()
+    api = f"/api/{DOMAIN}"
+
+    async def ids(query: str = "") -> list[str]:
+        resp = await client.get(f"{api}/flights?{query}")
+        assert resp.status == 200
+        return [f["flight_id"] for f in (await resp.json())["flights"]]
+
+    resp = await client.post(
+        f"{api}/pilots", json={"name": "  Nico ", "user_id": hass_admin_user.id, "aircraft": ["SN-AVATA"]}
+    )
+    assert resp.status == 201
+    nico = (await resp.json())["pilot"]
+    assert nico["name"] == "Nico"
+    resp = await client.post(f"{api}/pilots", json={"name": "Lena"})
+    lena = (await resp.json())["pilot"]
+    for bad in ({}, {"name": ""}, {"name": "x", "aircraft": "SN-NEO"}):
+        resp = await client.post(f"{api}/pilots", json=bad)
+        assert resp.status == 400
+
+    # Via the aircraft; "me" is the pilot linked to the requesting user; names work too.
+    assert await ids(f"pilot={nico['id']}") == ["flight0003", "flight0001"]
+    assert await ids("pilot=me") == ["flight0003", "flight0001"]
+    assert await ids("pilot=nico") == ["flight0003", "flight0001"]
+    assert await ids("pilot=none") == ["flight0002", "flight0000"]
+    assert await ids("pilot=nobody") == []
+    body = await (await client.get(f"{api}/flights?ids=flight0001")).json()
+    assert [p["name"] for p in body["pilots"]] == ["Lena", "Nico"]
+    assert body["flights"][0]["pilot_name"] == "Nico"
+    assert body["flights"][0]["pilot_source"] == "aircraft"
+
+    # By hand wins over the aircraft, also "nobody"; "auto" goes back to the aircraft.
+    resp = await client.post(
+        f"{api}/flights/pilot", json={"flight_ids": ["flight0001", "flight0002"], "pilot_id": lena["id"]}
+    )
+    assert resp.status == 200
+    assert [f["pilot_source"] for f in (await resp.json())["flights"]] == ["manual", "manual"]
+    await client.post(f"{api}/flights/pilot", json={"flight_ids": ["flight0003"], "pilot_id": None})
+    assert await ids(f"pilot={lena['id']}") == ["flight0002", "flight0001"]
+    assert await ids("pilot=me") == []
+    assert await ids("pilot=none") == ["flight0003", "flight0000"]
+    await client.post(f"{api}/flights/pilot", json={"flight_ids": ["flight0003"], "pilot_id": "auto"})
+    assert await ids("pilot=me") == ["flight0003"]
+    resp = await client.post(f"{api}/flights/pilot", json={"flight_ids": ["flight0003"], "pilot_id": "nope"})
+    assert resp.status == 404
+    resp = await client.post(f"{api}/flights/pilot", json={"flight_ids": ["nope"], "pilot_id": None})
+    assert resp.status == 404
+
+    # An aircraft and a user belong to one pilot only.
+    resp = await client.patch(
+        f"{api}/pilots/{lena['id']}", json={"aircraft": ["SN-AVATA", "SN-NEO"], "user_id": hass_admin_user.id}
+    )
+    assert resp.status == 200
+    listed = {p["name"]: p for p in (await (await client.get(f"{api}/pilots")).json())["pilots"]}
+    assert listed["Nico"]["aircraft"] == []
+    assert listed["Nico"]["user_id"] is None
+    assert await ids("pilot=none") == []
+
+    # The tracks follow the same filter; new flights carry their pilot in the event.
+    resp = await client.get(f"{api}/tracks?pilot={nico['id']}")
+    assert (await resp.json())["tracks"] == []
+    events = []
+    hass.bus.async_listen(EVENT_FLIGHT_IMPORTED, lambda e: events.append(e))
+    _write_logs(log_dir, 5)
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
+        await hass.services.async_call(DOMAIN, "scan", blocking=True)
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert [e.data["pilot_name"] for e in events] == ["Lena"]
+
+    # Deleting a pilot drops its assignments by hand; the flights stay.
+    resp = await client.delete(f"{api}/pilots/{lena['id']}")
+    assert resp.status == 200
+    assert await ids("pilot=none") == ["flight0004", "flight0003", "flight0002", "flight0001", "flight0000"]
+    resp = await client.patch(f"{api}/pilots/{lena['id']}", json={"name": "x"})
+    assert resp.status == 404
+
+    # Persisted in the store.
+    store = hass.data[DOMAIN][entry.entry_id].store
+    await store.async_load()
+    assert list(store.pilots) == [nico["id"]]
+    assert store.flight_pilots == {}
+
+
+async def test_flight_notes(
+    hass: HomeAssistant, setup_entry, hass_client, hass_read_only_access_token, log_dir
+):
+    entry = await setup_entry(2)
+    api = f"/api/{DOMAIN}"
+    # Any user may write notes, like the saved spots.
+    client = await hass_client(hass_read_only_access_token)
+
+    resp = await client.put(
+        f"{api}/flights/flight0001/note", json={"note": "  Wind 25 km/h, Akku 2 schwach \n"}
+    )
+    assert resp.status == 200
+    assert (await resp.json())["flight"]["note"] == "Wind 25 km/h, Akku 2 schwach"
+    body = await (await client.get(f"{api}/flights")).json()
+    assert {f["flight_id"]: f["note"] for f in body["flights"]} == {
+        "flight0001": "Wind 25 km/h, Akku 2 schwach",
+        "flight0000": "",
+    }
+
+    for bad in ({}, {"note": "x" * 2001}, {"note": None}):
+        resp = await client.put(f"{api}/flights/flight0001/note", json=bad)
+        assert resp.status == 400
+    resp = await client.put(f"{api}/flights/nope/note", json={"note": "x"})
+    assert resp.status == 404
+
+    # Parsing the log again rewrites the summary but keeps the note.
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    path = next(p for p in log_dir.iterdir() if p.stem.endswith("_1"))
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
+        await coordinator.async_import_file(path)
+    assert coordinator.data.flights["flight0001"]["note"] == "Wind 25 km/h, Akku 2 schwach"
+
+    # An empty note removes it.
+    resp = await client.put(f"{api}/flights/flight0001/note", json={"note": " "})
+    assert (await resp.json())["flight"]["note"] == ""
+    assert coordinator.store.flight_notes == {}
+
+
+async def test_pilots_require_admin(
+    hass: HomeAssistant, setup_entry, hass_client, hass_read_only_access_token
+):
+    await setup_entry(1)
+    client = await hass_client(hass_read_only_access_token)
+    api = f"/api/{DOMAIN}"
+    resp = await client.post(f"{api}/pilots", json={"name": "Nico"})
+    assert resp.status == 401
+    resp = await client.get(f"{api}/pilots")
+    assert resp.status == 200
+    # Assigning is open to every user, like the saved spots.
+    resp = await client.post(f"{api}/flights/pilot", json={"flight_ids": ["flight0000"], "pilot_id": None})
+    assert resp.status == 200
+
+
 async def test_http_requires_auth(hass: HomeAssistant, setup_entry, hass_client_no_auth):
     await setup_entry(1)
     client = await hass_client_no_auth()

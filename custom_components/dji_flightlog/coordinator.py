@@ -42,6 +42,7 @@ from .const import (
     UPLOAD_RETRY,
 )
 from .parser import INCIDENT_CRITICAL, INCIDENT_WARNING, KeychainError, classify_log_file, parse_flight
+from .pilots import with_pilot
 from .storage import FlightStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -338,10 +339,17 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         await self.store.async_save()
         self._publish()
 
+    async def async_flights_changed(self) -> None:
+        """Save pilots, assignments or notes and publish the flights with them."""
+        await self.store.async_save()
+        self._publish()
+
     async def async_remove_flight(self, flight_id: str) -> bool:
         if flight_id not in self.store.flights:
             return False
         self.store.flights.pop(flight_id)
+        self.store.flight_pilots.pop(flight_id, None)
+        self.store.flight_notes.pop(flight_id, None)
         for path, rec in list(self.store.files.items()):
             if rec.get("flight_id") == flight_id:
                 self.store.files.pop(path)
@@ -351,7 +359,9 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         return True
 
     def _fire_imported(self, summary: dict[str, Any]) -> None:
-        self.hass.bus.async_fire(EVENT_FLIGHT_IMPORTED, summary)
+        self.hass.bus.async_fire(
+            EVENT_FLIGHT_IMPORTED, with_pilot(summary, self.store.pilots, self.store.flight_pilots)
+        )
 
     # -- coordinator API ------------------------------------------------------
 
@@ -415,7 +425,13 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         return data
 
     def _aggregate(self, *, include_dismissed: bool = False) -> FlightData:
-        data = FlightData(flights=dict(self.store.flights))
+        pilots, assigned, notes = self.store.pilots, self.store.flight_pilots, self.store.flight_notes
+        data = FlightData(
+            flights={
+                fid: {**with_pilot(f, pilots, assigned), "note": notes.get(fid, "")}
+                for fid, f in self.store.flights.items()
+            }
+        )
         ordered = sorted(data.flights.values(), key=lambda f: f["start_time"])
         for f in ordered:
             sn = f.get("aircraft_sn") or "unknown"
