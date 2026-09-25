@@ -587,6 +587,7 @@ class DjiFlightLogPanel extends HTMLElement {
       spots: true,
       details: true,
       dipul: true,
+      locate: true,
     });
     fillPanel(card);
     this._planReady = true;
