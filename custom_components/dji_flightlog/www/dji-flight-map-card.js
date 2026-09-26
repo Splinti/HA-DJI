@@ -229,6 +229,21 @@ const LOCATE_ERRORS = {
   2: "Standort ist gerade nicht verfügbar.",
   3: "Standort konnte nicht rechtzeitig ermittelt werden.",
 };
+
+/** The browser's position as {lat, lon, accuracy}; rejects with a readable Error. */
+function browserPosition() {
+  // Browsers only offer geolocation to secure pages (HTTPS or localhost).
+  if (!window.isSecureContext || !navigator.geolocation) {
+    return Promise.reject(new Error("Der Browser gibt den Standort nur über HTTPS heraus."));
+  }
+  return new Promise((resolve, reject) =>
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => resolve({ lat: coords.latitude, lon: coords.longitude, accuracy: coords.accuracy }),
+      (err) => reject(new Error(LOCATE_ERRORS[err.code] || err.message || String(err))),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 },
+    ),
+  );
+}
 function spotIcon(L, color = SPOT_COLOR) {
   return L.divIcon({
     className: "dji-spot",
@@ -302,6 +317,12 @@ const fmtDate = (iso) => {
   if (!iso) return "";
   const d = new Date(iso);
   return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+};
+const fmtAgo = (iso) => {
+  const min = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (!(min >= 1)) return "gerade eben";
+  if (min < 60) return `vor ${min} min`;
+  return fmtDate(iso);
 };
 const fmtDur = (s) => {
   s = Math.round(s || 0);
@@ -1011,33 +1032,47 @@ class DjiFlightMapCard extends HTMLElement {
     marker.openPopup();
   }
 
-  /** Show the device's position (browser geolocation) and zoom to it. */
+  /**
+   * Show the device's position and zoom to it. The browser's geolocation
+   * comes first; the Android companion app's WebView refuses it, so the
+   * fallback is the position the app reports to HA for the current user.
+   */
   async locate() {
     const map = await this._ensureMap();
     if (!map || this._locBtn?.classList.contains("busy")) return;
-    // Browsers only offer geolocation to secure pages (HTTPS or localhost).
-    if (!window.isSecureContext || !navigator.geolocation) {
-      this._showLocateMsg("Der Standort ist nur verfügbar, wenn Home Assistant über HTTPS geöffnet ist.");
-      return;
-    }
     this._locBtn?.classList.add("busy");
     try {
-      const pos = await new Promise((resolve, reject) =>
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 15000,
-          maximumAge: 30000,
-        }),
-      );
-      this._showLocation(pos.coords);
+      this._showLocation(await browserPosition());
     } catch (err) {
-      this._showLocateMsg(LOCATE_ERRORS[err.code] || err.message || String(err));
+      const pos = this._haPosition();
+      if (pos) this._showLocation(pos);
+      else this._showLocateMsg(`${err.message} Home Assistant kennt auch keinen Standort für dich (Companion App mit Standortverfolgung, die deiner Person zugeordnet ist).`);
     } finally {
       this._locBtn?.classList.remove("busy");
     }
   }
 
-  _showLocation({ latitude: lat, longitude: lon, accuracy }) {
+  /** Latest position of the current user's person or one of its trackers. */
+  _haPosition() {
+    const states = this._hass?.states || {};
+    const uid = this._hass?.user?.id;
+    const person = uid && Object.values(states).find((s) => s.entity_id.startsWith("person.") && s.attributes.user_id === uid);
+    if (!person) return null;
+    // Trackers first: on a tie with the person the tracker names the device.
+    const found = [...(person.attributes.device_trackers || []).map((id) => states[id]), person]
+      .filter((s) => s && s.attributes.latitude != null && s.attributes.longitude != null)
+      .reduce((a, b) => (!a || b.last_updated > a.last_updated ? b : a), null);
+    if (!found) return null;
+    return {
+      lat: found.attributes.latitude,
+      lon: found.attributes.longitude,
+      accuracy: found.attributes.gps_accuracy || 0,
+      source: found.attributes.friendly_name || found.entity_id,
+      time: found.last_updated,
+    };
+  }
+
+  _showLocation({ lat, lon, accuracy, source = "", time = null }) {
     if (!this._map) return;
     const L = window.L;
     const latlng = L.latLng(lat, lon);
@@ -1051,8 +1086,9 @@ class DjiFlightMapCard extends HTMLElement {
     const el = document.createElement("div");
     el.innerHTML = `
       <b>Mein Standort</b>
+      ${source ? `<div class="muted">Von ${esc(source)}, ${esc(fmtAgo(time))}</div>` : ""}
       ${this._config.spots ? `<div class="btns"><button class="save primary">Hier merken</button></div>` : ""}
-      <div class="small">${lat.toFixed(5)}, ${lon.toFixed(5)} · ± ${Math.round(accuracy)} m</div>`;
+      <div class="small">${lat.toFixed(5)}, ${lon.toFixed(5)}${accuracy ? ` · ± ${Math.round(accuracy)} m` : ""}</div>`;
     el.querySelector(".save")?.addEventListener("click", () => {
       dot.closePopup();
       this._openPlan({ latlng });
@@ -1067,7 +1103,7 @@ class DjiFlightMapCard extends HTMLElement {
     clearTimeout(this._locMsgTimer);
     this._locMsg = msg;
     this._updateHint();
-    if (msg) this._locMsgTimer = setTimeout(() => this._showLocateMsg(""), 8000);
+    if (msg) this._locMsgTimer = setTimeout(() => this._showLocateMsg(""), 12000);
   }
 
   /** Remove the search result marker. */
