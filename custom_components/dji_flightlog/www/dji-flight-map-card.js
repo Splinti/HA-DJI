@@ -18,6 +18,7 @@
  *   spot_on_click: false # a click on the map opens the "Neuer Ort" form
  *   spots: true          # show saved spots (default in mode: all)
  *   flights: true        # false: no tracks, e.g. a map for planning only
+ *   locate: false        # button that shows the device's own position
  *
  * The same module also defines custom:dji-spots-card, a list of the saved
  * spots with a Google Maps navigation link each:
@@ -220,6 +221,13 @@ const PIN_PATH = "M12,2C8.13,2 5,5.13 5,9C5,14.25 12,22 12,22C12,22 19,14.25 19,
 const SPOT_COLOR = "#ff9800";
 const PLAN_COLOR = "#03a9f4";
 const SEARCH_COLOR = "#9c27b0";
+const LOCATE_COLOR = "#4285f4";
+const LOCATE_PATH = "M12,8A4,4 0 0,1 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12A4,4 0 0,1 12,8M3.05,13H1V11H3.05C3.5,6.83 6.83,3.5 11,3.05V1H13V3.05C17.17,3.5 20.5,6.83 20.95,11H23V13H20.95C20.5,17.17 17.17,20.5 13,20.95V23H11V20.95C6.83,20.5 3.5,17.17 3.05,13M12,5A7,7 0 0,0 5,12A7,7 0 0,0 12,19A7,7 0 0,0 19,12A7,7 0 0,0 12,5Z";
+const LOCATE_ERRORS = {
+  1: "Zugriff auf den Standort wurde verweigert.",
+  2: "Standort ist gerade nicht verfügbar.",
+  3: "Standort konnte nicht rechtzeitig ermittelt werden.",
+};
 function spotIcon(L, color = SPOT_COLOR) {
   return L.divIcon({
     className: "dji-spot",
@@ -406,6 +414,8 @@ class DjiFlightMapCard extends HTMLElement {
     this._planMarker = null;
     this._planSeq = 0;
     this._placeMarker = null;
+    this._locLayer = null;
+    this._locMsg = "";
     this._hasFlights = false;
     // Callers set `hass`/`config` before this module is loaded (the panel
     // creates the card via innerHTML and imports it afterwards). Such an
@@ -453,6 +463,7 @@ class DjiFlightMapCard extends HTMLElement {
       spots: (config.mode || "all") === "all",
       spots_entity: "sensor.dji_flight_log_saved_spots",
       flights: true,
+      locate: false,
       // Popups get a "Details" link that fires dji-flight-details (panel only).
       details: false,
       ...config,
@@ -523,6 +534,8 @@ class DjiFlightMapCard extends HTMLElement {
     this._hintEl = null;
     this._planMarker = null;
     this._placeMarker = null;
+    this._locLayer = null;
+    this._locBtn = null;
     this._cursor = null;
     tokenListeners.delete(this);
     this.shadowRoot.innerHTML = `
@@ -579,6 +592,11 @@ class DjiFlightMapCard extends HTMLElement {
         .leaflet-bar.tileswitch a + a { border-left: 1px solid #ccc; }
         .leaflet-bar.tileswitch a.on { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
         .planning .leaflet-container { cursor: crosshair; }
+        .leaflet-bar a.locate { display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .leaflet-bar a.locate svg { width: 18px; height: 18px; fill: currentColor; }
+        .leaflet-bar a.locate.on { color: ${LOCATE_COLOR}; }
+        .leaflet-bar a.locate.busy svg { animation: pulse 1s ease-in-out infinite; }
+        @keyframes pulse { 50% { opacity: 0.3; } }
         .maphint {
           background: var(--card-background-color, #fff); color: var(--primary-text-color, #000);
           padding: 6px 10px; border-radius: 8px; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,.3);
@@ -669,6 +687,22 @@ class DjiFlightMapCard extends HTMLElement {
         },
       });
       new Switch({ position: "topright" }).addTo(map);
+    }
+    if (this._config.locate) {
+      const Locate = L.Control.extend({
+        onAdd: () => {
+          const div = L.DomUtil.create("div", "leaflet-bar");
+          div.innerHTML = `<a role="button" class="locate" href="#" title="Mein Standort" aria-label="Mein Standort"><svg viewBox="0 0 24 24"><path d="${LOCATE_PATH}"/></svg></a>`;
+          L.DomEvent.disableClickPropagation(div);
+          this._locBtn = div.firstChild;
+          this._locBtn.onclick = (e) => {
+            e.preventDefault();
+            this.locate();
+          };
+          return div;
+        },
+      });
+      new Locate({ position: "topleft" }).addTo(map);
     }
     const Hint = L.Control.extend({
       onAdd: () => {
@@ -973,6 +1007,65 @@ class DjiFlightMapCard extends HTMLElement {
     marker.openPopup();
   }
 
+  /** Show the device's position (browser geolocation) and zoom to it. */
+  async locate() {
+    const map = await this._ensureMap();
+    if (!map || this._locBtn?.classList.contains("busy")) return;
+    // Browsers only offer geolocation to secure pages (HTTPS or localhost).
+    if (!window.isSecureContext || !navigator.geolocation) {
+      this._showLocateMsg("Der Standort ist nur verfügbar, wenn Home Assistant über HTTPS geöffnet ist.");
+      return;
+    }
+    this._locBtn?.classList.add("busy");
+    try {
+      const pos = await new Promise((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 30000,
+        }),
+      );
+      this._showLocation(pos.coords);
+    } catch (err) {
+      this._showLocateMsg(LOCATE_ERRORS[err.code] || err.message || String(err));
+    } finally {
+      this._locBtn?.classList.remove("busy");
+    }
+  }
+
+  _showLocation({ latitude: lat, longitude: lon, accuracy }) {
+    if (!this._map) return;
+    const L = window.L;
+    const latlng = L.latLng(lat, lon);
+    this._locLayer ??= L.layerGroup().addTo(this._map);
+    this._locLayer.clearLayers();
+    // The accuracy circle lets clicks through, so a tap inside it still picks a spot.
+    L.circle(latlng, { radius: accuracy, color: LOCATE_COLOR, weight: 1, fillOpacity: 0.12, interactive: false }).addTo(this._locLayer);
+    const dot = L.circleMarker(latlng, {
+      radius: 7, color: "#fff", weight: 3, fillColor: LOCATE_COLOR, fillOpacity: 1, bubblingMouseEvents: false,
+    }).addTo(this._locLayer);
+    const el = document.createElement("div");
+    el.innerHTML = `
+      <b>Mein Standort</b>
+      ${this._config.spots ? `<div class="btns"><button class="save primary">Hier merken</button></div>` : ""}
+      <div class="small">${lat.toFixed(5)}, ${lon.toFixed(5)} · ± ${Math.round(accuracy)} m</div>`;
+    el.querySelector(".save")?.addEventListener("click", () => {
+      dot.closePopup();
+      this._openPlan({ latlng });
+    });
+    dot.bindPopup(el, { minWidth: 180, maxWidth: 320 });
+    this._locBtn?.classList.add("on");
+    this._showLocateMsg("");
+    this._map.fitBounds(latlng.toBounds(Math.max(accuracy, 100) * 2), { padding: [40, 40], maxZoom: 17 });
+  }
+
+  _showLocateMsg(msg) {
+    clearTimeout(this._locMsgTimer);
+    this._locMsg = msg;
+    this._updateHint();
+    if (msg) this._locMsgTimer = setTimeout(() => this._showLocateMsg(""), 8000);
+  }
+
   /** Remove the search result marker. */
   clearPlace() {
     this._placeMarker?.remove();
@@ -1022,6 +1115,7 @@ class DjiFlightMapCard extends HTMLElement {
       msgs.push("Für die DIPUL-Zonen hineinzoomen.");
     }
     if (this._planning) msgs.push("Auf die Karte tippen, um einen Ort zu merken.");
+    if (this._locMsg) msgs.unshift(this._locMsg);
     this._hintEl.textContent = msgs.join(" ");
     this._hintEl.hidden = !msgs.length;
   }

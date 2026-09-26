@@ -80,6 +80,7 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 **Planen**
 - Karte mit den DIPUL-Zonen; ein Tipp auf die Karte öffnet „Neuer Ort“ (siehe unten). „Flüge einblenden“ zeigt die bisherigen Tracks
 - **Suche** über der Karte: Postleitzahl, Ort, Adresse oder Koordinaten eingeben, Enter. Die Karte springt hin und setzt einen Marker, dessen Popup „Ort merken“ (Name schon vorbelegt) und Navigation anbietet. Koordinaten gehen in allen üblichen Schreibweisen: `48.13743, 11.57549`, `48,13743 11,57549`, `N 48.13743 E 11.57549`, `48°08'14.7"N 11°34'31.8"E` (so kopiert man sie aus Google Maps) oder ein Google-Maps-Link mit `@48.13743,11.57549`. Koordinaten werden lokal erkannt; alles andere fragt der Browser bei [Nominatim](https://nominatim.org) (OpenStreetMap) an, eine reine PLZ zuerst als Postleitzahl im Land der HA-Instanz
+- **Mein Standort**: der Knopf unter dem Zoom zeigt die eigene Position (blauer Punkt mit Genauigkeitskreis) und zoomt hin; im Popup „Hier merken“. Braucht die Standortfreigabe im Browser bzw. in der App, und Home Assistant muss über HTTPS geöffnet sein (Browser geben den Standort sonst nicht heraus)
 - Liste der gemerkten Orte mit Navigations-Link und Löschen; Klick zoomt auf den Ort
 
 **Überall**
@@ -131,6 +132,7 @@ home: true         # Home-Punkte
 tiles: ha          # Start-Ebene: ha (HA-eigener OSM-Proxy, Default) | carto | satellite (Esri) | topo
 tile_switch: true  # Umschalter „Karte | Satellit“ oben rechts; die Wahl merkt sich der Browser
 spot_on_click: false # Klick auf die Karte öffnet „Neuer Ort“ (im Panel immer an)
+locate: false      # Knopf „Mein Standort“ unter dem Zoom (braucht HTTPS; im Panel unter Planen an)
 height: 450
 ```
 
