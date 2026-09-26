@@ -97,7 +97,7 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 - Zählt immer alle Flüge, unabhängig von den Filtern unter *Flüge*. Ein Klick auf eine Drohne öffnet *Flüge* mit allen Flügen dieser Drohne
 
 **Akkus**
-- Eine Karte je Flugakku: Seriennummer, Drohne, Ladezyklen, Lebensdauer, Kapazität (volle gegenüber Nenn-Kapazität), Flüge, Flugzeit, zuletzt benutzt und der durchschnittliche Verbrauch in %/min (ab 5 Flügen auch der der letzten 5 Flüge, als Hinweis auf nachlassende Leistung)
+- Eine Karte je Flugakku: Seriennummer, Drohne, Ladezyklen, Lebensdauer, Kapazität (volle gegenüber Nenn-Kapazität), Flüge, Flugzeit, zuletzt benutzt und der durchschnittliche Verbrauch in %/min (bei mehr als 5 Flügen auch der der letzten 5, als Hinweis auf nachlassende Leistung)
 - **Gesundheitsverlauf**: die Kapazität über die Ladezyklen, mit der 80-%-Linie. Die Akku-Elektronik meldet die volle Kapazität von Flug zu Flug um etwa 1 % unterschiedlich, die Linie nimmt deshalb je Zyklus den Median, die einzelnen Flüge stehen blass dahinter. Bei mehreren Akkus oben ein Vergleich aller Kurven: So sieht man, ob einer schneller nachlässt als die anderen
 - Je Flug die höchste Temperatur, die niedrigste Zellspannung und die größte Abweichung zwischen den Zellen als kleine Diagramme, mit denselben Warnschwellen wie in der Flugansicht (über 60 °C, unter 3,0 V, über 0,2 V); Werte jenseits davon sind orange
 - Liste der Flüge mit dem Akku; ein Klick darauf (oder auf einen Punkt im Diagramm) öffnet den Flug
