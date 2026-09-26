@@ -12,6 +12,7 @@
  *   mode: all            # all | last | flight
  *   heatmap: true
  *   days: 365
+ *   pilot: me            # only one pilot's flights: me, a pilot's name, or none
  *   dipul: true          # overlay the German UAS geo zones (DIPUL)
  *   tiles: ha            # ha | carto | satellite | topo (start layer)
  *   tile_switch: true    # "Karte | Satellit" toggle on the map
@@ -450,6 +451,8 @@ class DjiFlightMapCard extends HTMLElement {
       days: null,
       since: null,
       aircraft: null,
+      // Pilot id or name, "me" (the pilot linked to the HA user) or "none".
+      pilot: null,
       limit: null,
       dark: "auto",
       refresh_entity: "sensor.dji_flight_log_last_import",
@@ -782,6 +785,7 @@ class DjiFlightMapCard extends HTMLElement {
     if (c.mode === "last") q.set("limit", "1");
     if (c.limit && c.mode === "all") q.set("limit", String(c.limit));
     if (c.aircraft) q.set("aircraft", c.aircraft);
+    if (c.pilot) q.set("pilot", c.pilot);
     if (c.since) q.set("since", c.since);
     else if (c.days) q.set("since", new Date(Date.now() - c.days * 86400e3).toISOString());
     return q;
@@ -1309,6 +1313,8 @@ class DjiFlightMapCard extends HTMLElement {
     if (f.incident && f.incident !== "ok") rows.push([f.incident === "critical" ? "Kritisch" : "Warnung", incidentText(f)]);
     if (f.sd_full) rows.push(["SD-Karte", "voll"]);
     if (f.city) rows.push(["Ort", f.city]);
+    if (f.pilot_name) rows.push(["Pilot", f.pilot_name]);
+    if (f.note) rows.push(["Notiz", f.note.length > 140 ? `${f.note.slice(0, 140)} …` : f.note]);
     const details = this._config.details ? `<a data-details>Details</a>` : "";
     const exports = f.points
       ? `<div class="links">${details}${["gpx", "kml", "geojson"].map((x) => `<a data-fmt="${x}">${x.toUpperCase()}</a>`).join("")}</div>`

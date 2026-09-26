@@ -23,12 +23,14 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 - **Vorfälle** – jeder Flug bekommt einen Status `ok`, `warning` oder `critical`, je nachdem, ob der Flugcontroller selbst eingegriffen hat: Warnung z. B. bei Smart-RTH oder Landung wegen niedrigem Akku, kritisch z. B. bei Zwangslandung, RTH nach Verbindungsverlust oder blockiertem Motor. Welche Aktionen es waren, steht in `incident_actions`. Ein per Taste ausgelöstes RTH zählt nicht, schnelle Sinkflüge auch nicht (bei FPV normal). Im Panel stehen Vorfälle und eine volle SD-Karte in der Flugliste und im Popup. Braucht den API-Key.
 - **geo_location** *(optional, standardmäßig aus)* – Startpunkt jedes Flugs als Entity (`source: dji_flightlog`), nutzbar auf der eingebauten Map-Card und in Zonen-Automationen. Aus gutem Grund opt-in: HA hängt an das automatische „Übersicht"-Dashboard eine Karte an, sobald *irgendeine* `geo_location`-Entity existiert – die Flüge würden dann ungefragt auf der Standard-Karte landen.
 - **Eigenes Panel in der Seitenleiste** – drei Ansichten: *Flüge* (Statistik, Filter, große Karte, Flugliste), *Flug* (Details eines Flugs mit Verlaufsdiagrammen, Flugmodi, Ereignissen und Akku) und *Planen* (Karte mit DIPUL-Zonen, Suche und gemerkten Orten). Flugaufzeichnungen lassen sich dort direkt **hochladen** (Button oder Drag & Drop).
+- **Piloten** – Flüge Personen zuordnen: automatisch über die Drohne (z. B. „die Avata fliegt immer Nico“) und je Flug von Hand. Ein Pilot lässt sich mit einem Home-Assistant-Benutzer verknüpfen, der beim Öffnen des Panels dann seine eigenen Flüge sieht. Filter nach Pilot im Panel und in der Karten-Card (`pilot: me`), Pilot im Event `dji_flightlog_flight_imported` (`pilot_id`, `pilot_name`).
+- **Notizen** – zu jedem Flug eine eigene Notiz (Wetter, wer dabei war, was geübt wurde …), in der Flugliste und im Karten-Popup sichtbar.
 - **Orte merken mit DIPUL-Zonen** – im Panel einen Punkt auf der Karte wählen und speichern, die [DIPUL](https://www.dipul.de)-Geozonen (Flughäfen, Kontrollzonen, Naturschutz, Wohngebiete, …) werden dabei eingeblendet und am Punkt abgefragt. Liste im Dashboard per `custom:dji-spots-card`, mit Google-Maps-Link zum Starten der Navigation.
 - **Karte** – `custom:dji-flight-map-card` (Leaflet, offline-fähig außer Kacheln): alle Tracks, Heatmap, Popups mit Kennzahlen und GPX/KML/GeoJSON-Download, Filter nach Zeitraum/Drohne, Modus „nur letzter Flug".
 - **Aufnahmen aus OneDrive oder vom NAS** *(optional)* – Videos/Fotos (inkl. 360°-`.OSV` der Avata 360) aus einem OneDrive-Ordner oder einem lokalen Ordner (auch SMB/NFS-Freigaben, die Home Assistant als Netzwerkspeicher einbindet) werden per Aufnahmezeit den Flügen zugeordnet: Vorschaubilder und Player im Panel (360°-Aufnahmen als 360°-Video), Vorschaubilder im Karten-Popup, Link zur Datei in OneDrive bzw. Download des Originals. Mehrere Konten/Ordner gleichzeitig, doppelte Aufnahmen werden zusammengeführt; auf Wunsch werden dort liegende Flugaufzeichnungen (z. B. eines zweiten Piloten) in den Log-Ordner übernommen. Siehe [`docs/onedrive.md`](docs/onedrive.md) und [`docs/local-media.md`](docs/local-media.md).
 - **Event** `dji_flightlog_flight_imported` bei jedem neuen Flug (Payload = Flugzusammenfassung) → Benachrichtigung, OneDrive-Upload, …
 - **Services** `dji_flightlog.scan`, `dji_flightlog.import_file`, `dji_flightlog.export_track` (GPX/KML/GeoJSON, in Datei oder als Response). Die Höhe in den Exporten ist die Höhe über dem Startpunkt (KML: `relativeToGround`). Die absolute Höhe im Log taugt nicht dafür: DJI rechnet eine barometrische Home-Höhe dazu, die von Tag zu Tag wandert und selbst auf Meereshöhe unter 0 m liegt.
-- **HTTP-API** (HA-Auth): `/api/dji_flightlog/flights`, `/tracks`, `/flights/<id>/track`, `/flights/<id>/export/<gpx|kml|geojson>`, `/spots` (GET/POST), `/spots/<id>` (PATCH/DELETE), `/upload` (POST, multipart-Feld `file`, nur Admins), `/media/<id>/thumb`, `/media/<id>/play`, `/media/<id>/original`.
+- **HTTP-API** (HA-Auth): `/api/dji_flightlog/flights`, `/tracks`, `/flights/<id>/track`, `/flights/<id>/export/<gpx|kml|geojson>`, `/spots` (GET/POST), `/spots/<id>` (PATCH/DELETE), `/pilots` (GET, POST nur Admins), `/pilots/<id>` (PATCH/DELETE, nur Admins), `/flights/pilot` (POST `{"flight_ids": [...], "pilot_id": <id> | null | "auto"}`), `/flights/<id>/note` (PUT `{"note": "..."}`, leer löscht sie), `/upload` (POST, multipart-Feld `file`, nur Admins), `/media/<id>/thumb`, `/media/<id>/play`, `/media/<id>/original`.
 
 ## Installation
 
@@ -64,7 +66,8 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 **Flüge**
 - **Vor dem nächsten Flug**: oben eine Liste mit allem, was der letzte Flug jeder Drohne bzw. jedes Akkus gemeldet hat. Das sind Vorfälle (z. B. Smart-RTH), eine volle oder fast volle SD-Karte (weniger als 10 min Video), Kartenfehler (keine Karte, schreibgeschützt, zu langsam, Formatieren empfohlen, …) und Akkus, die über 60 °C warm wurden, unter 3,0 V pro Zelle entladen wurden, deren Zellen mehr als 0,2 V auseinanderlagen oder die unter 80 % Kapazität bzw. Lebensdauer liegen. „Erledigt“ blendet einen Hinweis aus, bis ein neuerer Flug ihn wieder meldet. Dieselbe Liste steht im Sensor „Hinweise vor dem nächsten Flug“ (Anzahl, Attribut `items`), z. B. für eine Benachrichtigung
 - Statistik-Kacheln (Flüge, Flugzeit, Strecke, max. Höhe/Speed, letzter Flug) über den gefilterten Zeitraum
-- Filter: Zeitraum (7 Tage … alles), Drohne (ab zwei Drohnen), Heatmap an/aus, DIPUL-Zonen an/aus
+- Filter: Zeitraum (7 Tage … alles), Drohne (ab zwei Drohnen), Pilot (sobald es Piloten gibt: alle, ein Pilot oder „Ohne Pilot“), Heatmap an/aus, DIPUL-Zonen an/aus. Ist der angemeldete HA-Benutzer mit einem Piloten verknüpft, startet das Panel mit dessen Flügen
+- **Piloten** (Symbol neben den Filtern, nur Admins): Piloten anlegen, umbenennen und löschen, je Pilot den HA-Benutzer und die Drohnen wählen, deren Flüge ihm automatisch gehören. Eine Drohne und ein Benutzer gehören immer nur zu einem Piloten. Löschen entfernt nur die Zuordnung, nicht die Flüge
 - Große Karte, die die volle Höhe nutzt
 - Flugliste rechts (auf dem Handy darunter), nach Tagen gruppiert; Klick auf einen Flug zoomt auf ihn und hebt ihn hervor, nochmal klicken hebt die Auswahl auf. Das Diagramm-Symbol am Flug oder „Details“ im Popup öffnet die Ansicht *Flug*
 
@@ -75,6 +78,8 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 - Flugmodi mit Zeitanteilen, Ereignisliste, Akku (Seriennummer, Zyklen, Kapazität, Temperatur, Zellspannungen), Aufnahme (Video, SD-Karte), Technik (Seriennummer, App- und Log-Version, Datei) und Export als GPX/KML/GeoJSON
 - Auf breiten Bildschirmen teilen sich Video, Karte und Verlauf den restlichen Bildschirm (links Video über Karte, rechts der Verlauf). Die Trenner dazwischen und der Griff darunter lassen sich ziehen (auch per Pfeiltasten), ein Doppelklick setzt sie zurück; die Aufteilung merkt sich der Browser. Auf dem Handy steht alles untereinander
 - ‹ und › blättern zum vorherigen bzw. nächsten Flug
+- Notiz: „+ Notiz“ unter den Kennzahlen öffnet ein Textfeld (bis 2000 Zeichen), das beim Tippen nach einer kurzen Pause und beim Verlassen des Felds speichert. Die erste Zeile erscheint in der Flugliste. Ein erneutes Einlesen des Logs lässt die Notiz stehen
+- Pilot: „über die Drohne“ (Standard), ein bestimmter Pilot oder „Kein Pilot“; die Wahl gilt sofort und überstimmt die Drohne. Das dürfen alle Benutzer, nicht nur Admins
 - Die Diagramme brauchen entschlüsselte Logs (API-Key). Flüge, die vor dieser Version importiert wurden, bekommen sie beim nächsten Scan
 
 **Planen**
@@ -126,6 +131,7 @@ title: Drohnenflüge
 mode: all          # all | last | flight (mit flight_id)
 days: 365          # optional: nur die letzten N Tage
 aircraft: Neo      # optional: Name oder Seriennummer
+pilot: me          # optional: me (der mit dem HA-Benutzer verknüpfte Pilot), Name, ID oder none (ohne Pilot)
 heatmap: true
 markers: true      # Startpunkte
 home: true         # Home-Punkte

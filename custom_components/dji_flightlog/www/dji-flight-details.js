@@ -19,6 +19,10 @@
  * The panel creates it, sets `hass`, hands over the (filtered) flight list
  * with `setFlights()` and picks one with `show(flightId)`. Prev/next inside
  * the view fire `dji-flight-selected` so the panel can follow.
+ * With pilots set up (`setPilots()`), the head has a pilot picker; a change is
+ * saved right away and fires `dji-flight-pilot`.
+ * The note on a flight saves itself while typing (after a pause and when the
+ * field loses focus) and fires `dji-flight-note`.
  *
  * Charts are plain SVG: one sample per second from the track file's
  * `profile`, no chart library.
@@ -110,6 +114,9 @@ class DjiFlightDetails extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._hass = null;
     this._flights = [];
+    this._pilots = [];
+    this._noteFor = null; // flight whose note the field shows
+    this._noteTimer = null;
     this._id = null;
     this._flight = null;
     this._track = null;
@@ -159,6 +166,12 @@ class DjiFlightDetails extends HTMLElement {
     if (this._renderMedia() && this._track) this._renderCharts();
   }
 
+  /** The pilots to pick from in the head; none: no picker. */
+  setPilots(pilots) {
+    this._pilots = pilots || [];
+    this._renderHead();
+  }
+
   /** Stop playback and leave the enlarged player (the panel calls this when the view is left). */
   pause() {
     this._setBig(false);
@@ -171,6 +184,7 @@ class DjiFlightDetails extends HTMLElement {
       return;
     }
     this._pendingId = null;
+    this._flushNote();
     if (!flightId) {
       this._id = null;
       this._flight = null;
@@ -209,6 +223,12 @@ class DjiFlightDetails extends HTMLElement {
         .head .title { flex: 1; min-width: 0; }
         .head h2 { margin: 0; font-size: 18px; font-weight: 500; }
         .head .sub { font-size: 13px; color: var(--secondary-text-color); }
+        .head .pilot { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 13px; color: var(--secondary-text-color); }
+        .head .pilot select {
+          font: inherit; font-size: 13px; padding: 3px 6px; border-radius: 6px; max-width: 100%;
+          background: var(--card-background-color, #fff); color: var(--primary-text-color);
+          border: 1px solid var(--divider-color, #e0e0e0);
+        }
         .head button {
           background: none; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 50%;
           width: 36px; height: 36px; cursor: pointer; color: inherit; font-size: 18px; line-height: 1;
@@ -260,6 +280,24 @@ class DjiFlightDetails extends HTMLElement {
         td.warn { color: var(--warning-color, #ffa600); }
         td.crit { color: var(--error-color, #db4437); }
         .muted { color: var(--secondary-text-color); font-size: 13px; }
+        #notecard:empty { display: none; }
+        #notecard .nh { display: flex; align-items: baseline; gap: 8px; }
+        #notecard .nh h3 { flex: 1; }
+        #notecard .st { font-size: 12px; color: var(--secondary-text-color); }
+        #notecard .st.err { color: var(--error-color, #db4437); }
+        #notecard textarea {
+          display: block; width: 100%; box-sizing: border-box; min-height: 60px; resize: vertical;
+          font: inherit; font-size: 14px; line-height: 1.4; padding: 8px 10px; border-radius: 8px;
+          background: var(--card-background-color, #fff); color: inherit;
+          border: 1px solid var(--divider-color, #e0e0e0);
+        }
+        #notecard textarea:focus { outline: none; border-color: var(--primary-color); }
+        button.addnote {
+          align-self: flex-start; font: inherit; font-size: 13px; cursor: pointer; padding: 4px 10px;
+          border-radius: 6px; border: 1px dashed var(--divider-color, #e0e0e0);
+          background: none; color: var(--primary-color);
+        }
+        button.addnote:hover { background: var(--secondary-background-color, #f2f2f2); }
         .links a { color: var(--primary-color); cursor: pointer; margin-right: 12px; font-size: 13px; }
 
         /* charts */
@@ -350,6 +388,7 @@ class DjiFlightDetails extends HTMLElement {
         <div class="content" id="content" hidden>
           <div class="tiles" id="tiles"></div>
           <div id="banner"></div>
+          <div id="notecard"></div>
           <div>
             <div class="work" id="work">
               <div class="left" id="left">
@@ -476,6 +515,7 @@ class DjiFlightDetails extends HTMLElement {
       <div class="title">
         <h2>${esc(fmtDate(f.start_time))}</h2>
         <div class="sub">${esc(f.aircraft_name || "DJI")}${place ? ` · ${esc(place)}` : ""}</div>
+        ${this._pilotHtml(f)}
       </div>
       <button id="newer" title="Nächster Flug" ${newer ? "" : "disabled"}>›</button>`;
     const go = (target) => {
@@ -487,6 +527,113 @@ class DjiFlightDetails extends HTMLElement {
     };
     head.querySelector("#older").onclick = () => go(older);
     head.querySelector("#newer").onclick = () => go(newer);
+    const pick = head.querySelector("#pilot");
+    if (pick) pick.onchange = () => this._assignPilot(f, pick.value);
+  }
+
+  /**
+   * Note field. Rebuilt only for another flight, so reloads of the flight list
+   * never touch what is being typed. Without a note: just an "add" button.
+   */
+  _renderNote(f, { edit = false, force = false } = {}) {
+    const box = this.shadowRoot.getElementById("notecard");
+    if (!edit && !force && f.flight_id === this._noteFor && box.firstElementChild) return;
+    this._noteFor = f.flight_id;
+    this._noteSaved = f.note || "";
+    box.className = "";
+    if (!this._noteSaved && !edit) {
+      box.innerHTML = `<button class="addnote">+ Notiz</button>`;
+      box.firstElementChild.onclick = () => this._renderNote(f, { edit: true });
+      return;
+    }
+    box.className = "card";
+    box.innerHTML = `
+      <div class="nh"><h3>Notiz</h3><span class="st" id="notest"></span></div>
+      <textarea id="note" maxlength="2000" placeholder="z. B. Wetter, Wind, wer dabei war, was geübt wurde …"></textarea>`;
+    const ta = box.querySelector("textarea");
+    ta.value = this._noteSaved;
+    const fit = () => {
+      ta.style.height = "auto";
+      ta.style.height = `${Math.min(ta.scrollHeight + 2, 320)}px`;
+    };
+    requestAnimationFrame(fit);
+    const id = f.flight_id;
+    ta.oninput = () => {
+      fit();
+      this._setNoteStatus("");
+      clearTimeout(this._noteTimer);
+      this._noteTimer = setTimeout(() => this._saveNote(id, ta.value), 1200);
+    };
+    ta.onblur = () => {
+      this._flushNote();
+      // Emptied: back to the small button.
+      if (!ta.value.trim() && this._noteFor === id) this._renderNote({ ...f, note: "" }, { force: true });
+    };
+    if (edit) ta.focus();
+  }
+
+  /** Save a note that is still waiting for the typing pause. */
+  _flushNote() {
+    if (!this._noteTimer) return;
+    clearTimeout(this._noteTimer);
+    this._noteTimer = null;
+    const ta = this.shadowRoot.getElementById("note");
+    if (ta && this._noteFor) this._saveNote(this._noteFor, ta.value);
+  }
+
+  async _saveNote(flightId, text) {
+    this._noteTimer = null;
+    const note = text.trim();
+    if (flightId === this._noteFor && note === this._noteSaved) return;
+    try {
+      const res = await this._hass.callApi("PUT", `${API}/flights/${flightId}/note`, { note });
+      if (flightId === this._noteFor) {
+        this._noteSaved = res.flight?.note ?? note;
+        this._setNoteStatus("Gespeichert");
+      }
+      if (this._flight?.flight_id === flightId) this._flight = { ...this._flight, note: this._noteSaved };
+    } catch (err) {
+      console.error("dji-flight-details note:", err);
+      if (flightId === this._noteFor) this._setNoteStatus("Speichern fehlgeschlagen", true);
+      return;
+    }
+    this.dispatchEvent(new CustomEvent("dji-flight-note", { detail: { flight_id: flightId }, bubbles: true, composed: true }));
+  }
+
+  _setNoteStatus(text, error = false) {
+    const st = this.shadowRoot.getElementById("notest");
+    if (!st) return;
+    st.textContent = text;
+    st.classList.toggle("err", error);
+  }
+
+  /** Pilot picker: automatic (by aircraft), a pilot, or nobody. */
+  _pilotHtml(f) {
+    if (!this._pilots.length) return "";
+    const byAircraft = this._pilots.find((p) => f.aircraft_sn && (p.aircraft || []).includes(f.aircraft_sn));
+    const value = f.pilot_source === "manual" ? f.pilot_id || "none" : "auto";
+    const opts = [
+      ["auto", byAircraft ? `${byAircraft.name} (über die Drohne)` : "Automatisch (keiner)"],
+      ...this._pilots.map((p) => [p.id, p.name]),
+      ["none", "Kein Pilot"],
+    ];
+    return `<label class="pilot">Pilot <select id="pilot" title="Wer diesen Flug geflogen ist">${opts
+      .map(([v, label]) => `<option value="${esc(v)}"${v === value ? " selected" : ""}>${esc(label)}</option>`)
+      .join("")}</select></label>`;
+  }
+
+  async _assignPilot(f, value) {
+    const pilotId = value === "none" ? null : value;
+    try {
+      const res = await this._hass.callApi("POST", `${API}/flights/pilot`, { flight_ids: [f.flight_id], pilot_id: pilotId });
+      const fresh = res.flights?.[0];
+      // The panel may filter this flight out of the list now; keep showing it.
+      if (fresh && this._flight?.flight_id === fresh.flight_id) this._flight = { ...this._flight, ...fresh };
+    } catch (err) {
+      console.error("dji-flight-details pilot:", err);
+    }
+    this._renderHead();
+    this.dispatchEvent(new CustomEvent("dji-flight-pilot", { detail: { flight_id: f.flight_id }, bubbles: true, composed: true }));
   }
 
   _renderAll({ loading = false } = {}) {
@@ -499,6 +646,7 @@ class DjiFlightDetails extends HTMLElement {
     if (!f) return;
     $("tiles").innerHTML = this._tilesHtml(f);
     $("banner").innerHTML = this._bannerHtml(f);
+    this._renderNote(f);
     $("info").innerHTML =
       this._modesHtml(f) + this._eventsHtml(f) + this._batteryHtml(f) + this._recordingHtml(f) + this._techHtml(f);
     this._wireLinks(f);
