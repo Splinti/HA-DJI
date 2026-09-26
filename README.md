@@ -1,6 +1,6 @@
 # DJI Flight Log für Home Assistant
 
-Custom Integration, die DJI-Fly-Flugaufzeichnungen (`DJIFlightRecord_*.txt`) aus einem Ordner importiert und daraus **Sensoren**, **geo_location-Entities** und eine **native Karten-Card** in Home Assistant macht. Läuft komplett lokal; nur zum Entschlüsseln neuerer Logs wird einmalig pro Flug ein Schlüssel von DJI geholt.
+Custom Integration, die DJI-Fly-Flugaufzeichnungen (`DJIFlightRecord_*.txt`) aus einem Ordner importiert und daraus **Sensoren**, **geo_location-Entities** und eine **native Karten-Card** in Home Assistant macht. Läuft komplett lokal; nur zum Entschlüsseln neuerer Logs wird einmalig pro Flug ein Schlüssel von DJI geholt (und, falls eingeschaltet, das Wetter zur Flugzeit bei Open-Meteo).
 
 ```
 RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB──────▶ /share/dji/flightrecords
@@ -22,8 +22,9 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 - **Akkus** – ein Gerät je Flugakku (erkannt an der Seriennummer im Log): Ladezyklen, Lebensdauer und Kapazität (volle gegenüber Nenn-Kapazität, laut Akku-Elektronik), Flüge und Flugzeit mit diesem Akku, dazu aus dem letzten Flug die höchste Temperatur (Starttemperatur im Attribut), die niedrigste Zellspannung und die größte Abweichung zwischen den Zellen. Ohne API-Key kennt die Integration nur die Seriennummer, also nur Flüge und Flugzeit. Beispiel-Automation für eine Akku-Warnung in [`examples/automations.yaml`](examples/automations.yaml).
 - **Vorfälle** – jeder Flug bekommt einen Status `ok`, `warning` oder `critical`, je nachdem, ob der Flugcontroller selbst eingegriffen hat: Warnung z. B. bei Smart-RTH oder Landung wegen niedrigem Akku, kritisch z. B. bei Zwangslandung, RTH nach Verbindungsverlust oder blockiertem Motor. Welche Aktionen es waren, steht in `incident_actions`. Ein per Taste ausgelöstes RTH zählt nicht, schnelle Sinkflüge auch nicht (bei FPV normal). Im Panel stehen Vorfälle und eine volle SD-Karte in der Flugliste und im Popup. Braucht den API-Key.
 - **geo_location** *(optional, standardmäßig aus)* – Startpunkt jedes Flugs als Entity (`source: dji_flightlog`), nutzbar auf der eingebauten Map-Card und in Zonen-Automationen. Aus gutem Grund opt-in: HA hängt an das automatische „Übersicht"-Dashboard eine Karte an, sobald *irgendeine* `geo_location`-Entity existiert – die Flüge würden dann ungefragt auf der Standard-Karte landen.
-- **Eigenes Panel in der Seitenleiste** – vier Ansichten: *Flüge* (Statistik, Filter, große Karte, Flugliste), *Flug* (Details eines Flugs mit Verlaufsdiagrammen, Flugmodi, Ereignissen und Akku), *Planen* (Karte mit DIPUL-Zonen, Suche und gemerkten Orten) und *Flotte* (alle Drohnen mit Kennzahlen im Überblick). Flugaufzeichnungen lassen sich dort direkt **hochladen** (Button oder Drag & Drop).
+- **Eigenes Panel in der Seitenleiste** – fünf Ansichten: *Flüge* (Statistik, Filter, große Karte, Flugliste), *Flug* (Details eines Flugs mit Verlaufsdiagrammen, Flugmodi, Ereignissen und Akku), *Planen* (Karte mit DIPUL-Zonen, Suche und gemerkten Orten), *Flotte* (alle Drohnen mit Kennzahlen im Überblick) und *Akkus* (Zustand und Alterung jedes Flugakkus). Flugaufzeichnungen lassen sich dort direkt **hochladen** (Button oder Drag & Drop).
 - **Piloten** – Flüge Personen zuordnen: automatisch über die Drohne (z. B. „die Avata fliegt immer Nico“) und je Flug von Hand. Ein Pilot lässt sich mit einem Home-Assistant-Benutzer verknüpfen, der beim Öffnen des Panels dann seine eigenen Flüge sieht. Filter nach Pilot im Panel und in der Karten-Card (`pilot: me`), Pilot im Event `dji_flightlog_flight_imported` (`pilot_id`, `pilot_name`).
+- **Wetter zur Flugzeit** *(optional)* – Wind und Böen, Wind in 100 m, Windrichtung, Temperatur, Bewölkung und Niederschlag am Startpunkt, von [Open-Meteo](https://open-meteo.com) (kostenlos, ohne API-Key). In der Flugansicht und im Karten-Popup; ältere Flüge werden automatisch nachgeholt.
 - **Notizen** – zu jedem Flug eine eigene Notiz (Wetter, wer dabei war, was geübt wurde …), in der Flugliste und im Karten-Popup sichtbar.
 - **Orte merken mit DIPUL-Zonen** – im Panel einen Punkt auf der Karte wählen und speichern, die [DIPUL](https://www.dipul.de)-Geozonen (Flughäfen, Kontrollzonen, Naturschutz, Wohngebiete, …) werden dabei eingeblendet und am Punkt abgefragt. Liste im Dashboard per `custom:dji-spots-card`, mit Google-Maps-Link zum Starten der Navigation.
 - **Karte** – `custom:dji-flight-map-card` (Leaflet, offline-fähig außer Kacheln): alle Tracks, Heatmap, Popups mit Kennzahlen und GPX/KML/GeoJSON-Download, Filter nach Zeitraum/Drohne, Modus „nur letzter Flug".
@@ -52,6 +53,7 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 | Max. Punkte pro Track | 1500 | Downsampling beim Speichern |
 | geo_location-Limit | 0 (aus) | Nur die neuesten N Flüge bekommen eine Entity. **0 = keine** – siehe Hinweis unten |
 | In der Seitenleiste anzeigen | an | Panel „Drohnenflüge" in der HA-Seitenleiste |
+| Wetter von Open-Meteo | aus | Wetter zur Flugzeit abrufen, siehe [Wetter](#wetter-zur-flugzeit) |
 
 **Aufnahmen:** Integration ein zweites Mal hinzufügen, dann auswählen:
 - *Ordner oder Netzwerkspeicher (SMB, NFS)*: Pfad angeben, z. B. `/media/nas/drohne`. Details in [`docs/local-media.md`](docs/local-media.md).
@@ -61,7 +63,7 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 
 ## Eigenes Dashboard in der Seitenleiste
 
-Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge"** in der HA-Seitenleiste – kein Lovelace-Dashboard, sondern eine eigene Seite mit vier Ansichten. Die zuletzt gewählte merkt sich der Browser.
+Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge"** in der HA-Seitenleiste – kein Lovelace-Dashboard, sondern eine eigene Seite mit fünf Ansichten. Die zuletzt gewählte merkt sich der Browser.
 
 **Flüge**
 - **Vor dem nächsten Flug**: oben eine Liste mit allem, was der letzte Flug jeder Drohne bzw. jedes Akkus gemeldet hat. Das sind Vorfälle (z. B. Smart-RTH), eine volle oder fast volle SD-Karte (weniger als 10 min Video), Kartenfehler (keine Karte, schreibgeschützt, zu langsam, Formatieren empfohlen, …) und Akkus, die über 60 °C warm wurden, unter 3,0 V pro Zelle entladen wurden, deren Zellen mehr als 0,2 V auseinanderlagen oder die unter 80 % Kapazität bzw. Lebensdauer liegen. „Erledigt“ blendet einen Hinweis aus, bis ein neuerer Flug ihn wieder meldet. Dieselbe Liste steht im Sensor „Hinweise vor dem nächsten Flug“ (Anzahl, Attribut `items`), z. B. für eine Benachrichtigung
@@ -75,6 +77,7 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 - Kennzahlen: Dauer, Strecke, maximale Entfernung vom Home-Punkt, max. Höhe und Speed, Akku, Videolänge; Hinweis bei Vorfall, voller SD-Karte oder fehlendem API-Key
 - Track auf der Karte und Verlaufsdiagramme über die Flugzeit: Höhe über dem Start, Geschwindigkeit, Entfernung vom Home-Punkt, Akku und Akku-Temperatur, darüber ein Band mit den Flugmodi (Normal, Sport, ActiveTrack, RTH, …). Eingriffe des Flugcontrollers (RTH, Landung, …) sind als gestrichelte Linien eingezeichnet. Mit Maus oder Finger über die Diagramme fahren zeigt die Werte an dieser Stelle und die Position auf der Karte
 - Mit Aufnahmen: ein Band „Medien“ im Verlauf zeigt, wann gefilmt bzw. fotografiert wurde. Läuft ein Video, wandern Diagramm-Cursor und Kartenposition mit; ein Klick in den Verlauf springt im Video an diese Stelle (bzw. wählt die passende Aufnahme). In der Großansicht stehen die aktuellen Werte und eine kleine Höhenkurve unter dem Video. Videos werden am Aufnahmestart ausgerichtet, den das Flugprotokoll festhält (der Zeitstempel im Dateinamen liegt rund 2 s zu früh); daher kommt auch die Länge, wenn die Quelle keine kennt. Bleibt ein Rest, lässt sich jede Aufnahme sekundenweise verschieben (Versatz − / +, wird im Browser gespeichert)
+- Wetter (mit der Open-Meteo-Option): Wind, Böen und Temperatur in der Kopfzeile, die Einzelwerte in der Karte „Wetter“
 - Flugmodi mit Zeitanteilen, Ereignisliste, Akku (Seriennummer, Zyklen, Kapazität, Temperatur, Zellspannungen), Aufnahme (Video, SD-Karte), Technik (Seriennummer, App- und Log-Version, Datei) und Export als GPX/KML/GeoJSON
 - Auf breiten Bildschirmen teilen sich Video, Karte und Verlauf den restlichen Bildschirm (links Video über Karte, rechts der Verlauf). Die Trenner dazwischen und der Griff darunter lassen sich ziehen (auch per Pfeiltasten), ein Doppelklick setzt sie zurück; die Aufteilung merkt sich der Browser. Auf dem Handy steht alles untereinander
 - ‹ und › blättern zum vorherigen bzw. nächsten Flug
@@ -90,8 +93,15 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 
 **Flotte**
 - Eine Karte je Drohne, in der Farbe ihrer Tracks auf der Übersichtskarte: Name, Modell, Seriennummer, Flüge, Flugzeit und Strecke insgesamt, die Rekorde (max. Höhe, max. Speed, längster Flug), wann sie zuletzt geflogen ist und ein Balkendiagramm mit der Flugzeit pro Monat (letzte 12 Monate)
-- Dazu der Pilot, dem die Drohne zugeordnet ist, der freie Platz auf der SD-Karte beim letzten Flug, die Zahl der Flüge mit Vorfall (Warnung / kritisch), die DJI-Fly-Version aus dem letzten Log und die Akkus, die mit ihr geflogen sind (Flüge, Zyklen, Lebensdauer)
+- Dazu der Pilot, dem die Drohne zugeordnet ist, der freie Platz auf der SD-Karte beim letzten Flug, die Zahl der Flüge mit Vorfall (Warnung / kritisch), die DJI-Fly-Version aus dem letzten Log und die Akkus, die mit ihr geflogen sind (Flüge, Zyklen, Lebensdauer; ein Klick darauf öffnet den Akku unter *Akkus*)
 - Zählt immer alle Flüge, unabhängig von den Filtern unter *Flüge*. Ein Klick auf eine Drohne öffnet *Flüge* mit allen Flügen dieser Drohne
+
+**Akkus**
+- Eine Karte je Flugakku: Seriennummer, Drohne, Ladezyklen, Lebensdauer, Kapazität (volle gegenüber Nenn-Kapazität), Flüge, Flugzeit, zuletzt benutzt und der durchschnittliche Verbrauch in %/min (ab 5 Flügen auch der der letzten 5 Flüge, als Hinweis auf nachlassende Leistung)
+- **Gesundheitsverlauf**: die Kapazität über die Ladezyklen, mit der 80-%-Linie. Die Akku-Elektronik meldet die volle Kapazität von Flug zu Flug um etwa 1 % unterschiedlich, die Linie nimmt deshalb je Zyklus den Median, die einzelnen Flüge stehen blass dahinter. Bei mehreren Akkus oben ein Vergleich aller Kurven: So sieht man, ob einer schneller nachlässt als die anderen
+- Je Flug die höchste Temperatur, die niedrigste Zellspannung und die größte Abweichung zwischen den Zellen als kleine Diagramme, mit denselben Warnschwellen wie in der Flugansicht (über 60 °C, unter 3,0 V, über 0,2 V); Werte jenseits davon sind orange
+- Liste der Flüge mit dem Akku; ein Klick darauf (oder auf einen Punkt im Diagramm) öffnet den Flug
+- Ohne DJI-API-Key kennt die Integration nur die Seriennummer: dann nur Flüge und Flugzeit, mit einem Hinweis statt der Diagramme
 
 **Überall**
 - ↻-Button oben rechts scannt den Log-Ordner sofort
@@ -207,9 +217,20 @@ python -m venv venv; .\venv\Scripts\pip install homeassistant pydjirecord pytest
 
 Unter Windows fehlen `fcntl`/`resource`; `tests/conftest.py` enthält den nötigen Socket-Workaround, die beiden Module müssen als leere Stubs in `site-packages` liegen (siehe `docs/dev-windows.md`).
 
+## Wetter zur Flugzeit
+
+Unter *Integration → Konfigurieren → „Wetter zur Flugzeit von Open-Meteo abrufen“* einschalten. Danach holt die Integration für jeden Flug einmal das Wetter aus der [Historical Weather API](https://open-meteo.com/en/docs/historical-weather-api) von Open-Meteo, für die volle Stunde, die der Flugmitte am nächsten liegt:
+
+- Wind und Böen in 10 m, Wind in 100 m (so hoch reicht das Archiv; das kommt den üblichen 120 m am nächsten), jeweils mit Richtung, Temperatur, Bewölkung, Niederschlag und die Wetterlage (klar, Regen, Gewitter …)
+- Für ältere Tage sind das Reanalyse-Daten (ERA5), für die letzten Tage Modellwerte, die Open-Meteo später durch Reanalysedaten ersetzt. Das Raster ist 9–25 km grob: Böen an einem Hang oder hinter einem Waldrand sieht es nicht
+- Neue Flüge bekommen das Wetter direkt nach dem Import, ältere werden nach dem Einschalten im Hintergrund nachgeholt (bis zu 50 Abfragen pro Scan; Flüge am selben Ort und Tag teilen sich eine). Liefert Open-Meteo für einen Tag noch nichts, fragt die Integration nach 6 Stunden erneut
+- An Open-Meteo gehen nur das Datum und der Startpunkt, auf zwei Nachkommastellen gerundet (etwa 1 km). Ohne GPS-Position (weder Start- noch Home-Punkt im Log) gibt es kein Wetter
+- Die Werte liegen getrennt von der Flugzusammenfassung, ein erneutes Einlesen des Logs lässt sie stehen. Ausschalten stoppt neue Abfragen; schon geholtes Wetter bleibt sichtbar
+- Die Daten stehen unter [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), die Flugansicht nennt Open-Meteo als Quelle. Die kostenlose API ist für nicht-kommerzielle Nutzung gedacht
+
 ## Speicherort der Daten
 
-- Index (Zusammenfassungen, Datei-Bookkeeping): `/config/.storage/dji_flightlog.flights`
+- Index (Zusammenfassungen, Datei-Bookkeeping, Notizen, Wetter): `/config/.storage/dji_flightlog.flights`
 - Tracks: `/config/.storage/dji_flightlog/tracks/<flight_id>.json`
 - Beides ist Teil des HA-Backups. Wird eine Rohdatei aus dem Ordner gelöscht, bleibt der Flug im Logbuch.
 - Liest eine neue Version der Integration mehr oder korrekter aus den Logs, werden bereits importierte Flüge beim nächsten Scan still neu eingelesen (kein erneutes `flight_imported`-Event). Das geht nur für Flüge, deren Rohdatei noch im Ordner liegt, und bei verschlüsselten Logs nur mit API-Key.

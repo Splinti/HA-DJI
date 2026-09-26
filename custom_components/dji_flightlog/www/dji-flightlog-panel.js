@@ -2,7 +2,7 @@
  * dji-flightlog-panel
  *
  * Full-page Home Assistant panel (sidebar entry) for the dji_flightlog
- * integration, in four views:
+ * integration, in five views:
  *   Flüge   statistics, filters, a large map and a clickable flight list
  *   Flug    details of one flight (dji-flight-details: charts, battery, ...)
  *   Planen  a map with the DIPUL geo zones for picking and saving spots, the
@@ -10,6 +10,9 @@
  *   Flotte  one card per aircraft (totals, records, flight time per month,
  *           pilot, SD card, incidents, batteries), aggregated here from all
  *           flights regardless of the filters; a card opens its flights
+ *   Akkus   one card per flight battery: health over the charge cycles, heat
+ *           and cells per flight, consumption and its flights, likewise from
+ *           all flights
  * Flight records can be uploaded with the upload button or by dropping files /
  * folders onto the page (admins only).
  *
@@ -57,7 +60,7 @@ function load360() {
   return viewPromise;
 }
 
-const VIEWS = ["flights", "flight", "plan", "fleet"];
+const VIEWS = ["flights", "flight", "plan", "fleet", "batteries"];
 const VIEW_KEY = "dji_flightlog.panel_view";
 function loadView() {
   try {
@@ -127,8 +130,9 @@ class DjiFlightLogPanel extends HTMLElement {
     this._planFlights = false;
     this._spots = [];
     this._spotsKey = null;
-    // Unfiltered flight list for "Flotte"; null: to be (re)loaded.
+    // Unfiltered flight list for "Flotte" and "Akkus"; null: to be (re)loaded.
     this._fleet = null;
+    this._batFocus = null; // battery to scroll to once "Akkus" is rendered
     this._reload = false;
     this._uploading = false;
   }
@@ -237,7 +241,7 @@ class DjiFlightLogPanel extends HTMLElement {
         nav.views button.on { opacity: 1; border-bottom-color: currentColor; }
         .view { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
         .view[hidden] { display: none; }
-        #v-flight, #v-fleet { overflow-y: auto; }
+        #v-flight, #v-fleet, #v-batteries { overflow-y: auto; }
 
         .stats { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 16px 0; flex: 0 0 auto; }
         .tile {
@@ -296,7 +300,7 @@ class DjiFlightLogPanel extends HTMLElement {
         /* Phone: the page scrolls, the map gets a fixed share of the screen. */
         :host(.narrow) { height: auto; min-height: 100dvh; }
         .layout.narrow .body { flex-direction: column; }
-        :host(.narrow) #v-flight, :host(.narrow) #v-fleet { overflow: visible; }
+        :host(.narrow) #v-flight, :host(.narrow) #v-fleet, :host(.narrow) #v-batteries { overflow: visible; }
         .layout.narrow .mapwrap { flex: 0 0 auto; height: 60vh; }
         .layout.narrow aside { flex: 0 0 auto; max-height: 60vh; }
 
@@ -475,7 +479,36 @@ class DjiFlightLogPanel extends HTMLElement {
         .ac dd.warn { color: var(--warning-color, #ffa600); }
         .ac dd.crit { color: var(--error-color, #db4437); }
         .ac .bats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-        .ac .bat { padding: 3px 8px; border-radius: 12px; font-size: 12px; background: var(--secondary-background-color, #f2f2f2); }
+        .ac .bat {
+          padding: 3px 8px; border-radius: 12px; font: inherit; font-size: 12px; color: inherit; cursor: pointer;
+          border: none; background: var(--secondary-background-color, #f2f2f2);
+        }
+        .ac .bat:hover, .ac .bat:focus-visible { outline: 1px solid var(--ac-color); }
+
+        .batcmp { grid-column: 1 / -1; }
+        .batcmp .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
+        .batcmp .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+        .ac.bc { cursor: default; }
+        .ac.bc:hover { outline: none; }
+        .ac.bc.focus { outline: 2px solid var(--ac-color); outline-offset: -2px; }
+        .chart .h { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
+        .chart .h .sub { text-align: right; }
+        .chart svg { display: block; max-width: 100%; height: auto; overflow: visible; }
+        .chart svg text { font-size: 10px; fill: var(--secondary-text-color); }
+        .chart .pt { cursor: pointer; }
+        .chart .pt:hover { stroke: var(--primary-text-color); stroke-width: 2; }
+        .charts3 { display: flex; flex-direction: column; gap: 10px; }
+        .nodata { color: var(--secondary-text-color); font-size: 12px; }
+        .ac.bc details summary { cursor: pointer; color: var(--secondary-text-color); }
+        .bflights { margin-top: 6px; display: flex; flex-direction: column; }
+        .bflights button {
+          display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; text-align: left; padding: 6px 4px;
+          background: none; border: none; border-top: 1px solid var(--divider-color, #e0e0e0);
+          font: inherit; font-size: 12px; color: inherit; cursor: pointer;
+        }
+        .bflights button:hover { background: var(--secondary-background-color, #f2f2f2); }
+        .bflights .sub { grid-column: 1 / -1; }
+        .bflights .warn { color: var(--warning-color, #ffa600); }
       </style>
       <div class="layout page">
         <header>
@@ -494,6 +527,7 @@ class DjiFlightLogPanel extends HTMLElement {
           <button data-view="flight">Flug</button>
           <button data-view="plan">Planen</button>
           <button data-view="fleet">Flotte</button>
+          <button data-view="batteries">Akkus</button>
         </nav>
 
         <div id="upbar" hidden></div>
@@ -529,6 +563,10 @@ class DjiFlightLogPanel extends HTMLElement {
 
         <section class="view" id="v-fleet" hidden>
           <div class="fleet" id="fleet"></div>
+        </section>
+
+        <section class="view" id="v-batteries" hidden>
+          <div class="fleet" id="batteries"></div>
         </section>
 
         <section class="view" id="v-plan" hidden>
@@ -709,7 +747,7 @@ class DjiFlightLogPanel extends HTMLElement {
       this._renderSpots();
     } else if (view === "flight") {
       this._showDetails();
-    } else if (view === "fleet") {
+    } else if (view === "fleet" || view === "batteries") {
       this._showFleet();
     }
   }
@@ -862,7 +900,7 @@ class DjiFlightLogPanel extends HTMLElement {
       this._renderNote();
       this._renderAttention();
       this._fleet = null; // new import, note or pilot: aggregate again
-      if (this._view === "fleet") this._showFleet();
+      if (this._view === "fleet" || this._view === "batteries") this._showFleet();
       if (this._view === "flight") this._showDetails();
       else {
         this._details?.setPilots?.(this._pilots);
@@ -907,9 +945,12 @@ class DjiFlightLogPanel extends HTMLElement {
 
   // -- fleet ----------------------------------------------------------------
 
-  /** "Flotte": every aircraft, from all flights; the filters of "Flüge" do not apply. */
+  /**
+   * "Flotte" / "Akkus": every aircraft or battery, from all flights; the
+   * filters of "Flüge" do not apply.
+   */
   async _showFleet() {
-    const box = this.shadowRoot.getElementById("fleet");
+    const box = this.shadowRoot.getElementById(this._view === "batteries" ? "batteries" : "fleet");
     if (!this._fleet) {
       if (!this._data) return; // _load renders again once the flights are in
       const f = this._filters;
@@ -926,6 +967,7 @@ class DjiFlightLogPanel extends HTMLElement {
       }
     }
     if (this._view === "fleet") this._renderFleet();
+    else if (this._view === "batteries") this._renderBatteries();
   }
 
   _renderFleet() {
@@ -958,9 +1000,9 @@ class DjiFlightLogPanel extends HTMLElement {
         const bats = a.batteries
           .map(
             (b) =>
-              `<span class="bat" title="Akku ${esc(b.sn)}">…${esc(b.sn.slice(-4))} · ${b.flights} ${
+              `<button class="bat" data-bat="${esc(b.sn)}" title="Akku ${esc(b.sn)} in der Akku-Übersicht">…${esc(b.sn.slice(-4))} · ${b.flights} ${
                 b.flights === 1 ? "Flug" : "Flüge"
-              }${b.cycles != null ? ` · ${b.cycles} ${b.cycles === 1 ? "Zyklus" : "Zyklen"}` : ""}${b.life_pct != null ? ` · ${b.life_pct} %` : ""}</span>`,
+              }${b.cycles != null ? ` · ${b.cycles} ${b.cycles === 1 ? "Zyklus" : "Zyklen"}` : ""}${b.life_pct != null ? ` · ${b.life_pct} %` : ""}</button>`,
           )
           .join("");
         return `
@@ -996,8 +1038,13 @@ class DjiFlightLogPanel extends HTMLElement {
       })
       .join("");
     for (const el of box.querySelectorAll(".ac")) {
-      el.onclick = () => this._showAircraft(el.dataset.sn, fleet.length);
+      el.onclick = (e) => {
+        const bat = e.target.closest("button.bat");
+        if (bat) this._showBattery(bat.dataset.bat);
+        else this._showAircraft(el.dataset.sn, fleet.length);
+      };
       el.onkeydown = (e) => {
+        if (e.target !== el) return; // a battery button: its own click
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           this._showAircraft(el.dataset.sn, fleet.length);
@@ -1008,20 +1055,194 @@ class DjiFlightLogPanel extends HTMLElement {
 
   /** A card in "Flotte" was clicked: "Flüge" with every flight of this aircraft, whoever flew it. */
   _showAircraft(sn, count) {
+    // With a single drone there is no aircraft filter (see _renderStats): all flights are its flights.
+    this._showAll(count > 1 && sn !== "?" ? sn : "");
+    this._applyFilters();
+    this._setView("flights");
+  }
+
+  /** Filters of "Flüge" to every flight (of one aircraft), whoever flew it. */
+  _showAll(aircraft = "") {
     this._filters.days = "0";
     this._filters.pilot = "";
-    // With a single drone there is no aircraft filter (see _renderStats): all flights are its flights.
-    this._filters.aircraft = count > 1 && sn !== "?" ? sn : "";
+    this._filters.aircraft = aircraft;
     this.shadowRoot.getElementById("range").value = "0";
     this.shadowRoot.getElementById("pilot").value = "";
     const select = this.shadowRoot.getElementById("aircraft");
     if (![...select.options].some((o) => o.value === this._filters.aircraft)) {
       // The filtered list may not have filled the select with this drone yet.
-      select.insertAdjacentHTML("beforeend", `<option value="${esc(sn)}">${esc(sn)}</option>`);
+      select.insertAdjacentHTML("beforeend", `<option value="${esc(aircraft)}">${esc(aircraft)}</option>`);
     }
     select.value = this._filters.aircraft;
-    this._applyFilters();
-    this._setView("flights");
+  }
+
+  // -- batteries ------------------------------------------------------------
+
+  /** A battery in "Flotte" was clicked: its card in "Akkus". */
+  _showBattery(sn) {
+    this._batFocus = sn;
+    this._setView("batteries");
+  }
+
+  /** A flight from "Akkus": its details, with all flights listed if the filters hide it. */
+  async _openFlight(id) {
+    if (!(this._data?.flights || []).some((f) => f.flight_id === id)) {
+      this._showAll();
+      this._card?.updateOptions(this._cardFilters());
+      await this._load();
+    }
+    this._openDetails(id);
+  }
+
+  _renderBatteries() {
+    const box = this.shadowRoot.getElementById("batteries");
+    const data = this._fleet;
+    const flights = data?.flights || [];
+    const bats = aggregateBatteries(flights);
+    if (!bats.length) {
+      box.innerHTML = `<div class="empty">${
+        flights.length ? "Die Logs nennen keinen Akku." : "Noch keine Flüge importiert."
+      }</div>`;
+      return;
+    }
+    const acName = (sn) =>
+      data.aircraft?.[sn]?.name || flights.find((f) => (f.aircraft_sn || "?") === sn)?.aircraft_name || "DJI";
+    const withCaps = bats.filter((b) => b.cycles.length);
+    let html = "";
+    if (withCaps.length > 1) {
+      const series = withCaps.map((b) => ({
+        color: b.color,
+        points: b.cycles.map((c) => ({ x: c.cycle, y: c.pct, title: `…${b.sn.slice(-4)}: ${cycleText(c)}` })),
+      }));
+      html += `
+        <div class="ac bc batcmp" style="--ac-color:var(--divider-color, #e0e0e0)">
+          <div class="chart">
+            <div class="h"><div>Kapazität im Vergleich</div><div class="sub">volle gegenüber Nenn-Kapazität je Ladezyklus</div></div>
+            ${lineChart({ series, ...CAPACITY_AXIS, width: 640, height: 130 })}
+          </div>
+          <div class="legend">${withCaps
+            .map((b) => `<span><i style="background:${esc(b.color)}"></i>…${esc(b.sn.slice(-4))} (${esc(b.aircraft.map(acName).join(", "))})</span>`)
+            .join("")}</div>
+        </div>`;
+    }
+    html += bats.map((b) => this._batteryHtml(b, acName)).join("");
+    box.innerHTML = html;
+    for (const el of box.querySelectorAll("[data-flight]")) {
+      el.onclick = () => this._openFlight(el.dataset.flight);
+    }
+    if (this._batFocus) {
+      const card = [...box.querySelectorAll(".ac[data-bat]")].find((el) => el.dataset.bat === this._batFocus);
+      this._batFocus = null;
+      if (card) {
+        card.classList.add("focus");
+        card.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+    }
+  }
+
+  _batteryHtml(b, acName) {
+    const last = b.lastReading || b.last;
+    const cap =
+      last.battery_full_mah && last.battery_design_mah ? `${Math.round(capPct(last))} %` : "–";
+    const readings = b.flights.filter((f) => f.battery_temp_max_c != null || f.battery_cell_min_v != null);
+    const when = (f) => fmtDate(f.start_time, { dateStyle: "short", timeStyle: "short" });
+    const perFlight = (key, digits, unit, limit) =>
+      lineChart({
+        series: [
+          {
+            color: b.color,
+            points: readings
+              .map((f, i) => ({ x: i, y: f[key], id: f.flight_id, title: `${when(f)}: ${num(f[key], digits)} ${unit}` }))
+              .filter((pt) => pt.y != null),
+          },
+        ],
+        limit,
+        digits,
+        height: 64,
+        xLabels: [fmtDate(readings[0]?.start_time, { dateStyle: "short" }), fmtDate(readings.at(-1)?.start_time, { dateStyle: "short" })],
+      });
+    const small = (label, sub, chart) =>
+      `<div class="chart"><div class="h"><div>${esc(label)}</div><div class="sub">${esc(sub)}</div></div>${chart}</div>`;
+    const capChart = b.cycles.length
+      ? small(
+          "Kapazität",
+          last.battery_full_mah ? `${last.battery_full_mah} von ${last.battery_design_mah} mAh` : "",
+          lineChart({
+            series: [
+              {
+                color: b.color,
+                faint: b.capFlights.map((f) => ({
+                  x: f.battery_cycles,
+                  y: capPct(f),
+                  id: f.flight_id,
+                  title: `${when(f)}: ${num(capPct(f), 1)} % (${f.battery_full_mah} mAh)`,
+                })),
+                points: b.cycles.map((c) => ({ x: c.cycle, y: c.pct, title: cycleText(c) })),
+              },
+            ],
+            ...CAPACITY_AXIS,
+          }),
+        )
+      : "";
+    const flightsHtml = b.flights
+      .slice()
+      .reverse()
+      .map((f) => {
+        const used = consumption(f);
+        const warn = (bad, text) => `<span class="${bad ? "warn" : ""}">${esc(text)}</span>`;
+        const parts = [
+          f.battery_start_pct != null ? esc(`${f.battery_start_pct} → ${f.battery_end_pct} %`) : "",
+          used != null ? esc(`${num(used, 1)} %/min`) : "",
+          f.battery_temp_max_c != null ? warn(f.battery_temp_max_c > BAT_HOT_C, `${num(f.battery_temp_max_c, 1)} °C`) : "",
+          f.battery_cell_min_v != null ? warn(f.battery_cell_min_v < BAT_CELL_MIN_V, `min. ${num(f.battery_cell_min_v, 2)} V`) : "",
+          f.battery_cell_dev_max_v != null
+            ? warn(f.battery_cell_dev_max_v > BAT_CELL_DEV_V, `Δ ${num(f.battery_cell_dev_max_v, 3)} V`)
+            : "",
+        ].filter(Boolean);
+        return `<button data-flight="${esc(f.flight_id)}" title="Flug anzeigen">
+          <span>${esc(fmtDate(f.start_time, { dateStyle: "medium", timeStyle: "short" }))}</span>
+          <span>${esc(fmtDur(f.duration_s))}</span>
+          <span class="sub">${esc(acName(f.aircraft_sn || "?"))}${parts.length ? ` · ${parts.join(" · ")}` : ""}</span>
+        </button>`;
+      })
+      .join("");
+    return `
+      <div class="ac bc" data-bat="${esc(b.sn)}" style="--ac-color:${esc(b.color)}">
+        <div class="head">
+          <div class="n">Akku …${esc(b.sn.slice(-4))}</div>
+          <div class="m">${esc(`SN ${b.sn} · ${b.aircraft.map(acName).join(", ")}`)}</div>
+        </div>
+        <div class="nums">
+          ${tile(last.battery_cycles ?? "–", "Ladezyklen")}
+          ${tile(last.battery_life_pct != null ? `${last.battery_life_pct} %` : "–", "Lebensdauer")}
+          ${tile(cap, "Kapazität")}
+          ${tile(b.flights.length, "Flüge")}
+          ${tile(fmtDur(b.time_s), "Flugzeit")}
+          ${tile(b.consumption != null ? `${num(b.consumption, 1)} %/min` : "–", "Verbrauch")}
+        </div>
+        <div>
+          <div>Zuletzt benutzt ${esc(fmtAgo(b.last.start_time))}</div>
+          <div class="sub">${esc(fmtDate(b.last.start_time, { dateStyle: "medium" }))}${
+            b.recentConsumption != null
+              ? esc(` · Verbrauch der letzten ${BAT_RECENT} Flüge: ${num(b.recentConsumption, 1)} %/min`)
+              : ""
+          }</div>
+        </div>
+        ${capChart}
+        ${
+          readings.length
+            ? `<div class="charts3">
+                ${small("Max. Temperatur", `Warnung über ${BAT_HOT_C} °C`, perFlight("battery_temp_max_c", 1, "°C", { value: BAT_HOT_C, above: true, floor: 20 }))}
+                ${small("Min. Zellspannung", `unter ${num(BAT_CELL_MIN_V, 1)} V`, perFlight("battery_cell_min_v", 2, "V", { value: BAT_CELL_MIN_V, above: false }))}
+                ${small("Zellabweichung", `über ${num(BAT_CELL_DEV_V, 1)} V`, perFlight("battery_cell_dev_max_v", 3, "V", { value: BAT_CELL_DEV_V, above: true, floor: 0 }))}
+              </div>`
+            : `<div class="nodata">Keine Messwerte des Akkus in den Logs: Ohne DJI-API-Key kennt die Integration nur die Seriennummer, also Flüge und Flugzeit. Zyklen, Kapazität, Temperatur und Zellspannungen stehen in den verschlüsselten Teilen der Logs.</div>`
+        }
+        <details>
+          <summary>${b.flights.length} ${b.flights.length === 1 ? "Flug" : "Flüge"} mit diesem Akku</summary>
+          <div class="bflights">${flightsHtml}</div>
+        </details>
+      </div>`;
   }
 
   // -- pilots ---------------------------------------------------------------
@@ -1782,6 +2003,141 @@ function sparkline(months, color) {
     })
     .join("");
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Flugzeit pro Monat, letzte ${months.length} Monate">${bars}</svg>`;
+}
+
+// Warning thresholds, the same as in the flight view and "Vor dem nächsten Flug".
+const BAT_HOT_C = 60;
+const BAT_CELL_MIN_V = 3.0;
+const BAT_CELL_DEV_V = 0.2;
+const BAT_WORN_PCT = 80;
+const BAT_RECENT = 5; // flights for the recent consumption
+const CAPACITY_AXIS = { limit: { value: BAT_WORN_PCT, above: false, ceil: 100 }, unit: " %", xTitle: "Zyklen" };
+
+const capPct = (f) => (100 * f.battery_full_mah) / f.battery_design_mah;
+const cycleText = (c) =>
+  `${c.cycle} ${c.cycle === 1 ? "Zyklus" : "Zyklen"}: ${num(c.pct, 1)} %${c.n > 1 ? ` (Median aus ${c.n} Flügen)` : ""}`;
+
+/** Charge used per minute of a flight; null without levels or for hops under a minute. */
+function consumption(f) {
+  if (f.battery_start_pct == null || f.battery_end_pct == null || !(f.duration_s >= 60)) return null;
+  return (f.battery_start_pct - f.battery_end_pct) / (f.duration_s / 60);
+}
+/** Consumption over several flights, weighted by their length. */
+function meanConsumption(flights) {
+  let used = 0;
+  let min = 0;
+  for (const f of flights) {
+    if (consumption(f) == null) continue;
+    used += f.battery_start_pct - f.battery_end_pct;
+    min += f.duration_s / 60;
+  }
+  return min ? used / min : null;
+}
+
+const median = (xs) => {
+  const s = xs.slice().sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+
+/**
+ * Flights (newest first) per battery, the most recently used first; each
+ * battery's flights oldest first. The full capacity a battery reports varies
+ * by about 1 % from flight to flight (temperature, charge), so the health
+ * curve takes the median of each charge cycle.
+ */
+function aggregateBatteries(flights) {
+  const bySn = new Map();
+  for (const f of flights.slice().reverse()) {
+    if (!f.battery_sn) continue;
+    let b = bySn.get(f.battery_sn);
+    if (!b) bySn.set(f.battery_sn, (b = { sn: f.battery_sn, flights: [], time_s: 0, aircraft: [] }));
+    b.flights.push(f);
+    b.time_s += f.duration_s || 0;
+    const ac = f.aircraft_sn || "?";
+    if (!b.aircraft.includes(ac)) b.aircraft.push(ac);
+  }
+  // Colors by serial, so a battery keeps its color when another one joins.
+  const sns = [...bySn.keys()].sort();
+  return [...bySn.values()]
+    .map((b) => {
+      const capFlights = b.flights.filter((f) => f.battery_full_mah && f.battery_design_mah && f.battery_cycles != null);
+      const perCycle = new Map();
+      for (const f of capFlights) {
+        if (!perCycle.has(f.battery_cycles)) perCycle.set(f.battery_cycles, []);
+        perCycle.get(f.battery_cycles).push(capPct(f));
+      }
+      return {
+        ...b,
+        last: b.flights.at(-1),
+        // Header-only imports know the serial but none of the readings.
+        lastReading: b.flights.findLast((f) => f.battery_cycles != null),
+        color: PALETTE[sns.indexOf(b.sn) % PALETTE.length],
+        capFlights,
+        cycles: [...perCycle.entries()]
+          .sort((x, y) => x[0] - y[0])
+          .map(([cycle, pcts]) => ({ cycle, pct: median(pcts), n: pcts.length })),
+        consumption: meanConsumption(b.flights),
+        recentConsumption: b.flights.length > BAT_RECENT ? meanConsumption(b.flights.slice(-BAT_RECENT)) : null,
+      };
+    })
+    .sort((x, y) => (x.last.start_time < y.last.start_time ? 1 : -1));
+}
+
+/**
+ * A small line chart as SVG: `series` of { color, points, faint } with points
+ * { x, y, title, id }; `faint` are loose dots behind the line, a dot with an
+ * id opens that flight. `limit` ({ value, above, floor, ceil }) draws a dashed
+ * warning line and marks the dots beyond it; the y range always includes the
+ * line and the optional floor / ceil.
+ */
+function lineChart({ series, limit = null, digits = 0, unit = "", xTitle = "", xLabels = null, width = 300, height = 80 }) {
+  const all = series.flatMap((s) => [...s.points, ...(s.faint || [])]);
+  if (!all.length) return `<div class="nodata">Keine Werte</div>`;
+  const w = width;
+  const h = height;
+  const padL = 34;
+  const padB = 14;
+  let lo = Math.min(...all.map((p) => p.y));
+  let hi = Math.max(...all.map((p) => p.y));
+  if (limit) {
+    lo = Math.min(lo, limit.value, limit.floor ?? Infinity);
+    hi = Math.max(hi, limit.value, limit.ceil ?? -Infinity);
+  }
+  const [top, bottom] = [hi, lo]; // labelled; the padding keeps dots off the edges
+  const pad = (hi - lo || Math.abs(hi) || 1) * 0.08;
+  lo -= pad;
+  hi += pad;
+  const xMin = Math.min(...all.map((p) => p.x));
+  const xMax = Math.max(...all.map((p) => p.x));
+  const [x0, x1] = xMin === xMax ? [xMin - 1, xMax + 1] : [xMin, xMax];
+  const X = (x) => (padL + ((x - x0) / (x1 - x0)) * (w - padL - 4)).toFixed(1);
+  const Y = (y) => (4 + ((hi - y) / (hi - lo)) * (h - padB - 8)).toFixed(1);
+  const beyond = (y) => limit && (limit.above ? y > limit.value : y < limit.value);
+  const dot = (p, color, r, opacity = 1) => {
+    const fill = beyond(p.y) ? "var(--warning-color, #ffa600)" : color;
+    const cls = p.id ? ` class="pt" data-flight="${esc(p.id)}"` : "";
+    return `<circle${cls} cx="${X(p.x)}" cy="${Y(p.y)}" r="${r}" fill="${esc(fill)}" opacity="${opacity}"><title>${esc(p.title || "")}</title></circle>`;
+  };
+  const fmtY = (y) => `${num(y, digits)}${unit}`;
+  const [left, right] = xLabels || [`${num(xMin)} ${xTitle}`, xMin === xMax ? "" : `${num(xMax)} ${xTitle}`];
+  let out = `
+    <text x="${padL - 4}" y="${Number(Y(top)) + 4}" text-anchor="end">${esc(fmtY(top))}</text>
+    <text x="${padL - 4}" y="${Number(Y(bottom)) + 3}" text-anchor="end">${esc(fmtY(bottom))}</text>
+    <line x1="${padL}" x2="${w}" y1="${Y(lo)}" y2="${Y(lo)}" stroke="currentColor" opacity="0.2"/>
+    <text x="${xMin === xMax ? X(xMin) : padL}" y="${h - 1}" text-anchor="${xMin === xMax ? "middle" : "start"}">${esc(left)}</text>
+    <text x="${w}" y="${h - 1}" text-anchor="end">${esc(right)}</text>`;
+  if (limit) {
+    out += `<line x1="${padL}" x2="${w}" y1="${Y(limit.value)}" y2="${Y(limit.value)}" stroke="var(--warning-color, #ffa600)" stroke-dasharray="4 3"/>`;
+  }
+  for (const s of series) {
+    out += (s.faint || []).map((p) => dot(p, s.color, 2.5, 0.4)).join("");
+    if (s.points.length > 1) {
+      out += `<polyline points="${s.points.map((p) => `${X(p.x)},${Y(p.y)}`).join(" ")}" fill="none" stroke="${esc(s.color)}" stroke-width="1.5"/>`;
+    }
+    out += s.points.map((p) => dot(p, s.color, 3)).join("");
+  }
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img">${out}</svg>`;
 }
 
 const num = (v, digits = 0) =>
