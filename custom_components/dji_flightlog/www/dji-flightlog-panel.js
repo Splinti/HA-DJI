@@ -2,11 +2,14 @@
  * dji-flightlog-panel
  *
  * Full-page Home Assistant panel (sidebar entry) for the dji_flightlog
- * integration, in three views:
+ * integration, in four views:
  *   Flüge   statistics, filters, a large map and a clickable flight list
  *   Flug    details of one flight (dji-flight-details: charts, battery, ...)
  *   Planen  a map with the DIPUL geo zones for picking and saving spots, the
  *           place search and the saved spots; ``?spot=<id>`` opens a spot here
+ *   Flotte  one card per aircraft (totals, records, flight time per month,
+ *           pilot, SD card, incidents, batteries), aggregated here from all
+ *           flights regardless of the filters; a card opens its flights
  * Flight records can be uploaded with the upload button or by dropping files /
  * folders onto the page (admins only).
  *
@@ -54,7 +57,7 @@ function load360() {
   return viewPromise;
 }
 
-const VIEWS = ["flights", "flight", "plan"];
+const VIEWS = ["flights", "flight", "plan", "fleet"];
 const VIEW_KEY = "dji_flightlog.panel_view";
 function loadView() {
   try {
@@ -124,6 +127,8 @@ class DjiFlightLogPanel extends HTMLElement {
     this._planFlights = false;
     this._spots = [];
     this._spotsKey = null;
+    // Unfiltered flight list for "Flotte"; null: to be (re)loaded.
+    this._fleet = null;
     this._reload = false;
     this._uploading = false;
   }
@@ -232,7 +237,7 @@ class DjiFlightLogPanel extends HTMLElement {
         nav.views button.on { opacity: 1; border-bottom-color: currentColor; }
         .view { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
         .view[hidden] { display: none; }
-        #v-flight { overflow-y: auto; }
+        #v-flight, #v-fleet { overflow-y: auto; }
 
         .stats { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 16px 0; flex: 0 0 auto; }
         .tile {
@@ -291,7 +296,7 @@ class DjiFlightLogPanel extends HTMLElement {
         /* Phone: the page scrolls, the map gets a fixed share of the screen. */
         :host(.narrow) { height: auto; min-height: 100dvh; }
         .layout.narrow .body { flex-direction: column; }
-        :host(.narrow) #v-flight { overflow: visible; }
+        :host(.narrow) #v-flight, :host(.narrow) #v-fleet { overflow: visible; }
         .layout.narrow .mapwrap { flex: 0 0 auto; height: 60vh; }
         .layout.narrow aside { flex: 0 0 auto; max-height: 60vh; }
 
@@ -445,6 +450,32 @@ class DjiFlightLogPanel extends HTMLElement {
         #pilotdlg .err { color: var(--error-color, #db4437); font-size: 13px; padding-top: 8px; }
         #pilotdlg .err:empty { display: none; }
         #drop small { display: block; margin-top: 6px; font-size: 13px; color: var(--secondary-text-color); }
+
+        .fleet { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: 12px; padding: 12px 16px 16px; align-items: start; }
+        .fleet .empty { grid-column: 1 / -1; }
+        .ac {
+          background: var(--card-background-color, #fff); cursor: pointer;
+          border-radius: var(--ha-card-border-radius, 12px);
+          box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,.08));
+          border-top: 4px solid var(--ac-color); padding: 12px 16px 14px;
+          display: flex; flex-direction: column; gap: 12px; font-size: 13px;
+        }
+        .ac:hover, .ac:focus-visible { outline: 2px solid var(--ac-color); outline-offset: -2px; }
+        .ac .head .n { font-size: 18px; font-weight: 500; }
+        .ac .head .m, .ac .sub { color: var(--secondary-text-color); font-size: 12px; }
+        .ac .nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .ac .nums .v { font-size: 16px; font-weight: 500; }
+        .ac .nums .k { font-size: 11px; color: var(--secondary-text-color); }
+        .ac .trend { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+        .ac .trend .spark { flex: 0 0 auto; text-align: right; }
+        .ac .trend svg { display: block; margin-bottom: 2px; }
+        .ac dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+        .ac dt { color: var(--secondary-text-color); }
+        .ac dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+        .ac dd.warn { color: var(--warning-color, #ffa600); }
+        .ac dd.crit { color: var(--error-color, #db4437); }
+        .ac .bats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+        .ac .bat { padding: 3px 8px; border-radius: 12px; font-size: 12px; background: var(--secondary-background-color, #f2f2f2); }
       </style>
       <div class="layout page">
         <header>
@@ -462,6 +493,7 @@ class DjiFlightLogPanel extends HTMLElement {
           <button data-view="flights">Flüge</button>
           <button data-view="flight">Flug</button>
           <button data-view="plan">Planen</button>
+          <button data-view="fleet">Flotte</button>
         </nav>
 
         <div id="upbar" hidden></div>
@@ -494,6 +526,10 @@ class DjiFlightLogPanel extends HTMLElement {
         </section>
 
         <section class="view" id="v-flight" hidden></section>
+
+        <section class="view" id="v-fleet" hidden>
+          <div class="fleet" id="fleet"></div>
+        </section>
 
         <section class="view" id="v-plan" hidden>
           <div class="filters">
@@ -673,6 +709,8 @@ class DjiFlightLogPanel extends HTMLElement {
       this._renderSpots();
     } else if (view === "flight") {
       this._showDetails();
+    } else if (view === "fleet") {
+      this._showFleet();
     }
   }
 
@@ -823,6 +861,8 @@ class DjiFlightLogPanel extends HTMLElement {
       this._renderList();
       this._renderNote();
       this._renderAttention();
+      this._fleet = null; // new import, note or pilot: aggregate again
+      if (this._view === "fleet") this._showFleet();
       if (this._view === "flight") this._showDetails();
       else {
         this._details?.setPilots?.(this._pilots);
@@ -863,6 +903,125 @@ class DjiFlightLogPanel extends HTMLElement {
     } finally {
       setTimeout(() => btn.classList.remove("busy"), 3000);
     }
+  }
+
+  // -- fleet ----------------------------------------------------------------
+
+  /** "Flotte": every aircraft, from all flights; the filters of "Flüge" do not apply. */
+  async _showFleet() {
+    const box = this.shadowRoot.getElementById("fleet");
+    if (!this._fleet) {
+      if (!this._data) return; // _load renders again once the flights are in
+      const f = this._filters;
+      if (f.days === "0" && !f.aircraft && !f.pilot) this._fleet = this._data;
+      else {
+        if (!box.childElementCount) box.innerHTML = `<div class="empty">Lade …</div>`;
+        try {
+          this._fleet = await this._hass.callApi("GET", `${API}/flights`);
+        } catch (err) {
+          console.error("dji-flightlog-panel fleet:", err);
+          box.innerHTML = `<div class="empty">Fehler: ${esc(err.message || err)}</div>`;
+          return;
+        }
+      }
+    }
+    if (this._view === "fleet") this._renderFleet();
+  }
+
+  _renderFleet() {
+    const box = this.shadowRoot.getElementById("fleet");
+    const data = this._fleet;
+    const flights = data?.flights || [];
+    if (!flights.length) {
+      box.innerHTML = `<div class="empty">Noch keine Flüge importiert.</div>`;
+      return;
+    }
+    const pilots = data.pilots || this._pilots;
+    const fleet = aggregateFleet(flights);
+    box.innerHTML = fleet
+      .map((a) => {
+        const name = data.aircraft?.[a.sn]?.name || a.last.aircraft_name || "DJI";
+        const pilot = pilots.filter((p) => (p.aircraft || []).includes(a.sn)).map((p) => p.name);
+        const sd = a.sd;
+        const sdText = !sd
+          ? "–"
+          : sd.sd_full
+            ? "voll"
+            : sd.sd_total_mb
+              ? `${num(sd.sd_free_mb / 1024, 1)} von ${num(sd.sd_total_mb / 1024, 0)} GB frei`
+              : (sd.sd_problems || []).map((st) => SD_STATES[st] || st).join(", ");
+        const sdWarn = sd && (sd.sd_full || (sd.sd_problems || []).length);
+        const inc = a.critical + a.warning;
+        const incText = inc
+          ? `${inc} ${inc === 1 ? "Flug" : "Flüge"}${a.critical ? ` (${a.critical} kritisch)` : ""}`
+          : "keine";
+        const bats = a.batteries
+          .map(
+            (b) =>
+              `<span class="bat" title="Akku ${esc(b.sn)}">…${esc(b.sn.slice(-4))} · ${b.flights} ${
+                b.flights === 1 ? "Flug" : "Flüge"
+              }${b.cycles != null ? ` · ${b.cycles} ${b.cycles === 1 ? "Zyklus" : "Zyklen"}` : ""}${b.life_pct != null ? ` · ${b.life_pct} %` : ""}</span>`,
+          )
+          .join("");
+        return `
+          <div class="ac" role="button" tabindex="0" data-sn="${esc(a.sn)}" style="--ac-color:${esc(a.color)}"
+            title="Flüge dieser Drohne anzeigen">
+            <div class="head">
+              <div class="n">${esc(name)}</div>
+              <div class="m">${esc([/^UNKNOWN/i.test(a.last.product_type || "") ? "" : a.last.product_type, a.sn !== "?" ? `SN ${a.sn}` : ""].filter(Boolean).join(" · "))}</div>
+            </div>
+            <div class="nums">
+              ${tile(a.flights, "Flüge")}
+              ${tile(fmtDur(a.time_s), "Flugzeit")}
+              ${tile(fmtDist(a.distance_m), "Strecke")}
+              ${tile(`${Math.round(a.max_height_m)} m`, "Max. Höhe")}
+              ${tile(`${(a.max_h_speed_ms * 3.6).toFixed(1)} km/h`, "Max. Speed")}
+              ${tile(fmtDur(a.longest_s), "Längster Flug")}
+            </div>
+            <div class="trend">
+              <div>
+                <div>Zuletzt geflogen ${esc(fmtAgo(a.last.start_time))}</div>
+                <div class="sub">${esc(fmtDate(a.last.start_time, { dateStyle: "medium" }))}</div>
+              </div>
+              <div class="spark">${sparkline(a.months, a.color)}<div class="sub">Flugzeit pro Monat</div></div>
+            </div>
+            <dl>
+              <dt>Pilot</dt><dd>${esc(pilot.join(", ") || "nicht zugeordnet")}</dd>
+              <dt>SD-Karte</dt><dd class="${sdWarn ? "warn" : ""}">${esc(sdText)}</dd>
+              <dt>Vorfälle</dt><dd class="${a.critical ? "crit" : a.warning ? "warn" : ""}">${esc(incText)}</dd>
+              ${a.last.app_version ? `<dt>App</dt><dd>DJI Fly ${esc(a.last.app_version)}</dd>` : ""}
+            </dl>
+            ${bats ? `<div><div class="sub">Akkus</div><div class="bats">${bats}</div></div>` : ""}
+          </div>`;
+      })
+      .join("");
+    for (const el of box.querySelectorAll(".ac")) {
+      el.onclick = () => this._showAircraft(el.dataset.sn, fleet.length);
+      el.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          this._showAircraft(el.dataset.sn, fleet.length);
+        }
+      };
+    }
+  }
+
+  /** A card in "Flotte" was clicked: "Flüge" with every flight of this aircraft, whoever flew it. */
+  _showAircraft(sn, count) {
+    this._filters.days = "0";
+    this._filters.pilot = "";
+    // With a single drone there is no aircraft filter (see _renderStats): all flights are its flights.
+    this._filters.aircraft = count > 1 && sn !== "?" ? sn : "";
+    this.shadowRoot.getElementById("range").value = "0";
+    this.shadowRoot.getElementById("pilot").value = "";
+    const select = this.shadowRoot.getElementById("aircraft");
+    if (![...select.options].some((o) => o.value === this._filters.aircraft)) {
+      // The filtered list may not have filled the select with this drone yet.
+      select.insertAdjacentHTML("beforeend", `<option value="${esc(sn)}">${esc(sn)}</option>`);
+    }
+    select.value = this._filters.aircraft;
+    this._applyFilters();
+    this._setView("flights");
   }
 
   // -- pilots ---------------------------------------------------------------
@@ -1535,6 +1694,96 @@ const SD_STATES = {
   SUGGEST_FORMAT: "Formatieren empfohlen",
   REPAIRING: "Karte wurde repariert",
 };
+const tile = (v, k) => `<div><div class="v">${esc(v)}</div><div class="k">${esc(k)}</div></div>`;
+
+/** "heute", "gestern", "vor 5 Tagen" (calendar days). */
+function fmtAgo(iso) {
+  const day = (d) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  const days = Math.round((day(new Date()) - day(new Date(iso))) / 86400e3);
+  if (days <= 0) return "heute";
+  if (days === 1) return "gestern";
+  return `vor ${days} Tagen`;
+}
+
+const FLEET_MONTHS = 12;
+
+/**
+ * Flights (newest first) per aircraft, the most recently flown first: totals,
+ * records, incidents, the latest SD card reading, flight time in each of the
+ * last FLEET_MONTHS months and the batteries flown with it (latest values).
+ */
+function aggregateFleet(flights) {
+  const now = new Date();
+  const monthIdx = (iso) => {
+    const d = new Date(iso);
+    return FLEET_MONTHS - 1 - ((now.getFullYear() - d.getFullYear()) * 12 + now.getMonth() - d.getMonth());
+  };
+  const bySn = new Map();
+  for (const f of flights) {
+    const sn = f.aircraft_sn || "?";
+    let a = bySn.get(sn);
+    if (!a) {
+      a = {
+        sn,
+        last: f,
+        color: colorFor(f, flights), // as on the overview map without filters
+        flights: 0,
+        time_s: 0,
+        distance_m: 0,
+        max_height_m: 0,
+        max_h_speed_ms: 0,
+        longest_s: 0,
+        warning: 0,
+        critical: 0,
+        sd: null,
+        months: Array(FLEET_MONTHS).fill(0),
+        bats: new Map(),
+      };
+      bySn.set(sn, a);
+    }
+    a.flights += 1;
+    a.time_s += f.duration_s || 0;
+    a.distance_m += f.distance_m || 0;
+    a.max_height_m = Math.max(a.max_height_m, f.max_height_m || 0);
+    a.max_h_speed_ms = Math.max(a.max_h_speed_ms, f.max_h_speed_ms || 0);
+    a.longest_s = Math.max(a.longest_s, f.duration_s || 0);
+    if (f.incident === "warning") a.warning += 1;
+    if (f.incident === "critical") a.critical += 1;
+    if (!a.sd && (f.sd_total_mb || f.sd_problems?.length)) a.sd = f;
+    const m = monthIdx(f.start_time);
+    if (m >= 0 && m < FLEET_MONTHS) a.months[m] += f.duration_s || 0;
+    if (f.battery_sn) {
+      const b = a.bats.get(f.battery_sn);
+      if (b) b.flights += 1;
+      else a.bats.set(f.battery_sn, { sn: f.battery_sn, flights: 1, cycles: f.battery_cycles, life_pct: f.battery_life_pct });
+    }
+  }
+  return [...bySn.values()].map(({ bats, ...a }) => ({ ...a, batteries: [...bats.values()] }));
+}
+
+/** Bars with the flight time of each month, the current one on the right. */
+function sparkline(months, color) {
+  const w = 132;
+  const h = 32;
+  const gap = 2;
+  const bw = (w - gap * (months.length - 1)) / months.length;
+  const top = Math.max(...months);
+  const now = new Date();
+  const bars = months
+    .map((s, i) => {
+      const x = (i * (bw + gap)).toFixed(1);
+      const bh = top ? Math.max(s ? 2 : 0, (s / top) * (h - 2)) : 0;
+      const d = new Date(now.getFullYear(), now.getMonth() - (months.length - 1 - i), 1);
+      const label = `${d.toLocaleDateString(undefined, { month: "long", year: "numeric" })}: ${s ? fmtDur(s) : "keine Flüge"}`;
+      return `<g><title>${esc(label)}</title>
+        <rect x="${x}" y="0" width="${bw.toFixed(1)}" height="${h}" fill="transparent"/>
+        <rect x="${x}" y="${h - 1}" width="${bw.toFixed(1)}" height="1" fill="currentColor" opacity="0.2"/>
+        <rect x="${x}" y="${(h - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="1" fill="${esc(color)}"/></g>`;
+    })
+    .join("");
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Flugzeit pro Monat, letzte ${months.length} Monate">${bars}</svg>`;
+}
+
 const num = (v, digits = 0) =>
   Number(v).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 
