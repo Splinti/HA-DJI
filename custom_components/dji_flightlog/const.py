@@ -10,6 +10,8 @@ CONF_SCAN_INTERVAL = "scan_interval"
 CONF_MAX_TRACK_POINTS = "max_track_points"
 CONF_GEO_LOCATION_LIMIT = "geo_location_limit"
 CONF_SIDEBAR_PANEL = "sidebar_panel"
+# Look up the weather at each flight from Open-Meteo (sends the rounded takeoff point).
+CONF_WEATHER = "weather"
 
 DEFAULT_LOG_DIR = "/share/dji/flightrecords"
 DEFAULT_SCAN_INTERVAL = 300  # seconds
@@ -18,6 +20,7 @@ DEFAULT_MAX_TRACK_POINTS = 1500
 # map card, so this is opt-in.
 DEFAULT_GEO_LOCATION_LIMIT = 0
 DEFAULT_SIDEBAR_PANEL = True
+DEFAULT_WEATHER = False
 
 STORAGE_VERSION = 1
 # Bump when parsing changes what a flight's summary or track contains: files

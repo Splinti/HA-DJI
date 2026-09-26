@@ -28,7 +28,8 @@
           "scan_interval": "Scan-Intervall",
           "max_track_points": "Max. gespeicherte Punkte pro Track",
           "geo_location_limit": "Flüge als geo_location-Entities (0 = keine; sobald welche existieren, ergänzt Home Assistant das Standard-Dashboard um eine Karte)",
-          "sidebar_panel": "In der Seitenleiste anzeigen"
+          "sidebar_panel": "In der Seitenleiste anzeigen",
+          "weather": "Wetter zur Flugzeit von Open-Meteo abrufen (sendet Datum und Startort, auf ca. 1 km gerundet, an open-meteo.com)"
         }
       },
       "onedrive_folder": {
@@ -75,7 +76,8 @@
           "scan_interval": "Scan-Intervall",
           "max_track_points": "Max. gespeicherte Punkte pro Track",
           "geo_location_limit": "Flüge als geo_location-Entities (0 = keine; sobald welche existieren, ergänzt Home Assistant das Standard-Dashboard um eine Karte)",
-          "sidebar_panel": "In der Seitenleiste anzeigen"
+          "sidebar_panel": "In der Seitenleiste anzeigen",
+          "weather": "Wetter zur Flugzeit von Open-Meteo abrufen (sendet Datum und Startort, auf ca. 1 km gerundet, an open-meteo.com)"
         }
       },
       "media": {

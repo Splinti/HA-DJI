@@ -372,6 +372,58 @@ export const actionLabel = (a) => ACTION_LABELS[a] || prettyName(a);
 export const modeLabel = (m) => MODE_LABELS[m] || prettyName(m);
 export const incidentText = (f) => (f.incident_actions || []).map(actionLabel).join(", ");
 
+// Weather at the flight (summary field `weather`, from Open-Meteo): WMO weather codes.
+const WEATHER_CODES = {
+  0: "klar",
+  1: "überwiegend klar",
+  2: "teils bewölkt",
+  3: "bedeckt",
+  45: "Nebel",
+  48: "Nebel mit Reif",
+  51: "leichter Niesel",
+  53: "Niesel",
+  55: "starker Niesel",
+  56: "gefrierender Niesel",
+  57: "gefrierender Niesel",
+  61: "leichter Regen",
+  63: "Regen",
+  65: "starker Regen",
+  66: "gefrierender Regen",
+  67: "gefrierender Regen",
+  71: "leichter Schneefall",
+  73: "Schneefall",
+  75: "starker Schneefall",
+  77: "Schneegriesel",
+  80: "leichte Schauer",
+  81: "Schauer",
+  82: "starke Schauer",
+  85: "Schneeschauer",
+  86: "starke Schneeschauer",
+  95: "Gewitter",
+  96: "Gewitter mit Hagel",
+  99: "Gewitter mit Hagel",
+};
+const WIND_DIRS = ["N", "NO", "O", "SO", "S", "SW", "W", "NW"];
+export const weatherLabel = (code) => (code == null ? "" : WEATHER_CODES[code] || `Wettercode ${code}`);
+/** Compass point the wind comes from (the direction is meteorological: where it blows from). */
+export const windFrom = (deg) => (deg == null ? "" : WIND_DIRS[Math.round((((deg % 360) + 360) % 360) / 45) % 8]);
+export const kmh = (ms) => (ms == null ? "–" : `${Math.round(ms * 3.6)} km/h`);
+/** One line, e.g. "Wind 12 km/h aus SW, Böen 25 km/h · 18 °C, teils bewölkt". */
+export function weatherSummary(w) {
+  if (!w) return "";
+  const parts = [];
+  if (w.wind_ms != null) {
+    let wind = `Wind ${kmh(w.wind_ms)}${w.wind_dir != null ? ` aus ${windFrom(w.wind_dir)}` : ""}`;
+    if (w.gust_ms != null) wind += `, Böen ${kmh(w.gust_ms)}`;
+    parts.push(wind);
+  }
+  const rest = [];
+  if (w.temp_c != null) rest.push(`${Math.round(w.temp_c)} °C`);
+  if (w.code != null) rest.push(weatherLabel(w.code));
+  if (rest.length) parts.push(rest.join(", "));
+  return parts.join(" · ");
+}
+
 /** Download a flight as GPX / KML / GeoJSON through the authenticated API. */
 export async function downloadExport(hass, f, fmt) {
   const res = await hass.fetchWithAuth(`/api/${API}/flights/${f.flight_id}/export/${fmt}`);
@@ -1313,6 +1365,7 @@ class DjiFlightMapCard extends HTMLElement {
     if (f.incident && f.incident !== "ok") rows.push([f.incident === "critical" ? "Kritisch" : "Warnung", incidentText(f)]);
     if (f.sd_full) rows.push(["SD-Karte", "voll"]);
     if (f.city) rows.push(["Ort", f.city]);
+    if (f.weather) rows.push(["Wetter", weatherSummary(f.weather)]);
     if (f.pilot_name) rows.push(["Pilot", f.pilot_name]);
     if (f.note) rows.push(["Notiz", f.note.length > 140 ? `${f.note.slice(0, 140)} …` : f.note]);
     const details = this._config.details ? `<a data-details>Details</a>` : "";
