@@ -67,6 +67,10 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 - **Vor dem nächsten Flug**: oben eine Liste mit allem, was der letzte Flug jeder Drohne bzw. jedes Akkus gemeldet hat. Das sind Vorfälle (z. B. Smart-RTH), eine volle oder fast volle SD-Karte (weniger als 10 min Video), Kartenfehler (keine Karte, schreibgeschützt, zu langsam, Formatieren empfohlen, …) und Akkus, die über 60 °C warm wurden, unter 3,0 V pro Zelle entladen wurden, deren Zellen mehr als 0,2 V auseinanderlagen oder die unter 80 % Kapazität bzw. Lebensdauer liegen. „Erledigt“ blendet einen Hinweis aus, bis ein neuerer Flug ihn wieder meldet. Dieselbe Liste steht im Sensor „Hinweise vor dem nächsten Flug“ (Anzahl, Attribut `items`), z. B. für eine Benachrichtigung
 - Statistik-Kacheln (Flüge, Flugzeit, Strecke, max. Höhe/Speed, letzter Flug) über den gefilterten Zeitraum
 - Filter: Zeitraum (7 Tage … alles), Drohne (ab zwei Drohnen), Pilot (sobald es Piloten gibt: alle, ein Pilot oder „Ohne Pilot“), Heatmap an/aus, DIPUL-Zonen an/aus. Ist der angemeldete HA-Benutzer mit einem Piloten verknüpft, startet das Panel mit dessen Flügen
+- **Statistik** (Häkchen bei den Filtern, der Browser merkt es sich) über die gefilterten Flüge:
+  - **Kalender** im GitHub-Stil für die letzten 12 Monate oder ein Jahr, ein Kästchen pro Tag, je dunkler, desto mehr Flugzeit. Ein Klick auf einen Tag zeigt nur dessen Flüge in Kacheln, Karte und Liste; das Kärtchen mit dem Datum bei den Filtern oder ein zweiter Klick hebt das wieder auf
+  - **Pro Monat**: Flugzeit oder Anzahl Flüge als Balken, gestapelt je Drohne (in den Farben von Karte und *Flotte*) oder, sobald es Piloten gibt, je Pilot
+  - **Rekorde**: längster Flug, längste Strecke, weiteste Entfernung vom Start, höchster und schnellster Flug (Klick öffnet den Flug) sowie die meisten Flüge an einem Tag (Klick zeigt den Tag)
 - **Piloten** (Symbol neben den Filtern, nur Admins): Piloten anlegen, umbenennen und löschen, je Pilot den HA-Benutzer und die Drohnen wählen, deren Flüge ihm automatisch gehören. Eine Drohne und ein Benutzer gehören immer nur zu einem Piloten. Löschen entfernt nur die Zuordnung, nicht die Flüge
 - Große Karte, die die volle Höhe nutzt
 - Flugliste rechts (auf dem Handy darunter), nach Tagen gruppiert; Klick auf einen Flug zoomt auf ihn und hebt ihn hervor, nochmal klicken hebt die Auswahl auf. Das Diagramm-Symbol am Flug oder „Details“ im Popup öffnet die Ansicht *Flug*
@@ -149,7 +153,7 @@ height: 450
 
 Satellitenbilder kommen von Esri World Imagery (mit Orts- und Grenznamen darüber) und werden im Dark Mode nicht invertiert.
 
-Weitere Optionen: `dipul` (DIPUL-Geozonen einblenden, Default false), `spots` (gemerkte Orte anzeigen, Default true bei `mode: all`), `flights` (false: keine Tracks, nur Orte und Zonen), `scan_button` (↻ im Titel, Default true), `limit`, `since` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
+Weitere Optionen: `dipul` (DIPUL-Geozonen einblenden, Default false), `spots` (gemerkte Orte anzeigen, Default true bei `mode: all`), `flights` (false: keine Tracks, nur Orte und Zonen), `scan_button` (↻ im Titel, Default true), `limit`, `since` und `until` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
 
 ### Flüge auf der Standard-Karte
 

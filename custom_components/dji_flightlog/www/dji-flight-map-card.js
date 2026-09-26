@@ -450,6 +450,7 @@ class DjiFlightMapCard extends HTMLElement {
       max_points: 400,
       days: null,
       since: null,
+      until: null,
       aircraft: null,
       // Pilot id or name, "me" (the pilot linked to the HA user) or "none".
       pilot: null,
@@ -788,6 +789,7 @@ class DjiFlightMapCard extends HTMLElement {
     if (c.pilot) q.set("pilot", c.pilot);
     if (c.since) q.set("since", c.since);
     else if (c.days) q.set("since", new Date(Date.now() - c.days * 86400e3).toISOString());
+    if (c.until) q.set("until", c.until);
     return q;
   }
 

@@ -3,7 +3,9 @@
  *
  * Full-page Home Assistant panel (sidebar entry) for the dji_flightlog
  * integration, in four views:
- *   Flüge   statistics, filters, a large map and a clickable flight list
+ *   Flüge   statistics, filters, a large map and a clickable flight list;
+ *           "Statistik" opens a calendar heatmap (a day filters the view),
+ *           flight time per month and the records of the filtered flights
  *   Flug    details of one flight (dji-flight-details: charts, battery, ...)
  *   Planen  a map with the DIPUL geo zones for picking and saving spots, the
  *           place search and the saved spots; ``?spot=<id>`` opens a spot here
@@ -74,6 +76,22 @@ function saveView(v) {
     // Private mode or blocked storage: the panel just starts on "Flüge".
   }
 }
+const INSIGHTS_KEY = "dji_flightlog.panel_insights";
+function loadInsights() {
+  try {
+    const v = JSON.parse(localStorage.getItem(INSIGHTS_KEY));
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+function saveInsights(v) {
+  try {
+    localStorage.setItem(INSIGHTS_KEY, JSON.stringify(v));
+  } catch {
+    // Starts closed next time.
+  }
+}
 
 const fmtDate = (iso, opts = { dateStyle: "medium", timeStyle: "short" }) =>
   iso ? new Date(iso).toLocaleString(undefined, opts) : "";
@@ -121,7 +139,11 @@ class DjiFlightLogPanel extends HTMLElement {
     this._loading = false;
     this._lastKey = null;
     // pilot: null until the user's own pilot is known (see _initPilot), "" for all.
-    this._filters = { days: "0", aircraft: "", pilot: null, heatmap: false, dipul: false };
+    // day: a day picked in the calendar ("2026-09-26"); filtered here, not by the API.
+    this._filters = { days: "0", aircraft: "", pilot: null, day: null, heatmap: false, dipul: false };
+    // "Statistik" under the filters: open or not, bars by flight time or count, stacked by aircraft or pilot.
+    this._insights = { open: false, metric: "time", group: "aircraft", ...loadInsights() };
+    this._period = "12"; // last 12 months, or a year
     this._pilots = [];
     this._view = loadView() || "flights";
     this._planFlights = false;
@@ -476,6 +498,61 @@ class DjiFlightLogPanel extends HTMLElement {
         .ac dd.crit { color: var(--error-color, #db4437); }
         .ac .bats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
         .ac .bat { padding: 3px 8px; border-radius: 12px; font-size: 12px; background: var(--secondary-background-color, #f2f2f2); }
+
+        .chip {
+          display: inline-flex; align-items: center; gap: 2px; font-size: 13px; padding: 2px 2px 2px 10px;
+          border-radius: 16px; background: var(--primary-color); color: var(--text-primary-color, #fff);
+        }
+        .chip[hidden] { display: none; }
+        .filters .chip button { padding: 3px; }
+        .filters .chip svg { width: 18px; height: 18px; }
+        /* A cap, so the map keeps most of the screen; the phone scrolls the page instead. */
+        .insights {
+          flex: 0 0 auto; max-height: 50vh; overflow-y: auto; padding: 12px 16px 0;
+          display: flex; flex-direction: column; gap: 12px;
+        }
+        .insights .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 12px; }
+        .insights[hidden] { display: none; }
+        .layout.narrow .insights { max-height: none; overflow: visible; }
+        .insights .card {
+          background: var(--card-background-color, #fff); min-width: 0;
+          border-radius: var(--ha-card-border-radius, 12px);
+          box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,.08));
+          padding: 10px 16px 12px; font-size: 13px;
+        }
+        .insights .ch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .insights .ch .t { flex: 1; font-size: 14px; font-weight: 500; }
+        .insights select {
+          font: inherit; font-size: 12px; padding: 3px 6px; border-radius: 6px;
+          background: var(--card-background-color, #fff); color: inherit;
+          border: 1px solid var(--divider-color, #e0e0e0);
+        }
+        .insights .sub { font-size: 12px; color: var(--secondary-text-color); }
+        .hmwrap { overflow-x: auto; }
+        .hm { display: block; }
+        .hm text { font-size: 10px; fill: var(--secondary-text-color, #727272); }
+        .hm rect { fill: var(--primary-color, #03a9f4); }
+        .hm rect.l0 { fill: var(--divider-color, #e0e0e0); }
+        .hm rect.l1 { fill-opacity: 0.3; }
+        .hm rect.l2 { fill-opacity: 0.55; }
+        .hm rect.l3 { fill-opacity: 0.8; }
+        .hm rect[data-day] { cursor: pointer; }
+        .hm rect[data-day]:hover, .hm rect.sel { stroke: var(--primary-text-color, #212121); stroke-width: 1.5; }
+        .hmfoot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 6px; }
+        .hmfoot .legend { display: inline-flex; align-items: center; gap: 3px; }
+        .hmfoot .legend svg { display: block; }
+        .bars { display: flex; gap: 3px; height: 130px; }
+        .bars .col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+        .bars .area { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; border-bottom: 1px solid var(--divider-color, #e0e0e0); }
+        .bars .stack { display: flex; flex-direction: column-reverse; border-radius: 3px 3px 0 0; overflow: hidden; }
+        .bars .ml { font-size: 10px; text-align: center; color: var(--secondary-text-color); padding-top: 3px; white-space: nowrap; overflow: hidden; }
+        .series { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 12px; }
+        .series span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; background: var(--c); vertical-align: -1px; }
+        .recs .rec { display: flex; align-items: baseline; gap: 8px; padding: 6px 8px; margin: 0 -8px; border-radius: 6px; cursor: pointer; }
+        .recs .rec:hover, .recs .rec:focus-visible { background: var(--secondary-background-color, #f2f2f2); outline: none; }
+        .recs .rec .k { flex: 1; min-width: 0; }
+        .recs .rec .v { font-weight: 500; white-space: nowrap; }
+        .recs .rec .sub { display: block; }
       </style>
       <div class="layout page">
         <header>
@@ -515,7 +592,10 @@ class DjiFlightLogPanel extends HTMLElement {
             <button id="pilotsbtn" title="Piloten verwalten" hidden>${svg(ICON_PILOTS)}</button>
             <label><input type="checkbox" id="heat"> Heatmap</label>
             <label title="Geografische Gebiete für Drohnen (DFS / dipul)"><input type="checkbox" id="dipul"> DIPUL-Zonen</label>
+            <label title="Kalender, Flugzeit pro Monat und Rekorde"><input type="checkbox" id="insightsbtn"> Statistik</label>
+            <span class="chip" id="daychip" hidden></span>
           </div>
+          <div class="insights" id="insights" hidden></div>
           <div class="body">
             <div class="mapwrap"><dji-flight-map-card id="map"></dji-flight-map-card></div>
             <aside>
@@ -565,6 +645,7 @@ class DjiFlightLogPanel extends HTMLElement {
     this._setupDrop();
     this.shadowRoot.getElementById("range").onchange = (e) => {
       this._filters.days = e.target.value;
+      this._filters.day = null; // may lie outside the new range
       this._applyFilters();
     };
     this.shadowRoot.getElementById("aircraft").onchange = (e) => {
@@ -583,6 +664,13 @@ class DjiFlightLogPanel extends HTMLElement {
     this.shadowRoot.getElementById("dipul").onchange = (e) => {
       this._filters.dipul = e.target.checked;
       this._card?.setDipul(e.target.checked);
+    };
+    const insightsBtn = this.shadowRoot.getElementById("insightsbtn");
+    insightsBtn.checked = !!this._insights.open;
+    insightsBtn.onchange = (e) => {
+      this._insights.open = e.target.checked;
+      saveInsights(this._insights);
+      this._renderInsights();
     };
     this._setupSearch();
     this.shadowRoot.getElementById("planflights").onchange = (e) => {
@@ -730,7 +818,7 @@ class DjiFlightLogPanel extends HTMLElement {
       el.classList.toggle("narrow", !!this._narrow);
       if (this._hass) el.hass = this._hass;
     }
-    const flights = this._data?.flights || [];
+    const flights = this._flights();
     this._details.setPilots?.(this._pilots);
     this._details.setFlights(flights);
     // Nothing picked yet: the newest flight. A flight that just went to
@@ -827,8 +915,19 @@ class DjiFlightLogPanel extends HTMLElement {
     }
   }
 
+  /** The loaded flights (range, aircraft, pilot), narrowed to the day picked in the calendar. */
+  _flights() {
+    const flights = this._data?.flights || [];
+    const day = this._filters.day;
+    return day ? flights.filter((f) => dayKey(f.start_time) === day) : flights;
+  }
+
   _cardFilters() {
+    const day = this._filters.day && dayBounds(this._filters.day);
     return {
+      // A day replaces the range on the map; since/until are cleared again without one.
+      since: day ? day.since : null,
+      until: day ? day.until : null,
       days: this._filters.days === "0" ? null : Number(this._filters.days),
       aircraft: this._filters.aircraft || null,
       pilot: this._filters.pilot || null,
@@ -861,12 +960,13 @@ class DjiFlightLogPanel extends HTMLElement {
       this._renderList();
       this._renderNote();
       this._renderAttention();
+      this._renderInsights();
       this._fleet = null; // new import, note or pilot: aggregate again
       if (this._view === "fleet") this._showFleet();
       if (this._view === "flight") this._showDetails();
       else {
         this._details?.setPilots?.(this._pilots);
-        this._details?.setFlights(this._data.flights || []);
+        this._details?.setFlights(this._flights());
       }
     } catch (err) {
       console.error("dji-flightlog-panel:", err);
@@ -1009,6 +1109,7 @@ class DjiFlightLogPanel extends HTMLElement {
   /** A card in "Flotte" was clicked: "Flüge" with every flight of this aircraft, whoever flew it. */
   _showAircraft(sn, count) {
     this._filters.days = "0";
+    this._filters.day = null;
     this._filters.pilot = "";
     // With a single drone there is no aircraft filter (see _renderStats): all flights are its flights.
     this._filters.aircraft = count > 1 && sn !== "?" ? sn : "";
@@ -1022,6 +1123,131 @@ class DjiFlightLogPanel extends HTMLElement {
     select.value = this._filters.aircraft;
     this._applyFilters();
     this._setView("flights");
+  }
+
+  // -- statistics -------------------------------------------------------------
+
+  /** Narrow "Flüge" to a day of the calendar (null: all days again); the loaded list already holds it. */
+  _setDay(day) {
+    this._filters.day = day;
+    this._selected = null;
+    this._card?.updateOptions(this._cardFilters());
+    this._renderStats();
+    this._renderList();
+    this._renderInsights();
+    this._details?.setFlights(this._flights());
+  }
+
+  /** "Statistik": calendar, flight time per month and records of the filtered flights (all days). */
+  _renderInsights() {
+    const box = this.shadowRoot.getElementById("insights");
+    box.hidden = !this._insights.open;
+    if (!this._insights.open || !this._data) return;
+    const flights = this._data.flights || [];
+    if (!flights.length) {
+      box.innerHTML = `<div class="card"><div class="sub">Keine Flüge im gewählten Zeitraum.</div></div>`;
+      return;
+    }
+    const years = [...new Set(flights.map((f) => new Date(f.start_time).getFullYear()))].sort((a, b) => b - a);
+    if (this._period !== "12" && !years.includes(Number(this._period))) this._period = "12";
+    const period = statsPeriod(this._period);
+    const inPeriod = flights.filter((f) => {
+      const d = new Date(f.start_time);
+      return d >= period.start && d < period.until;
+    });
+
+    // Stacked by pilot only once there are pilots; by aircraft in the colors of the map and "Flotte".
+    const byPilot = this._insights.group === "pilot" && this._pilots.length > 0;
+    const sns = [...new Set(flights.map((f) => f.aircraft_sn || "?"))];
+    const seriesOf = byPilot
+      ? (f) => {
+          const i = this._pilots.findIndex((p) => p.id === f.pilot_id);
+          return i < 0
+            ? { key: "", name: "Ohne Pilot", color: "#9e9e9e" }
+            : { key: f.pilot_id, name: this._pilots[i].name, color: PALETTE[i % PALETTE.length] };
+        }
+      : (f) => {
+          const sn = f.aircraft_sn || "?";
+          return { key: sn, name: this._data.aircraft?.[sn]?.name || f.aircraft_name || "DJI", color: PALETTE[sns.indexOf(sn) % PALETTE.length] };
+        };
+    const metric = this._insights.metric === "count" ? "count" : "time";
+
+    const periods = [`<option value="12">Letzte 12 Monate</option>`, ...years.map((y) => `<option value="${y}">${y}</option>`)];
+    const days = new Set(inPeriod.map((f) => dayKey(f.start_time)));
+    const oldWrap = box.querySelector(".hmwrap");
+    const keepScroll = oldWrap && this._hmPeriod === this._period ? oldWrap.scrollLeft : null;
+    this._hmPeriod = this._period;
+    box.innerHTML = `
+      <div class="card">
+        <div class="ch">
+          <span class="t">Kalender</span>
+          <select id="period" aria-label="Zeitraum des Kalenders">${periods.join("")}</select>
+        </div>
+        <div class="hmwrap">${calendarSvg(inPeriod, period, this._filters.day)}</div>
+        <div class="hmfoot">
+          <span class="sub">${days.size} ${days.size === 1 ? "Flugtag" : "Flugtage"} · ${inPeriod.length} ${
+            inPeriod.length === 1 ? "Flug" : "Flüge"
+          } · ${esc(fmtDur(inPeriod.reduce((a, f) => a + (f.duration_s || 0), 0)))} · Tag anklicken filtert die Flüge</span>
+          <span class="sub legend">weniger ${calendarLegend()} mehr</span>
+        </div>
+      </div>
+      <div class="pair">
+      <div class="card">
+        <div class="ch">
+          <span class="t">Pro Monat</span>
+          <select id="metric" aria-label="Wert">
+            <option value="time">Flugzeit</option>
+            <option value="count">Anzahl Flüge</option>
+          </select>
+          ${
+            this._pilots.length
+              ? `<select id="group" aria-label="Aufteilung"><option value="aircraft">je Drohne</option><option value="pilot">je Pilot</option></select>`
+              : ""
+          }
+        </div>
+        ${monthsHtml(inPeriod, period, metric, seriesOf)}
+      </div>
+      <div class="card">
+        <div class="ch"><span class="t">Rekorde</span></div>
+        ${recordsHtml(flightRecords(flights), this._data.aircraft)}
+      </div>
+      </div>`;
+
+    const sel = (id) => box.querySelector(`#${id}`);
+    sel("period").value = this._period;
+    sel("period").onchange = (e) => {
+      this._period = e.target.value;
+      this._renderInsights();
+    };
+    sel("metric").value = metric;
+    sel("metric").onchange = (e) => {
+      this._insights.metric = e.target.value;
+      saveInsights(this._insights);
+      this._renderInsights();
+    };
+    if (sel("group")) {
+      sel("group").value = byPilot ? "pilot" : "aircraft";
+      sel("group").onchange = (e) => {
+        this._insights.group = e.target.value;
+        saveInsights(this._insights);
+        this._renderInsights();
+      };
+    }
+    const wrap = box.querySelector(".hmwrap");
+    wrap.scrollLeft = keepScroll ?? wrap.scrollWidth; // the latest weeks first on a phone
+    for (const r of box.querySelectorAll(".hm rect[data-day]")) {
+      r.onclick = () => this._setDay(this._filters.day === r.dataset.day ? null : r.dataset.day);
+    }
+    for (const r of box.querySelectorAll(".rec")) {
+      const open = () => (r.dataset.day ? this._setDay(r.dataset.day) : this._openDetails(r.dataset.flight));
+      r.onclick = open;
+      r.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      };
+    }
   }
 
   // -- pilots ---------------------------------------------------------------
@@ -1446,7 +1672,7 @@ class DjiFlightLogPanel extends HTMLElement {
   }
 
   _renderStats() {
-    const flights = this._data?.flights || [];
+    const flights = this._flights();
     const sum = (key) => flights.reduce((a, f) => a + (f[key] || 0), 0);
     const max = (key) => flights.reduce((a, f) => Math.max(a, f[key] || 0), 0);
     const tiles = [
@@ -1463,6 +1689,14 @@ class DjiFlightLogPanel extends HTMLElement {
     this.shadowRoot.getElementById("stats").innerHTML = tiles
       .map(([k, v]) => `<div class="tile"><div class="v">${esc(v)}</div><div class="k">${esc(k)}</div></div>`)
       .join("");
+
+    const chip = this.shadowRoot.getElementById("daychip");
+    const day = this._filters.day;
+    chip.hidden = !day;
+    chip.innerHTML = day
+      ? `${esc(dayDate(day).toLocaleDateString(undefined, { dateStyle: "medium" }))}<button title="Alle Tage zeigen">${svg(ICON_CLOSE)}</button>`
+      : "";
+    if (day) chip.querySelector("button").onclick = () => this._setDay(null);
 
     // Aircraft filter is only useful with more than one drone.
     const aircraft = Object.values(this._data?.aircraft || {});
@@ -1499,9 +1733,9 @@ class DjiFlightLogPanel extends HTMLElement {
   _renderList() {
     if (!this._data) return; // flights not loaded yet
     const list = this.shadowRoot.getElementById("list");
-    const flights = this._data?.flights || [];
+    const flights = this._flights();
     if (!flights.length) {
-      list.innerHTML = `<div class="empty">Keine Flüge im gewählten Zeitraum.</div>`;
+      list.innerHTML = `<div class="empty">${this._filters.day ? "Keine Flüge an diesem Tag." : "Keine Flüge im gewählten Zeitraum."}</div>`;
       return;
     }
     const mediaConnected = !!this._data?.media?.connected;
@@ -1782,6 +2016,182 @@ function sparkline(months, color) {
     })
     .join("");
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Flugzeit pro Monat, letzte ${months.length} Monate">${bars}</svg>`;
+}
+
+// -- statistics ---------------------------------------------------------------
+
+const pad2 = (n) => String(n).padStart(2, "0");
+/** The local calendar day of a date: "2026-09-26". */
+const keyOf = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const dayKey = (iso) => keyOf(new Date(iso));
+const dayDate = (key) => {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d);
+};
+/** The API's since/until for a local day. */
+function dayBounds(key) {
+  const d = dayDate(key);
+  const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+  return { since: d.toISOString(), until: new Date(next - 1).toISOString() };
+}
+
+/** Days shown by the calendar and the months chart: the last 12 months ("12") or a year, up to today. */
+function statsPeriod(value, now = new Date()) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let start = new Date(today.getFullYear(), today.getMonth() - 11, 1);
+  let end = today;
+  if (value !== "12") {
+    const y = Number(value);
+    start = new Date(y, 0, 1);
+    if (y !== today.getFullYear()) end = new Date(y, 11, 31);
+  }
+  return { start, end, until: new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1) };
+}
+
+const CAL_STEP = 13; // an 11 px day and the gap
+/** Level 0 (no flight) to 4; flight time on a square-root scale, so short days still show. */
+const calLevel = (s, top) => Math.min(4, Math.max(1, Math.ceil(4 * Math.sqrt(top ? s / top : 1))));
+
+/** GitHub-style calendar: a column per week (Monday on top), a square per day colored by flight time. */
+function calendarSvg(flights, period, selected) {
+  const byDay = new Map();
+  for (const f of flights) {
+    const k = dayKey(f.start_time);
+    const d = byDay.get(k) || { s: 0, n: 0 };
+    d.s += f.duration_s || 0;
+    d.n += 1;
+    byDay.set(k, d);
+  }
+  const top = Math.max(0, ...[...byDay.values()].map((d) => d.s));
+  const { start, end } = period;
+  const first = new Date(start.getFullYear(), start.getMonth(), start.getDate() - ((start.getDay() + 6) % 7));
+  const weeks = Math.ceil((Math.round((end - first) / 86400e3) + 1) / 7);
+  const left = 26;
+  const head = 14;
+  let cells = "";
+  let labels = "";
+  let lastLabel = -3;
+  for (let i = 0, d = first; d <= end; i++, d = new Date(first.getFullYear(), first.getMonth(), first.getDate() + i)) {
+    if (d < start) continue;
+    const w = Math.floor(i / 7);
+    const r = i % 7;
+    if (d.getDate() === 1) {
+      // Over the first full week of the month.
+      const col = r === 0 ? w : w + 1;
+      if (col - lastLabel >= 3 && col < weeks - 1) {
+        labels += `<text x="${left + col * CAL_STEP}" y="10">${esc(d.toLocaleDateString(undefined, { month: "short" }))}</text>`;
+        lastLabel = col;
+      }
+    }
+    const k = keyOf(d);
+    const v = byDay.get(k);
+    const date = d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+    const tip = v ? `${date}: ${v.n} ${v.n === 1 ? "Flug" : "Flüge"}${v.s ? `, ${fmtDur(v.s)}` : ""}` : `${date}: kein Flug`;
+    cells += `<rect x="${left + w * CAL_STEP}" y="${head + r * CAL_STEP}" width="11" height="11" rx="2" class="l${
+      v ? calLevel(v.s, top) : 0
+    }${k === selected ? " sel" : ""}"${v ? ` data-day="${k}"` : ""}><title>${esc(tip)}</title></rect>`;
+  }
+  // Monday, Wednesday, Friday (1 Jan 2024 was a Monday).
+  for (const r of [0, 2, 4]) {
+    const name = new Date(2024, 0, 1 + r).toLocaleDateString(undefined, { weekday: "short" });
+    labels += `<text x="0" y="${head + r * CAL_STEP + 9}">${esc(name)}</text>`;
+  }
+  const w = left + weeks * CAL_STEP;
+  const h = head + 7 * CAL_STEP;
+  return `<svg class="hm" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Flugzeit pro Tag">${labels}${cells}</svg>`;
+}
+
+function calendarLegend() {
+  const cells = [0, 1, 2, 3, 4].map((l) => `<rect x="${l * CAL_STEP}" y="0" width="11" height="11" rx="2" class="l${l}"/>`);
+  return `<svg class="hm" width="${5 * CAL_STEP - 2}" height="11" aria-hidden="true">${cells.join("")}</svg>`;
+}
+
+/** Bars per month of the period, stacked by series (aircraft or pilot); metric "time" or "count". */
+function monthsHtml(flights, period, metric, seriesOf) {
+  const months = [];
+  for (let d = new Date(period.start.getFullYear(), period.start.getMonth(), 1); d <= period.end; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
+    months.push(d);
+  }
+  const series = new Map();
+  for (const f of flights) {
+    const s = seriesOf(f);
+    let e = series.get(s.key);
+    if (!e) {
+      e = { ...s, vals: Array(months.length).fill(0) };
+      series.set(s.key, e);
+    }
+    const d = new Date(f.start_time);
+    const i = (d.getFullYear() - months[0].getFullYear()) * 12 + d.getMonth() - months[0].getMonth();
+    if (i >= 0 && i < months.length) e.vals[i] += metric === "count" ? 1 : f.duration_s || 0;
+  }
+  const list = [...series.values()];
+  const totals = months.map((_, i) => list.reduce((a, s) => a + s.vals[i], 0));
+  const top = Math.max(0, ...totals);
+  const fmt = (v) => (metric === "count" ? `${v} ${v === 1 ? "Flug" : "Flüge"}` : fmtDur(v));
+  if (!top) return `<div class="sub">${metric === "count" ? "Keine Flüge" : "Keine Flugzeit"} in diesem Zeitraum.</div>`;
+  const monthName = (m) => m.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const cols = months.map((m, i) => {
+    const parts = list.filter((s) => s.vals[i]);
+    const tip = [monthName(m), ...parts.map((s) => `${s.name}: ${fmt(s.vals[i])}`)];
+    if (parts.length > 1) tip.push(`Gesamt: ${fmt(totals[i])}`);
+    if (!parts.length) tip.push(metric === "count" ? "keine Flüge" : "keine Flugzeit");
+    const segs = parts
+      .map((s) => `<div style="height:${((s.vals[i] / totals[i]) * 100).toFixed(2)}%;background:${esc(s.color)}"></div>`)
+      .join("");
+    return `<div class="col" title="${esc(tip.join("\n"))}">
+      <div class="area"><div class="stack" style="height:${((totals[i] / top) * 100).toFixed(2)}%">${segs}</div></div>
+      <div class="ml">${esc(m.toLocaleDateString(undefined, { month: "short" }))}</div>
+    </div>`;
+  });
+  const best = totals.indexOf(top);
+  return `<div class="bars" role="img" aria-label="${metric === "count" ? "Flüge" : "Flugzeit"} pro Monat">${cols.join("")}</div>
+    ${list.length > 1 ? `<div class="series">${list.map((s) => `<span style="--c:${esc(s.color)}">${esc(s.name)}</span>`).join("")}</div>` : ""}
+    <div class="sub" style="margin-top:6px">Stärkster Monat: ${esc(monthName(months[best]))} (${esc(fmt(top))})</div>`;
+}
+
+/** The records among the flights: each with its flight, or the day for the most flights on a day. */
+function flightRecords(flights) {
+  // Flights come newest first; on a tie the newer flight holds the record.
+  const best = (key) => flights.reduce((b, f) => ((f[key] || 0) > (b?.[key] || 0) ? f : b), null);
+  const recs = [
+    ["Längster Flug", "duration_s", (f) => fmtDur(f.duration_s)],
+    ["Längste Strecke", "distance_m", (f) => fmtDist(f.distance_m)],
+    ["Weiteste Entfernung vom Start", "max_distance_m", (f) => fmtDist(f.max_distance_m)],
+    ["Höchster Flug", "max_height_m", (f) => `${Math.round(f.max_height_m)} m`],
+    ["Schnellster Flug", "max_h_speed_ms", (f) => `${(f.max_h_speed_ms * 3.6).toFixed(1)} km/h`],
+  ]
+    .map(([label, key, fmt]) => {
+      const f = best(key);
+      return f && { label, value: fmt(f), flight: f };
+    })
+    .filter(Boolean);
+  const perDay = new Map();
+  for (const f of flights) {
+    const k = dayKey(f.start_time);
+    perDay.set(k, (perDay.get(k) || 0) + 1);
+  }
+  let day = null;
+  let n = 0;
+  for (const [k, c] of perDay) {
+    if (c > n) [day, n] = [k, c];
+  }
+  if (n > 1) recs.push({ label: "Meiste Flüge an einem Tag", value: `${n} Flüge`, day });
+  return recs;
+}
+
+function recordsHtml(recs, aircraft) {
+  if (!recs.length) return `<div class="sub">Noch keine Rekorde.</div>`;
+  const rows = recs.map((r) => {
+    const f = r.flight;
+    const sub = f
+      ? [fmtDate(f.start_time, { dateStyle: "medium" }), aircraft?.[f.aircraft_sn]?.name || f.aircraft_name].filter(Boolean).join(" · ")
+      : dayDate(r.day).toLocaleDateString(undefined, { dateStyle: "medium" });
+    const attr = f ? `data-flight="${esc(f.flight_id)}" title="Flug öffnen"` : `data-day="${esc(r.day)}" title="Flüge dieses Tages zeigen"`;
+    return `<div class="rec" role="button" tabindex="0" ${attr}>
+      <span class="k">${esc(r.label)}<span class="sub">${esc(sub)}</span></span><span class="v">${esc(r.value)}</span>
+    </div>`;
+  });
+  return `<div class="recs">${rows.join("")}</div>`;
 }
 
 const num = (v, digits = 0) =>
