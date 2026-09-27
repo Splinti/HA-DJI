@@ -500,6 +500,61 @@ async def test_flight_notes(
     assert coordinator.store.flight_notes == {}
 
 
+async def test_flight_corrections(
+    hass: HomeAssistant, setup_entry, hass_client, hass_read_only_access_token, log_dir
+):
+    entry = await setup_entry(2)
+    api = f"/api/{DOMAIN}"
+    client = await hass_client(hass_read_only_access_token)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    logged = dict(coordinator.data.flights["flight0001"])
+    assert logged["edited"] == {}
+
+    # A start in local time is stored in UTC; the end moves along.
+    resp = await client.patch(
+        f"{api}/flights/flight0001", json={"start_time": "2024-05-01T10:00:00+02:00", "city": " Kassel "}
+    )
+    assert resp.status == 200
+    flight = (await resp.json())["flight"]
+    assert flight["start_time"] == "2024-05-01T08:00:00+00:00"
+    duration = datetime.fromisoformat(logged["end_time"]) - datetime.fromisoformat(logged["start_time"])
+    assert (
+        datetime.fromisoformat(flight["end_time"]) - datetime.fromisoformat(flight["start_time"]) == duration
+    )
+    assert flight["city"] == "Kassel"
+    assert flight["edited"] == {"start_time": logged["start_time"], "city": logged.get("city")}
+    body = await (await client.get(f"{api}/flights?since=2024-05-01&until=2024-05-02")).json()
+    assert [f["flight_id"] for f in body["flights"]] == ["flight0001"]
+
+    for bad in (
+        {},
+        {"start_time": "2081-03-01T10:00:00+00:00"},
+        {"start_time": "2024-05-01T10:00:00"},
+        {"start_time": "gestern"},
+        {"city": "x" * 121},
+        {"aircraft_sn": "x"},
+    ):
+        resp = await client.patch(f"{api}/flights/flight0001", json=bad)
+        assert resp.status == 400, bad
+    resp = await client.patch(f"{api}/flights/nope", json={"city": "x"})
+    assert resp.status == 404
+
+    # Parsing the log again keeps the corrections.
+    path = next(p for p in log_dir.iterdir() if p.stem.endswith("_1"))
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
+        await coordinator.async_import_file(path)
+    assert coordinator.data.flights["flight0001"]["start_time"] == "2024-05-01T08:00:00+00:00"
+
+    # null drops a correction, one field at a time.
+    resp = await client.patch(f"{api}/flights/flight0001", json={"start_time": None})
+    flight = (await resp.json())["flight"]
+    assert flight["start_time"] == logged["start_time"]
+    assert flight["city"] == "Kassel"
+    resp = await client.patch(f"{api}/flights/flight0001", json={"city": None})
+    assert (await resp.json())["flight"]["edited"] == {}
+    assert coordinator.store.flight_edits == {}
+
+
 async def test_pilots_require_admin(
     hass: HomeAssistant, setup_entry, hass_client, hass_read_only_access_token
 ):

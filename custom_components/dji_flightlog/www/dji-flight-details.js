@@ -24,6 +24,8 @@
  * saved right away and fires `dji-flight-pilot`.
  * The note on a flight saves itself while typing (after a pause and when the
  * field loses focus) and fires `dji-flight-note`.
+ * "Bearbeiten" corrects what the log got wrong (start time, place); a saved
+ * correction fires `dji-flight-edited`.
  *
  * Charts are plain SVG: one sample per second from the track file's
  * `profile`, no chart library.
@@ -118,6 +120,7 @@ class DjiFlightDetails extends HTMLElement {
     this._pilots = [];
     this._noteFor = null; // flight whose note the field shows
     this._noteTimer = null;
+    this._editing = false; // correction form open
     this._id = null;
     this._flight = null;
     this._track = null;
@@ -186,6 +189,7 @@ class DjiFlightDetails extends HTMLElement {
     }
     this._pendingId = null;
     this._flushNote();
+    if (flightId !== this._id) this._editing = false;
     if (!flightId) {
       this._id = null;
       this._flight = null;
@@ -235,6 +239,33 @@ class DjiFlightDetails extends HTMLElement {
           width: 36px; height: 36px; cursor: pointer; color: inherit; font-size: 18px; line-height: 1;
         }
         .head button:disabled { opacity: 0.35; cursor: default; }
+        .head .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 4px; }
+        .head .meta .pilot { margin-top: 0; }
+        .head button.edit {
+          width: auto; height: auto; border-radius: 6px; border: none; padding: 3px 6px; margin-left: -6px;
+          font-size: 13px; color: var(--primary-color);
+        }
+        .head button.edit:hover { background: var(--secondary-background-color, #f2f2f2); }
+        #editcard:empty { display: none; }
+        #editcard form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px; }
+        #editcard label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--secondary-text-color); }
+        #editcard input {
+          font: inherit; font-size: 14px; padding: 6px 8px; border-radius: 6px; min-width: 0;
+          background: var(--card-background-color, #fff); color: var(--primary-text-color);
+          border: 1px solid var(--divider-color, #e0e0e0);
+        }
+        #editcard input:focus { outline: none; border-color: var(--primary-color); }
+        #editcard .was a { color: var(--primary-color); cursor: pointer; margin-left: 6px; }
+        #editcard .actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        #editcard .actions .st { flex: 1; font-size: 12px; color: var(--secondary-text-color); }
+        #editcard .actions .st.err { color: var(--error-color, #db4437); }
+        #editcard button {
+          font: inherit; font-size: 13px; cursor: pointer; padding: 6px 14px; border-radius: 6px;
+          border: 1px solid var(--divider-color, #e0e0e0); background: none; color: inherit;
+        }
+        #editcard button.primary { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+        #editcard button:disabled { opacity: 0.5; cursor: default; }
+        .banner a { color: inherit; font-weight: 500; cursor: pointer; text-decoration: underline; }
         .tiles { display: flex; flex-wrap: wrap; gap: 12px; }
         .tile, .card {
           background: var(--card-background-color, #fff);
@@ -391,6 +422,7 @@ class DjiFlightDetails extends HTMLElement {
         <div class="content" id="content" hidden>
           <div class="tiles" id="tiles"></div>
           <div id="banner"></div>
+          <div id="editcard"></div>
           <div id="notecard"></div>
           <div>
             <div class="work" id="work">
@@ -519,7 +551,10 @@ class DjiFlightDetails extends HTMLElement {
       <div class="title">
         <h2>${esc(fmtDate(f.start_time))}</h2>
         <div class="sub">${esc(f.aircraft_name || "DJI")}${place ? ` · ${esc(place)}` : ""}${weather ? ` · ${esc(weather)}` : ""}</div>
-        ${this._pilotHtml(f)}
+        <div class="meta">
+          ${this._pilotHtml(f)}
+          <button class="edit" id="edit" title="Startzeit oder Ort korrigieren" ${this._editing ? "hidden" : ""}>✎ Bearbeiten</button>
+        </div>
       </div>
       <button id="newer" title="Nächster Flug" ${newer ? "" : "disabled"}>›</button>`;
     const go = (target) => {
@@ -533,6 +568,120 @@ class DjiFlightDetails extends HTMLElement {
     head.querySelector("#newer").onclick = () => go(newer);
     const pick = head.querySelector("#pilot");
     if (pick) pick.onchange = () => this._assignPilot(f, pick.value);
+    head.querySelector("#edit").onclick = () => this._openEdit();
+  }
+
+  // -- corrections --------------------------------------------------------------
+
+  _openEdit() {
+    this._editing = true;
+    this._renderHead();
+    this._renderEdit();
+    this.shadowRoot.querySelector("#editcard input")?.focus();
+  }
+
+  _closeEdit() {
+    this._editing = false;
+    this._renderHead();
+    this._renderEdit();
+  }
+
+  /** Form to correct start time and place; under a corrected field the log's value shows. */
+  _renderEdit() {
+    const box = this.shadowRoot.getElementById("editcard");
+    const f = this._flight;
+    if (!this._editing || !f) {
+      box.className = "";
+      box.innerHTML = "";
+      return;
+    }
+    const edited = f.edited || {};
+    const was = (key, text) =>
+      key in edited
+        ? `<span class="was">Laut Log: ${esc(text || "–")}<a data-reset="${key}" title="Den Wert aus dem Log wieder verwenden">zurücksetzen</a></span>`
+        : "";
+    box.className = "card";
+    box.innerHTML = `
+      <h3>Flug bearbeiten</h3>
+      <form>
+        <label>Start (Ortszeit)
+          <input name="start_time" type="datetime-local" step="1" required value="${esc(toLocalInput(f.start_time))}">
+          ${was("start_time", fmtDate(edited.start_time, { dateStyle: "medium", timeStyle: "medium" }))}
+        </label>
+        <label>Ort
+          <input name="city" maxlength="120" value="${esc(f.city)}">
+          ${was("city", edited.city)}
+        </label>
+        <label>Straße
+          <input name="street" maxlength="120" value="${esc(f.street)}">
+          ${was("street", edited.street)}
+        </label>
+        <div class="actions">
+          <span class="st" id="editst">Die Dauer bleibt, das Ende verschiebt sich mit dem Start.</span>
+          <button type="button" id="cancel">Abbrechen</button>
+          <button type="submit" class="primary">Speichern</button>
+        </div>
+      </form>`;
+    const form = box.querySelector("form");
+    box.querySelector("#cancel").onclick = () => this._closeEdit();
+    form.onkeydown = (e) => {
+      if (e.key === "Escape") this._closeEdit();
+    };
+    for (const a of box.querySelectorAll("a[data-reset]")) {
+      a.onclick = () => this._saveEdit(f, { [a.dataset.reset]: null }, { keepOpen: true });
+    }
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const start = new Date(form.start_time.value);
+      if (Number.isNaN(start.getTime())) {
+        this._setEditStatus("Bitte Datum und Uhrzeit angeben.", true);
+        return;
+      }
+      if (start.getTime() > Date.now() + 86400e3) {
+        this._setEditStatus("Der Start kann nicht in der Zukunft liegen.", true);
+        return;
+      }
+      const changes = {};
+      // The input has no milliseconds: compare whole seconds.
+      if (Math.floor(start.getTime() / 1000) !== Math.floor(Date.parse(f.start_time) / 1000)) {
+        changes.start_time = start.toISOString();
+      }
+      for (const key of ["city", "street"]) {
+        const value = form[key].value.trim();
+        if (value !== (f[key] || "")) changes[key] = value;
+      }
+      if (Object.keys(changes).length) this._saveEdit(f, changes);
+      else this._closeEdit();
+    };
+  }
+
+  async _saveEdit(f, changes, { keepOpen = false } = {}) {
+    const buttons = this.shadowRoot.querySelectorAll("#editcard button");
+    for (const b of buttons) b.disabled = true;
+    this._setEditStatus("Speichere …");
+    let res;
+    try {
+      res = await this._hass.callApi("PATCH", `${API}/flights/${f.flight_id}`, changes);
+    } catch (err) {
+      console.error("dji-flight-details edit:", err);
+      for (const b of buttons) b.disabled = false;
+      // callApi rejects with { error, body }: body is the JSON of our own errors, text otherwise.
+      this._setEditStatus(`Speichern fehlgeschlagen: ${err.body?.message || err.error || err.message || err}`, true);
+      return;
+    }
+    if (this._flight?.flight_id === f.flight_id && res.flight) {
+      this._flight = { ...this._flight, ...res.flight };
+      this._editing = keepOpen;
+      this._renderAll();
+    }
+    this.dispatchEvent(new CustomEvent("dji-flight-edited", { detail: { flight_id: f.flight_id }, bubbles: true, composed: true }));
+  }
+
+  _setEditStatus(text, error = false) {
+    const st = this.shadowRoot.getElementById("editst");
+    if (!st) return;
+    st.textContent = text;
+    st.classList.toggle("err", error);
   }
 
   /**
@@ -650,6 +799,10 @@ class DjiFlightDetails extends HTMLElement {
     if (!f) return;
     $("tiles").innerHTML = this._tilesHtml(f);
     $("banner").innerHTML = this._bannerHtml(f);
+    const fix = $("banner").querySelector("a[data-edit]");
+    if (fix) fix.onclick = () => this._openEdit();
+    // Leave an open form alone while the track loads.
+    if (!this._editing || !$("editcard").firstElementChild) this._renderEdit();
     this._renderNote(f);
     $("info").innerHTML =
       this._modesHtml(f) +
@@ -727,6 +880,11 @@ class DjiFlightDetails extends HTMLElement {
       const text = this._labels?.incidentText ? this._labels.incidentText(f) : (f.incident_actions || []).join(", ");
       msgs.push(
         `<div class="banner${f.incident === "critical" ? " crit" : ""}">${f.incident === "critical" ? "Kritischer Vorfall" : "Warnung"}: ${esc(text)}</div>`,
+      );
+    }
+    if (Date.parse(f.start_time) > Date.now() + 86400e3) {
+      msgs.push(
+        `<div class="banner">Der Start liegt in der Zukunft – die Uhr im Log stimmt wohl nicht. <a data-edit>Startzeit korrigieren</a></div>`,
       );
     }
     if (f.sd_full) msgs.push(`<div class="banner">SD-Karte war voll: danach wurde nichts mehr aufgezeichnet.</div>`);
@@ -848,8 +1006,11 @@ class DjiFlightDetails extends HTMLElement {
   _techHtml(f) {
     const rows = [
       ["Drohne", `${f.aircraft_name || "DJI"}${f.aircraft_sn ? ` (${f.aircraft_sn})` : ""}`],
-      ["Start", fmtDate(f.start_time, { dateStyle: "medium", timeStyle: "medium" })],
+      ["Start", `${fmtDate(f.start_time, { dateStyle: "medium", timeStyle: "medium" })}${f.edited?.start_time ? " (korrigiert)" : ""}`],
       ["Ende", f.end_time ? fmtDate(f.end_time, { dateStyle: "medium", timeStyle: "medium" }) : "–"],
+      ...(f.edited?.start_time
+        ? [["Start laut Log", fmtDate(f.edited.start_time, { dateStyle: "medium", timeStyle: "medium" })]]
+        : []),
       ["Max. Sinken/Steigen", fmtNum(f.max_v_speed_ms, 1, "m/s")],
       ["App", f.app_version || "–"],
       ["Log-Version", f.log_version ?? "–"],
@@ -1654,6 +1815,14 @@ const ICON_SHRINK = "M19.5,3.09L15,7.59V4H13V11H20V9H16.41L20.91,4.5L19.5,3.09M4
 
 function svg(path) {
   return `<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="${path}"/></svg>`;
+}
+
+/** ISO time -> value of a datetime-local input, in the browser's time zone. */
+function toLocalInput(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 function table(rows) {

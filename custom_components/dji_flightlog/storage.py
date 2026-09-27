@@ -1,9 +1,9 @@
 """Persistence for parsed flights.
 
 The index (summaries + file bookkeeping + saved spots + pilots + notes +
-weather) lives in Home Assistant's ``Store`` so it is included in backups.
-Tracks are larger and rarely needed, so each one is a separate JSON file under
-``<config>/.storage/dji_flightlog/tracks``.
+weather + corrections) lives in Home Assistant's ``Store`` so it is included in
+backups. Tracks are larger and rarely needed, so each one is a separate JSON
+file under ``<config>/.storage/dji_flightlog/tracks``.
 """
 
 from __future__ import annotations
@@ -45,6 +45,8 @@ class FlightStore:
         self.flight_notes: dict[str, str] = {}
         # flight id -> weather at the flight (see weather.py); kept apart so re-parsing keeps it
         self.flight_weather: dict[str, dict[str, Any]] = {}
+        # flight id -> corrected fields (see edits.py)
+        self.flight_edits: dict[str, dict[str, Any]] = {}
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -56,6 +58,7 @@ class FlightStore:
         self.flight_pilots = data.get("flight_pilots", {})
         self.flight_notes = data.get("flight_notes", {})
         self.flight_weather = data.get("flight_weather", {})
+        self.flight_edits = data.get("flight_edits", {})
         # Flights imported before placeholders were filtered show "Map Loading".
         for flight in self.flights.values():
             for key in ("city", "street"):
@@ -73,6 +76,7 @@ class FlightStore:
             "flight_pilots": self.flight_pilots,
             "flight_notes": self.flight_notes,
             "flight_weather": self.flight_weather,
+            "flight_edits": self.flight_edits,
         }
 
     async def async_save(self) -> None:

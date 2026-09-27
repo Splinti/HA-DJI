@@ -726,6 +726,8 @@ class DjiFlightLogPanel extends HTMLElement {
     this.shadowRoot.addEventListener("dji-flight-pilot", () => this._pilotsChanged());
     // A note was saved: the list shows it (the maps keep their view and pick it up on their next load).
     this.shadowRoot.addEventListener("dji-flight-note", () => this._load());
+    // A corrected start or place: list, stats and calendar follow.
+    this.shadowRoot.addEventListener("dji-flight-edited", () => this._load());
     // Prev/next inside the detail view: keep the list selection in step.
     this.shadowRoot.addEventListener("dji-flight-selected", (e) => {
       this._selected = e.detail.flight_id;
