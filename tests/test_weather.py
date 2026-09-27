@@ -88,8 +88,19 @@ async def test_weather_lookup(hass: HomeAssistant, setup_entry, aioclient_mock, 
     assert coordinator.data.flights["flight0001"]["weather"]["wind_ms"] == 10.0
     assert aioclient_mock.call_count == 2
 
+    # A corrected start time looks the weather up again, for the new day.
+    await coordinator.async_edit_flight("flight0000", {"start_time": "2026-09-02T09:40:00+00:00"})
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert aioclient_mock.call_count == 3
+    assert dict(aioclient_mock.mock_calls[-1][1].query)["start_date"] == "2026-09-02"
+    assert coordinator.data.flights["flight0000"]["weather"]["time"] == "2026-09-02T10:00:00+00:00"
+    # Only the place changed: no new lookup.
+    await coordinator.async_edit_flight("flight0000", {"city": "Kassel"})
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert aioclient_mock.call_count == 3
+
     await coordinator.async_remove_flight("flight0001")
-    assert coordinator.store.flight_weather == {}
+    assert list(coordinator.store.flight_weather) == ["flight0000"]
 
 
 async def test_weather_lookup_failure_is_retried(

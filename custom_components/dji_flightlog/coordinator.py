@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from . import edits
 from .const import (
     ATTENTION_BATTERY_TEMP_C,
     ATTENTION_BATTERY_WORN_PCT,
@@ -356,9 +357,22 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         self._publish()
 
     async def async_flights_changed(self) -> None:
-        """Save pilots, assignments or notes and publish the flights with them."""
+        """Save pilots, assignments, notes or corrections and publish the flights with them."""
         await self.store.async_save()
         self._publish()
+
+    async def async_edit_flight(self, flight_id: str, data: dict[str, Any]) -> None:
+        """Apply corrections (see edits.py); another start time looks up the weather again."""
+        before = self.store.flight_edits.get(flight_id, {})
+        after = edits.update(before, data)
+        if after:
+            self.store.flight_edits[flight_id] = after
+        else:
+            self.store.flight_edits.pop(flight_id, None)
+        if before.get("start_time") != after.get("start_time"):
+            self.store.flight_weather.pop(flight_id, None)
+            self._weather_retry.pop(flight_id, None)
+        await self.async_flights_changed()
 
     async def async_remove_flight(self, flight_id: str) -> bool:
         if flight_id not in self.store.flights:
@@ -367,6 +381,7 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         self.store.flight_pilots.pop(flight_id, None)
         self.store.flight_notes.pop(flight_id, None)
         self.store.flight_weather.pop(flight_id, None)
+        self.store.flight_edits.pop(flight_id, None)
         for path, rec in list(self.store.files.items()):
             if rec.get("flight_id") == flight_id:
                 self.store.files.pop(path)
@@ -453,7 +468,7 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             return
         now = datetime.now(UTC)
         todo = [
-            f
+            edits.apply(f, self.store.flight_edits.get(fid))
             for fid, f in self.store.flights.items()
             if fid not in self.store.flight_weather and self._weather_retry.get(fid, now) <= now
         ]
@@ -479,11 +494,11 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
 
     def _aggregate(self, *, include_dismissed: bool = False) -> FlightData:
         pilots, assigned, notes = self.store.pilots, self.store.flight_pilots, self.store.flight_notes
-        weather = self.store.flight_weather
+        weather, corrections = self.store.flight_weather, self.store.flight_edits
         data = FlightData(
             flights={
                 fid: {
-                    **with_pilot(f, pilots, assigned),
+                    **with_pilot(edits.apply(f, corrections.get(fid)), pilots, assigned),
                     "note": notes.get(fid, ""),
                     "weather": weather.get(fid),
                 }

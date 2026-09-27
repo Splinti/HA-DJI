@@ -18,6 +18,7 @@ from homeassistant.components.http.auth import async_sign_path
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 
+from . import edits as edit_utils
 from . import pilots as pilot_utils
 from . import spots as spot_utils
 from .const import (
@@ -401,6 +402,31 @@ class FlightNoteView(HomeAssistantView):
         return self.json({"flight": coordinator.data.flights[flight_id]})
 
 
+class FlightView(HomeAssistantView):
+    """Correct a flight: ``{"start_time": iso, "city": str, "street": str}``, any subset.
+
+    ``null`` drops a correction, so the value from the log shows again.
+    """
+
+    url = f"{API_BASE}/flights/{{flight_id}}"
+    name = f"api:{DOMAIN}:flight"
+    requires_auth = True
+
+    async def patch(self, request: web.Request, flight_id: str) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None or coordinator.data is None:
+            return self.json_message("Integration not ready", status_code=503)
+        store = coordinator.store
+        if flight_id not in store.flights:
+            return self.json_message("Unknown flight", status_code=404)
+        try:
+            data = edit_utils.UPDATE_SCHEMA(await request.json())
+        except (ValueError, vol.Invalid) as err:
+            return self.json_message(f"Invalid correction: {err}", status_code=400)
+        await coordinator.async_edit_flight(flight_id, data)
+        return self.json({"flight": coordinator.data.flights[flight_id]})
+
+
 class AttentionDismissView(HomeAssistantView):
     """Mark pre-flight notices as done: ``{"keys": [...]}``."""
 
@@ -627,6 +653,7 @@ def async_register_views(hass: HomeAssistant) -> None:
         PilotView,
         FlightPilotView,
         FlightNoteView,
+        FlightView,
         UploadView,
         AttentionDismissView,
         MediaThumbView,
