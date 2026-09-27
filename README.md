@@ -69,6 +69,10 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 - **Vor dem nächsten Flug**: oben eine Liste mit allem, was der letzte Flug jeder Drohne bzw. jedes Akkus gemeldet hat. Das sind Vorfälle (z. B. Smart-RTH), eine volle oder fast volle SD-Karte (weniger als 10 min Video), Kartenfehler (keine Karte, schreibgeschützt, zu langsam, Formatieren empfohlen, …) und Akkus, die über 60 °C warm wurden, unter 3,0 V pro Zelle entladen wurden, deren Zellen mehr als 0,2 V auseinanderlagen oder die unter 80 % Kapazität bzw. Lebensdauer liegen. „Erledigt“ blendet einen Hinweis aus, bis ein neuerer Flug ihn wieder meldet. Dieselbe Liste steht im Sensor „Hinweise vor dem nächsten Flug“ (Anzahl, Attribut `items`), z. B. für eine Benachrichtigung
 - Statistik-Kacheln (Flüge, Flugzeit, Strecke, max. Höhe/Speed, letzter Flug) über den gefilterten Zeitraum
 - Filter: Zeitraum (7 Tage … alles), Drohne (ab zwei Drohnen), Pilot (sobald es Piloten gibt: alle, ein Pilot oder „Ohne Pilot“), Heatmap an/aus, DIPUL-Zonen an/aus. Ist der angemeldete HA-Benutzer mit einem Piloten verknüpft, startet das Panel mit dessen Flügen
+- **Statistik** (Häkchen bei den Filtern, der Browser merkt es sich) über die gefilterten Flüge:
+  - **Kalender** im GitHub-Stil für die letzten 12 Monate oder ein Jahr, ein Kästchen pro Tag, je dunkler, desto mehr Flugzeit. Ein Klick auf einen Tag zeigt nur dessen Flüge in Kacheln, Karte und Liste; das Kärtchen mit dem Datum bei den Filtern oder ein zweiter Klick hebt das wieder auf
+  - **Pro Monat**: Flugzeit oder Anzahl Flüge als Balken, gestapelt je Drohne (in den Farben von Karte und *Flotte*) oder, sobald es Piloten gibt, je Pilot
+  - **Rekorde**: längster Flug, längste Strecke, weiteste Entfernung vom Start, höchster und schnellster Flug (Klick öffnet den Flug) sowie die meisten Flüge an einem Tag (Klick zeigt den Tag)
 - **Piloten** (Symbol neben den Filtern, nur Admins): Piloten anlegen, umbenennen und löschen, je Pilot den HA-Benutzer und die Drohnen wählen, deren Flüge ihm automatisch gehören. Eine Drohne und ein Benutzer gehören immer nur zu einem Piloten. Löschen entfernt nur die Zuordnung, nicht die Flüge
 - Große Karte, die die volle Höhe nutzt
 - Flugliste rechts (auf dem Handy darunter), nach Tagen gruppiert; Klick auf einen Flug zoomt auf ihn und hebt ihn hervor, nochmal klicken hebt die Auswahl auf. Das Diagramm-Symbol am Flug oder „Details“ im Popup öffnet die Ansicht *Flug*
@@ -88,7 +92,7 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 **Planen**
 - Karte mit den DIPUL-Zonen; ein Tipp auf die Karte öffnet „Neuer Ort“ (siehe unten). „Flüge einblenden“ zeigt die bisherigen Tracks
 - **Suche** über der Karte: Postleitzahl, Ort, Adresse oder Koordinaten eingeben, Enter. Die Karte springt hin und setzt einen Marker, dessen Popup „Ort merken“ (Name schon vorbelegt) und Navigation anbietet. Koordinaten gehen in allen üblichen Schreibweisen: `48.13743, 11.57549`, `48,13743 11,57549`, `N 48.13743 E 11.57549`, `48°08'14.7"N 11°34'31.8"E` (so kopiert man sie aus Google Maps) oder ein Google-Maps-Link mit `@48.13743,11.57549`. Koordinaten werden lokal erkannt; alles andere fragt der Browser bei [Nominatim](https://nominatim.org) (OpenStreetMap) an, eine reine PLZ zuerst als Postleitzahl im Land der HA-Instanz
-- **Mein Standort**: der Knopf unter dem Zoom zeigt die eigene Position (blauer Punkt mit Genauigkeitskreis) und zoomt hin; im Popup „Hier merken“. Braucht die Standortfreigabe im Browser bzw. in der App, und Home Assistant muss über HTTPS geöffnet sein (Browser geben den Standort sonst nicht heraus)
+- **Mein Standort**: der Knopf unter dem Zoom zeigt die eigene Position (blauer Punkt mit Genauigkeitskreis) und zoomt hin; im Popup „Hier merken“. Im Browser braucht das die Standortfreigabe und HTTPS (sonst geben Browser den Standort nicht heraus). Klappt das nicht – etwa in der Android-App, deren WebView keinen Standort an Webseiten gibt, oder über `http://` –, nimmt die Karte den letzten Standort, den die Companion App an Home Assistant meldet (Person des angemeldeten Benutzers bzw. ihr GPS-Tracker; das Popup zeigt Gerät und Alter). Dafür muss in der App die Standortverfolgung an und das Gerät der eigenen Person zugeordnet sein
 - Liste der gemerkten Orte mit Navigations-Link und Löschen; Klick zoomt auf den Ort
 
 **Flotte**
@@ -153,13 +157,13 @@ home: true         # Home-Punkte
 tiles: ha          # Start-Ebene: ha (HA-eigener OSM-Proxy, Default) | carto | satellite (Esri) | topo
 tile_switch: true  # Umschalter „Karte | Satellit“ oben rechts; die Wahl merkt sich der Browser
 spot_on_click: false # Klick auf die Karte öffnet „Neuer Ort“ (im Panel immer an)
-locate: false      # Knopf „Mein Standort“ unter dem Zoom (braucht HTTPS; im Panel unter Planen an)
+locate: false      # Knopf „Mein Standort“ unter dem Zoom (Browser über HTTPS, sonst Standort der eigenen Person; im Panel unter Planen an)
 height: 450
 ```
 
 Satellitenbilder kommen von Esri World Imagery (mit Orts- und Grenznamen darüber) und werden im Dark Mode nicht invertiert.
 
-Weitere Optionen: `dipul` (DIPUL-Geozonen einblenden, Default false), `spots` (gemerkte Orte anzeigen, Default true bei `mode: all`), `flights` (false: keine Tracks, nur Orte und Zonen), `scan_button` (↻ im Titel, Default true), `limit`, `since` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
+Weitere Optionen: `dipul` (DIPUL-Geozonen einblenden, Default false), `spots` (gemerkte Orte anzeigen, Default true bei `mode: all`), `flights` (false: keine Tracks, nur Orte und Zonen), `scan_button` (↻ im Titel, Default true), `limit`, `since` und `until` (ISO-Datum), `line_color`, `line_weight`, `max_points` (Punkte pro Track in der Übersicht, Default 400), `dark` (`auto`/`true`/`false`), `refresh_entity` (Default `sensor.dji_flight_log_last_import`), `refresh_seconds`.
 
 ### Flüge auf der Standard-Karte
 

@@ -28,7 +28,8 @@
           "scan_interval": "Scan interval",
           "max_track_points": "Max. stored points per track",
           "geo_location_limit": "Flights exposed as geo_location entities (0 = none; any of them makes Home Assistant add a map to the auto-generated Overview dashboard)",
-          "sidebar_panel": "Show in sidebar"
+          "sidebar_panel": "Show in sidebar",
+          "weather": "Look up the weather at flight time from Open-Meteo (sends the date and the takeoff point, rounded to about 1 km, to open-meteo.com)"
         }
       },
       "onedrive_folder": {
@@ -75,7 +76,8 @@
           "scan_interval": "Scan interval",
           "max_track_points": "Max. stored points per track",
           "geo_location_limit": "Flights exposed as geo_location entities (0 = none; any of them makes Home Assistant add a map to the auto-generated Overview dashboard)",
-          "sidebar_panel": "Show in sidebar"
+          "sidebar_panel": "Show in sidebar",
+          "weather": "Look up the weather at flight time from Open-Meteo (sends the date and the takeoff point, rounded to about 1 km, to open-meteo.com)"
         }
       },
       "media": {

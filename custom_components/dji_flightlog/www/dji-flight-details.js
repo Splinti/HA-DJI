@@ -4,7 +4,8 @@
  * Detail view of one flight for the dji_flightlog panel: key figures, the
  * track on a map, charts over the flight time (height, speed, distance from
  * home, battery, battery temperature) with the flight modes and flight
- * controller events, and the battery / recording / technical data.
+ * controller events, the weather at the flight (with the Open-Meteo option)
+ * and the battery / recording / technical data.
  * With a media source (OneDrive, folder) connected, the recordings of the flight show in a
  * player that can be enlarged to fill the window. A playing video moves
  * the cursor in the charts and on the map along; a click into the charts
@@ -280,6 +281,8 @@ class DjiFlightDetails extends HTMLElement {
         td.warn { color: var(--warning-color, #ffa600); }
         td.crit { color: var(--error-color, #db4437); }
         .muted { color: var(--secondary-text-color); font-size: 13px; }
+        .card table + .muted { margin-top: 6px; font-size: 12px; }
+        .muted a { color: var(--primary-color); }
         #notecard:empty { display: none; }
         #notecard .nh { display: flex; align-items: baseline; gap: 8px; }
         #notecard .nh h3 { flex: 1; }
@@ -510,11 +513,12 @@ class DjiFlightDetails extends HTMLElement {
     const older = i >= 0 ? this._flights[i + 1] : null;
     const newer = i > 0 ? this._flights[i - 1] : null;
     const place = [f.street, f.city].filter(Boolean).join(", ");
+    const weather = f.weather && this._labels ? this._labels.weatherSummary(f.weather) : "";
     head.innerHTML = `
       <button id="older" title="Vorheriger Flug" ${older ? "" : "disabled"}>‹</button>
       <div class="title">
         <h2>${esc(fmtDate(f.start_time))}</h2>
-        <div class="sub">${esc(f.aircraft_name || "DJI")}${place ? ` · ${esc(place)}` : ""}</div>
+        <div class="sub">${esc(f.aircraft_name || "DJI")}${place ? ` · ${esc(place)}` : ""}${weather ? ` · ${esc(weather)}` : ""}</div>
         ${this._pilotHtml(f)}
       </div>
       <button id="newer" title="Nächster Flug" ${newer ? "" : "disabled"}>›</button>`;
@@ -648,7 +652,12 @@ class DjiFlightDetails extends HTMLElement {
     $("banner").innerHTML = this._bannerHtml(f);
     this._renderNote(f);
     $("info").innerHTML =
-      this._modesHtml(f) + this._eventsHtml(f) + this._batteryHtml(f) + this._recordingHtml(f) + this._techHtml(f);
+      this._modesHtml(f) +
+      this._eventsHtml(f) +
+      this._weatherHtml(f) +
+      this._batteryHtml(f) +
+      this._recordingHtml(f) +
+      this._techHtml(f);
     this._wireLinks(f);
     this._layout();
     if (loading) {
@@ -767,6 +776,30 @@ class DjiFlightDetails extends HTMLElement {
           .join("")
       : `<div class="muted">Keine Eingriffe des Flugcontrollers.</div>`;
     return `<div class="card"><h3>Ereignisse</h3><div class="events">${rows}</div></div>`;
+  }
+
+  _weatherHtml(f) {
+    const w = f.weather;
+    const L = this._labels;
+    if (!w || !L) return "";
+    const wind = (ms, deg) => {
+      if (ms == null) return "–";
+      const from = deg != null ? ` aus ${L.windFrom(deg)} (${Math.round(deg)}°)` : "";
+      return `${L.kmh(ms)} · ${fmtNum(ms, 1, "m/s")}${from}`;
+    };
+    const hour = fmtDate(w.time, { timeStyle: "short" });
+    const rows = [
+      ["Wetter", w.code != null ? L.weatherLabel(w.code) : "–"],
+      ["Wind (10 m)", wind(w.wind_ms, w.wind_dir)],
+      ["Böen (10 m)", w.gust_ms == null ? "–" : `${L.kmh(w.gust_ms)} · ${fmtNum(w.gust_ms, 1, "m/s")}`],
+      ["Wind (100 m)", wind(w.wind_100m_ms, w.wind_100m_dir)],
+      ["Temperatur", fmtNum(w.temp_c, 1, "°C")],
+      ["Bewölkung", fmtNum(w.cloud_pct, 0, "%")],
+      ["Niederschlag", fmtNum(w.precip_mm, 1, "mm")],
+    ];
+    // Open-Meteo's data is CC BY 4.0: name the source.
+    const src = `<div class="muted">Stundenwert ${esc(hour)} Uhr am Startpunkt, Wetterdaten von <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a></div>`;
+    return `<div class="card"><h3>Wetter</h3>${table(rows)}${src}</div>`;
   }
 
   _batteryHtml(f) {

@@ -229,6 +229,21 @@ const LOCATE_ERRORS = {
   2: "Standort ist gerade nicht verfügbar.",
   3: "Standort konnte nicht rechtzeitig ermittelt werden.",
 };
+
+/** The browser's position as {lat, lon, accuracy}; rejects with a readable Error. */
+function browserPosition() {
+  // Browsers only offer geolocation to secure pages (HTTPS or localhost).
+  if (!window.isSecureContext || !navigator.geolocation) {
+    return Promise.reject(new Error("Der Browser gibt den Standort nur über HTTPS heraus."));
+  }
+  return new Promise((resolve, reject) =>
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => resolve({ lat: coords.latitude, lon: coords.longitude, accuracy: coords.accuracy }),
+      (err) => reject(new Error(LOCATE_ERRORS[err.code] || err.message || String(err))),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 },
+    ),
+  );
+}
 function spotIcon(L, color = SPOT_COLOR) {
   return L.divIcon({
     className: "dji-spot",
@@ -303,6 +318,12 @@ const fmtDate = (iso) => {
   const d = new Date(iso);
   return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 };
+const fmtAgo = (iso) => {
+  const min = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (!(min >= 1)) return "gerade eben";
+  if (min < 60) return `vor ${min} min`;
+  return fmtDate(iso);
+};
 const fmtDur = (s) => {
   s = Math.round(s || 0);
   const m = Math.floor(s / 60);
@@ -371,6 +392,58 @@ const prettyName = (name) => {
 export const actionLabel = (a) => ACTION_LABELS[a] || prettyName(a);
 export const modeLabel = (m) => MODE_LABELS[m] || prettyName(m);
 export const incidentText = (f) => (f.incident_actions || []).map(actionLabel).join(", ");
+
+// Weather at the flight (summary field `weather`, from Open-Meteo): WMO weather codes.
+const WEATHER_CODES = {
+  0: "klar",
+  1: "überwiegend klar",
+  2: "teils bewölkt",
+  3: "bedeckt",
+  45: "Nebel",
+  48: "Nebel mit Reif",
+  51: "leichter Niesel",
+  53: "Niesel",
+  55: "starker Niesel",
+  56: "gefrierender Niesel",
+  57: "gefrierender Niesel",
+  61: "leichter Regen",
+  63: "Regen",
+  65: "starker Regen",
+  66: "gefrierender Regen",
+  67: "gefrierender Regen",
+  71: "leichter Schneefall",
+  73: "Schneefall",
+  75: "starker Schneefall",
+  77: "Schneegriesel",
+  80: "leichte Schauer",
+  81: "Schauer",
+  82: "starke Schauer",
+  85: "Schneeschauer",
+  86: "starke Schneeschauer",
+  95: "Gewitter",
+  96: "Gewitter mit Hagel",
+  99: "Gewitter mit Hagel",
+};
+const WIND_DIRS = ["N", "NO", "O", "SO", "S", "SW", "W", "NW"];
+export const weatherLabel = (code) => (code == null ? "" : WEATHER_CODES[code] || `Wettercode ${code}`);
+/** Compass point the wind comes from (the direction is meteorological: where it blows from). */
+export const windFrom = (deg) => (deg == null ? "" : WIND_DIRS[Math.round((((deg % 360) + 360) % 360) / 45) % 8]);
+export const kmh = (ms) => (ms == null ? "–" : `${Math.round(ms * 3.6)} km/h`);
+/** One line, e.g. "Wind 12 km/h aus SW, Böen 25 km/h · 18 °C, teils bewölkt". */
+export function weatherSummary(w) {
+  if (!w) return "";
+  const parts = [];
+  if (w.wind_ms != null) {
+    let wind = `Wind ${kmh(w.wind_ms)}${w.wind_dir != null ? ` aus ${windFrom(w.wind_dir)}` : ""}`;
+    if (w.gust_ms != null) wind += `, Böen ${kmh(w.gust_ms)}`;
+    parts.push(wind);
+  }
+  const rest = [];
+  if (w.temp_c != null) rest.push(`${Math.round(w.temp_c)} °C`);
+  if (w.code != null) rest.push(weatherLabel(w.code));
+  if (rest.length) parts.push(rest.join(", "));
+  return parts.join(" · ");
+}
 
 /** Download a flight as GPX / KML / GeoJSON through the authenticated API. */
 export async function downloadExport(hass, f, fmt) {
@@ -450,6 +523,7 @@ class DjiFlightMapCard extends HTMLElement {
       max_points: 400,
       days: null,
       since: null,
+      until: null,
       aircraft: null,
       // Pilot id or name, "me" (the pilot linked to the HA user) or "none".
       pilot: null,
@@ -788,6 +862,7 @@ class DjiFlightMapCard extends HTMLElement {
     if (c.pilot) q.set("pilot", c.pilot);
     if (c.since) q.set("since", c.since);
     else if (c.days) q.set("since", new Date(Date.now() - c.days * 86400e3).toISOString());
+    if (c.until) q.set("until", c.until);
     return q;
   }
 
@@ -1011,33 +1086,47 @@ class DjiFlightMapCard extends HTMLElement {
     marker.openPopup();
   }
 
-  /** Show the device's position (browser geolocation) and zoom to it. */
+  /**
+   * Show the device's position and zoom to it. The browser's geolocation
+   * comes first; the Android companion app's WebView refuses it, so the
+   * fallback is the position the app reports to HA for the current user.
+   */
   async locate() {
     const map = await this._ensureMap();
     if (!map || this._locBtn?.classList.contains("busy")) return;
-    // Browsers only offer geolocation to secure pages (HTTPS or localhost).
-    if (!window.isSecureContext || !navigator.geolocation) {
-      this._showLocateMsg("Der Standort ist nur verfügbar, wenn Home Assistant über HTTPS geöffnet ist.");
-      return;
-    }
     this._locBtn?.classList.add("busy");
     try {
-      const pos = await new Promise((resolve, reject) =>
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 15000,
-          maximumAge: 30000,
-        }),
-      );
-      this._showLocation(pos.coords);
+      this._showLocation(await browserPosition());
     } catch (err) {
-      this._showLocateMsg(LOCATE_ERRORS[err.code] || err.message || String(err));
+      const pos = this._haPosition();
+      if (pos) this._showLocation(pos);
+      else this._showLocateMsg(`${err.message} Home Assistant kennt auch keinen Standort für dich (Companion App mit Standortverfolgung, die deiner Person zugeordnet ist).`);
     } finally {
       this._locBtn?.classList.remove("busy");
     }
   }
 
-  _showLocation({ latitude: lat, longitude: lon, accuracy }) {
+  /** Latest position of the current user's person or one of its trackers. */
+  _haPosition() {
+    const states = this._hass?.states || {};
+    const uid = this._hass?.user?.id;
+    const person = uid && Object.values(states).find((s) => s.entity_id.startsWith("person.") && s.attributes.user_id === uid);
+    if (!person) return null;
+    // Trackers first: on a tie with the person the tracker names the device.
+    const found = [...(person.attributes.device_trackers || []).map((id) => states[id]), person]
+      .filter((s) => s && s.attributes.latitude != null && s.attributes.longitude != null)
+      .reduce((a, b) => (!a || b.last_updated > a.last_updated ? b : a), null);
+    if (!found) return null;
+    return {
+      lat: found.attributes.latitude,
+      lon: found.attributes.longitude,
+      accuracy: found.attributes.gps_accuracy || 0,
+      source: found.attributes.friendly_name || found.entity_id,
+      time: found.last_updated,
+    };
+  }
+
+  _showLocation({ lat, lon, accuracy, source = "", time = null }) {
     if (!this._map) return;
     const L = window.L;
     const latlng = L.latLng(lat, lon);
@@ -1051,8 +1140,9 @@ class DjiFlightMapCard extends HTMLElement {
     const el = document.createElement("div");
     el.innerHTML = `
       <b>Mein Standort</b>
+      ${source ? `<div class="muted">Von ${esc(source)}, ${esc(fmtAgo(time))}</div>` : ""}
       ${this._config.spots ? `<div class="btns"><button class="save primary">Hier merken</button></div>` : ""}
-      <div class="small">${lat.toFixed(5)}, ${lon.toFixed(5)} · ± ${Math.round(accuracy)} m</div>`;
+      <div class="small">${lat.toFixed(5)}, ${lon.toFixed(5)}${accuracy ? ` · ± ${Math.round(accuracy)} m` : ""}</div>`;
     el.querySelector(".save")?.addEventListener("click", () => {
       dot.closePopup();
       this._openPlan({ latlng });
@@ -1067,7 +1157,7 @@ class DjiFlightMapCard extends HTMLElement {
     clearTimeout(this._locMsgTimer);
     this._locMsg = msg;
     this._updateHint();
-    if (msg) this._locMsgTimer = setTimeout(() => this._showLocateMsg(""), 8000);
+    if (msg) this._locMsgTimer = setTimeout(() => this._showLocateMsg(""), 12000);
   }
 
   /** Remove the search result marker. */
@@ -1313,6 +1403,7 @@ class DjiFlightMapCard extends HTMLElement {
     if (f.incident && f.incident !== "ok") rows.push([f.incident === "critical" ? "Kritisch" : "Warnung", incidentText(f)]);
     if (f.sd_full) rows.push(["SD-Karte", "voll"]);
     if (f.city) rows.push(["Ort", f.city]);
+    if (f.weather) rows.push(["Wetter", weatherSummary(f.weather)]);
     if (f.pilot_name) rows.push(["Pilot", f.pilot_name]);
     if (f.note) rows.push(["Notiz", f.note.length > 140 ? `${f.note.slice(0, 140)} …` : f.note]);
     const details = this._config.details ? `<a data-details>Details</a>` : "";

@@ -12,6 +12,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -24,8 +25,10 @@ from .const import (
     CONF_LOG_DIR,
     CONF_MAX_TRACK_POINTS,
     CONF_SCAN_INTERVAL,
+    CONF_WEATHER,
     DEFAULT_MAX_TRACK_POINTS,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_WEATHER,
     DOMAIN,
     EVENT_FLIGHT_IMPORTED,
     LOG_FILE_SUFFIXES,
@@ -44,11 +47,18 @@ from .const import (
 from .parser import INCIDENT_CRITICAL, INCIDENT_WARNING, KeychainError, classify_log_file, parse_flight
 from .pilots import with_pilot
 from .storage import FlightStore
+from .weather import async_weather_for_flights
 
 _LOGGER = logging.getLogger(__name__)
 
 # Never mark a file as "failed" while it is still being written to.
 _MIN_FILE_AGE = timedelta(seconds=30)
+
+# Weather lookups: at most this many Open-Meteo requests per scan (a large
+# logbook is filled in over several scans), and a place/day without data yet
+# is asked again after this long.
+_WEATHER_REQUESTS_PER_SCAN = 50
+_WEATHER_RETRY = timedelta(hours=6)
 
 # Header-only imports get retried until they succeed with the API key.
 _RETRY_STATUSES = (STATUS_HEADER_ONLY,)
@@ -157,6 +167,12 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
                 CONF_MAX_TRACK_POINTS, entry.data.get(CONF_MAX_TRACK_POINTS, DEFAULT_MAX_TRACK_POINTS)
             )
         )
+        self.weather_enabled = bool(
+            entry.options.get(CONF_WEATHER, entry.data.get(CONF_WEATHER, DEFAULT_WEATHER))
+        )
+        self._weather_task: asyncio.Task[None] | None = None
+        # flight id -> not before; flights Open-Meteo had no data for yet
+        self._weather_retry: dict[str, datetime] = {}
 
     # -- scanning -------------------------------------------------------------
 
@@ -350,6 +366,7 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         self.store.flights.pop(flight_id)
         self.store.flight_pilots.pop(flight_id, None)
         self.store.flight_notes.pop(flight_id, None)
+        self.store.flight_weather.pop(flight_id, None)
         for path, rec in list(self.store.files.items()):
             if rec.get("flight_id") == flight_id:
                 self.store.files.pop(path)
@@ -375,6 +392,10 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         data = self._aggregate()
         data.log_dir_ok = await self.hass.async_add_executor_job(self.log_dir.is_dir)
         self.data = data
+        if self.weather_enabled:
+            # After each scan or import, once its data is out: a lookup that
+            # finished earlier would be overwritten by the scan's older result.
+            self.config_entry.async_on_unload(self.async_add_listener(self._schedule_weather))
         self.config_entry.async_create_background_task(
             self.hass, self.async_refresh(), f"{DOMAIN} scan {self.log_dir}"
         )
@@ -424,11 +445,48 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         data.last_scan = datetime.now(UTC).isoformat()
         return data
 
+    # -- weather --------------------------------------------------------------
+
+    def _schedule_weather(self) -> None:
+        """Look up the weather for flights that have none yet, in the background."""
+        if self._weather_task is not None and not self._weather_task.done():
+            return
+        now = datetime.now(UTC)
+        todo = [
+            f
+            for fid, f in self.store.flights.items()
+            if fid not in self.store.flight_weather and self._weather_retry.get(fid, now) <= now
+        ]
+        if todo:
+            self._weather_task = self.config_entry.async_create_background_task(
+                self.hass, self._async_fetch_weather(todo), f"{DOMAIN} weather"
+            )
+
+    async def _async_fetch_weather(self, flights: list[dict[str, Any]]) -> None:
+        # Newest first: those are the ones being looked at right after an import.
+        flights = sorted(flights, key=lambda f: f["start_time"], reverse=True)
+        found, retry = await async_weather_for_flights(
+            async_get_clientsession(self.hass), flights, max_requests=_WEATHER_REQUESTS_PER_SCAN
+        )
+        until = datetime.now(UTC) + _WEATHER_RETRY
+        self._weather_retry.update(dict.fromkeys(retry, until))
+        # A flight may have been deleted meanwhile.
+        found = {fid: w for fid, w in found.items() if fid in self.store.flights}
+        if found:
+            self.store.flight_weather.update(found)
+            await self.store.async_save()
+            self._publish()
+
     def _aggregate(self, *, include_dismissed: bool = False) -> FlightData:
         pilots, assigned, notes = self.store.pilots, self.store.flight_pilots, self.store.flight_notes
+        weather = self.store.flight_weather
         data = FlightData(
             flights={
-                fid: {**with_pilot(f, pilots, assigned), "note": notes.get(fid, "")}
+                fid: {
+                    **with_pilot(f, pilots, assigned),
+                    "note": notes.get(fid, ""),
+                    "weather": weather.get(fid),
+                }
                 for fid, f in self.store.flights.items()
             }
         )

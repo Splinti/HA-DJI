@@ -26,6 +26,7 @@ from .const import (
     CONF_MEDIA_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
     CONF_SIDEBAR_PANEL,
+    CONF_WEATHER,
     DEFAULT_GEO_LOCATION_LIMIT,
     DEFAULT_IMPORT_LOGS,
     DEFAULT_LOCAL_MEDIA_FOLDER,
@@ -36,6 +37,7 @@ from .const import (
     DEFAULT_MEDIA_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SIDEBAR_PANEL,
+    DEFAULT_WEATHER,
     DOMAIN,
     ENTRY_TYPE_LOCAL,
     ENTRY_TYPE_ONEDRIVE,
@@ -76,6 +78,9 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_SIDEBAR_PANEL,
                 default=defaults.get(CONF_SIDEBAR_PANEL, DEFAULT_SIDEBAR_PANEL),
+            ): selector.BooleanSelector(),
+            vol.Optional(
+                CONF_WEATHER, default=defaults.get(CONF_WEATHER, DEFAULT_WEATHER)
             ): selector.BooleanSelector(),
         }
     )
