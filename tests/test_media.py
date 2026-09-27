@@ -142,6 +142,21 @@ def test_flat_recording_projection() -> None:
     assert play_projection(rec) is None
 
 
+def test_dji_files_group_across_folders() -> None:
+    """A source that reports the proxy in another folder still yields one recording."""
+    stem = "DJI_20260925181819_0015_D"
+    items = _items(f"{stem}.MP4", f"{stem}.LRF", "clip_1.MP4", "clip_1.LRF")
+    items[f"{stem}.LRF"]["folder"] = "g"
+    items["clip_1.LRF"]["folder"] = "g"
+    recs = build_recordings(items, dt_util.UTC)
+    (rec,) = (r for r in recs.values() if r["name"].startswith("DJI_"))
+    assert rec["name"] == f"{stem}.MP4"
+    assert playable_ref(rec)["name"] == f"{stem}.LRF"
+    # Names without a timestamp stay apart per folder.
+    clips = sorted(r["name"] for r in recs.values() if r["name"].startswith("clip"))
+    assert clips == ["clip_1.LRF", "clip_1.MP4"]
+
+
 def test_duplicate_prefers_copy_with_render() -> None:
     name = "DJI_20260921193308_0005_D.OSV"
     onedrive = {"a": _rec("a", name, 5000, "proxy")}

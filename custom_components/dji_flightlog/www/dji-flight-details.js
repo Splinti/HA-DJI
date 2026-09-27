@@ -63,16 +63,33 @@ const fmtNum = (v, digits = 0, unit = "") =>
 const esc = (t) =>
   String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
+/** A video with its proxy and/or original in OneDrive: one link each, "SD" and "HD". */
+const hasSdHd = (m) => m.kind !== "photo" && !!(m.sd_url || m.hd_url);
 /** Link to a recording at its source: OneDrive's web view, or the original as a download (local folder). */
-const sourceLink = (m, short = false) =>
-  m.web_url
+const sourceLink = (m, short = false) => {
+  if (hasSdHd(m)) {
+    const a = (url, label, title) =>
+      url ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="${title}">${label}</a>` : "";
+    const links = [a(m.sd_url, "SD", "Vorschau (Proxy) in OneDrive öffnen"), a(m.hd_url, "HD", "Original in OneDrive öffnen")]
+      .filter(Boolean)
+      .join(" · ");
+    return `<span class="src">${short ? "" : "In OneDrive: "}${links}</span>`;
+  }
+  return m.web_url
     ? `<a href="${esc(m.web_url)}" target="_blank" rel="noopener">${short ? "OneDrive" : "In OneDrive öffnen"}</a>`
     : m.download
       ? `<a href="${esc(m.download)}" download>${short ? "Download" : "Original herunterladen"}</a>`
       : "";
+};
 /** Where to look at a recording the browser cannot show. */
 const sourceHint = (m) =>
-  m.web_url ? "Über „In OneDrive öffnen“ ansehen oder herunterladen." : m.download ? "Das Original lässt sich herunterladen." : "";
+  hasSdHd(m)
+    ? "Über „SD“ oder „HD“ in OneDrive ansehen oder herunterladen."
+    : m.web_url
+      ? "Über „In OneDrive öffnen“ ansehen oder herunterladen."
+      : m.download
+        ? "Das Original lässt sich herunterladen."
+        : "";
 
 const CHARTS = [
   { key: "height", label: "Höhe über Start", short: "Höhe", unit: "m", color: "#4363d8", digits: 0, floor: 0 },

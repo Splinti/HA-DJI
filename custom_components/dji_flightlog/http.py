@@ -32,7 +32,7 @@ from .const import (
 )
 from .coordinator import FlightLogCoordinator
 from .local_media import content_type
-from .media import ROLE_ORIGINAL, ROLE_RAW
+from .media import ROLE_EQUIRECT, ROLE_ORIGINAL, ROLE_PROXY, ROLE_RAW
 from .media_backend import MediaError
 from .media_coordinator import (
     MediaCoordinator,
@@ -520,6 +520,8 @@ def _public_recording(hass: HomeAssistant, rec: dict[str, Any]) -> dict[str, Any
 
     ``web_url`` opens the file at the source (OneDrive). Sources without a web
     view (local folder) get ``download`` for the original instead.
+    ``sd_url`` / ``hd_url`` open the proxy and the original at the source, so
+    the frontend can offer both next to the proxy it plays.
     """
     ttl = timedelta(seconds=MEDIA_URL_TTL_S)
     base = f"{API_BASE}/media/{rec['id']}"
@@ -533,6 +535,8 @@ def _public_recording(hass: HomeAssistant, rec: dict[str, Any]) -> dict[str, Any
         "duration_s": rec.get("duration_s"),
         "size": original.get("size"),
         "web_url": rec.get("web_url"),
+        "sd_url": (rec.get(ROLE_PROXY) or rec.get(ROLE_EQUIRECT) or {}).get("web_url"),
+        "hd_url": original.get("web_url"),
         "has_original": bool(original),
         "has_raw": bool(rec.get(ROLE_RAW)),
         "thumb": async_sign_path(hass, f"{base}/thumb", ttl),

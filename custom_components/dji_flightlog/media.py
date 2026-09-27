@@ -162,15 +162,18 @@ def build_recordings(items: dict[str, dict[str, Any]], tz: tzinfo) -> dict[str, 
     "taken_at", "duration_ms", "width", "height"}`` (see ``onedrive.py``;
     ``local_media.py`` adds ``path`` and ``mtime``).
     ``tz`` is the zone the camera clock runs in (Home Assistant's zone).
-    Files are grouped per folder, so a re-used DJI counter in another folder
-    never merges two shots.
+    DJI names carry the start time to the second, so their files are grouped
+    by name alone, even when the source reports them in different folders.
+    Other names are grouped per folder, so a generic name like ``clip1``
+    in two folders never merges two shots.
     """
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     for item in items.values():
         info = classify_name(item["name"])
         if info is None:
             continue
-        gkey = (item.get("folder") or "", info.key.lower())
+        folder = "" if _DJI_NAME.match(info.key) else item.get("folder") or ""
+        gkey = (folder, info.key.lower())
         group = groups.setdefault(gkey, {"files": {}, "kind": None, "local_time": None, "taken_at": None})
         # Two originals with the same key (e.g. .MP4 and .JPG of one shot) are
         # rare; keep the video, it is the more interesting one.
