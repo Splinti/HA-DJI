@@ -22,7 +22,7 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 - **Akkus** – ein Gerät je Flugakku (erkannt an der Seriennummer im Log): Ladezyklen, Lebensdauer und Kapazität (volle gegenüber Nenn-Kapazität, laut Akku-Elektronik), Flüge und Flugzeit mit diesem Akku, dazu aus dem letzten Flug die höchste Temperatur (Starttemperatur im Attribut), die niedrigste Zellspannung und die größte Abweichung zwischen den Zellen. Ohne API-Key kennt die Integration nur die Seriennummer, also nur Flüge und Flugzeit. Beispiel-Automation für eine Akku-Warnung in [`examples/automations.yaml`](examples/automations.yaml).
 - **Vorfälle** – jeder Flug bekommt einen Status `ok`, `warning` oder `critical`, je nachdem, ob der Flugcontroller selbst eingegriffen hat: Warnung z. B. bei Smart-RTH oder Landung wegen niedrigem Akku, kritisch z. B. bei Zwangslandung, RTH nach Verbindungsverlust oder blockiertem Motor. Welche Aktionen es waren, steht in `incident_actions`. Ein per Taste ausgelöstes RTH zählt nicht, schnelle Sinkflüge auch nicht (bei FPV normal). Im Panel stehen Vorfälle und eine volle SD-Karte in der Flugliste und im Popup. Braucht den API-Key.
 - **geo_location** *(optional, standardmäßig aus)* – Startpunkt jedes Flugs als Entity (`source: dji_flightlog`), nutzbar auf der eingebauten Map-Card und in Zonen-Automationen. Aus gutem Grund opt-in: HA hängt an das automatische „Übersicht"-Dashboard eine Karte an, sobald *irgendeine* `geo_location`-Entity existiert – die Flüge würden dann ungefragt auf der Standard-Karte landen.
-- **Eigenes Panel in der Seitenleiste** – vier Ansichten: *Flüge* (Statistik, Filter, große Karte, Flugliste), *Flug* (Details eines Flugs mit Verlaufsdiagrammen, Flugmodi, Ereignissen und Akku), *Planen* (Karte mit DIPUL-Zonen, Suche und gemerkten Orten) und *Flotte* (alle Drohnen mit Kennzahlen im Überblick). Flugaufzeichnungen lassen sich dort direkt **hochladen** (Button oder Drag & Drop).
+- **Eigenes Panel in der Seitenleiste** – fünf Ansichten: *Flüge* (Statistik, Filter, große Karte, Flugliste), *Flug* (Details eines Flugs mit Verlaufsdiagrammen, Flugmodi, Ereignissen und Akku), *Planen* (Karte mit DIPUL-Zonen, Suche und gemerkten Orten), *Flotte* (alle Drohnen mit Kennzahlen im Überblick) und *Akkus* (Zustand und Alterung jedes Flugakkus). Flugaufzeichnungen lassen sich dort direkt **hochladen** (Button oder Drag & Drop).
 - **Piloten** – Flüge Personen zuordnen: automatisch über die Drohne (z. B. „die Avata fliegt immer Nico“) und je Flug von Hand. Ein Pilot lässt sich mit einem Home-Assistant-Benutzer verknüpfen, der beim Öffnen des Panels dann seine eigenen Flüge sieht. Filter nach Pilot im Panel und in der Karten-Card (`pilot: me`), Pilot im Event `dji_flightlog_flight_imported` (`pilot_id`, `pilot_name`).
 - **Wetter zur Flugzeit** *(optional)* – Wind und Böen, Wind in 100 m, Windrichtung, Temperatur, Bewölkung und Niederschlag am Startpunkt, von [Open-Meteo](https://open-meteo.com) (kostenlos, ohne API-Key). In der Flugansicht und im Karten-Popup; ältere Flüge werden automatisch nachgeholt.
 - **Notizen** – zu jedem Flug eine eigene Notiz (Wetter, wer dabei war, was geübt wurde …), in der Flugliste und im Karten-Popup sichtbar.
@@ -63,7 +63,7 @@ RC 2 / Handy ──USB──▶ PC ─┬─ Sync-Skript ──SMB────�
 
 ## Eigenes Dashboard in der Seitenleiste
 
-Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge"** in der HA-Seitenleiste – kein Lovelace-Dashboard, sondern eine eigene Seite mit vier Ansichten. Die zuletzt gewählte merkt sich der Browser.
+Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge"** in der HA-Seitenleiste – kein Lovelace-Dashboard, sondern eine eigene Seite mit fünf Ansichten. Die zuletzt gewählte merkt sich der Browser.
 
 **Flüge**
 - **Vor dem nächsten Flug**: oben eine Liste mit allem, was der letzte Flug jeder Drohne bzw. jedes Akkus gemeldet hat. Das sind Vorfälle (z. B. Smart-RTH), eine volle oder fast volle SD-Karte (weniger als 10 min Video), Kartenfehler (keine Karte, schreibgeschützt, zu langsam, Formatieren empfohlen, …) und Akkus, die über 60 °C warm wurden, unter 3,0 V pro Zelle entladen wurden, deren Zellen mehr als 0,2 V auseinanderlagen oder die unter 80 % Kapazität bzw. Lebensdauer liegen. „Erledigt“ blendet einen Hinweis aus, bis ein neuerer Flug ihn wieder meldet. Dieselbe Liste steht im Sensor „Hinweise vor dem nächsten Flug“ (Anzahl, Attribut `items`), z. B. für eine Benachrichtigung
@@ -97,8 +97,15 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 
 **Flotte**
 - Eine Karte je Drohne, in der Farbe ihrer Tracks auf der Übersichtskarte: Name, Modell, Seriennummer, Flüge, Flugzeit und Strecke insgesamt, die Rekorde (max. Höhe, max. Speed, längster Flug), wann sie zuletzt geflogen ist und ein Balkendiagramm mit der Flugzeit pro Monat (letzte 12 Monate)
-- Dazu der Pilot, dem die Drohne zugeordnet ist, der freie Platz auf der SD-Karte beim letzten Flug, die Zahl der Flüge mit Vorfall (Warnung / kritisch), die DJI-Fly-Version aus dem letzten Log und die Akkus, die mit ihr geflogen sind (Flüge, Zyklen, Lebensdauer)
+- Dazu der Pilot, dem die Drohne zugeordnet ist, der freie Platz auf der SD-Karte beim letzten Flug, die Zahl der Flüge mit Vorfall (Warnung / kritisch), die DJI-Fly-Version aus dem letzten Log und die Akkus, die mit ihr geflogen sind (Flüge, Zyklen, Lebensdauer; ein Klick darauf öffnet den Akku unter *Akkus*)
 - Zählt immer alle Flüge, unabhängig von den Filtern unter *Flüge*. Ein Klick auf eine Drohne öffnet *Flüge* mit allen Flügen dieser Drohne
+
+**Akkus**
+- Eine Karte je Flugakku: Seriennummer, Drohne, Ladezyklen, Lebensdauer, Kapazität (volle gegenüber Nenn-Kapazität), Flüge, Flugzeit, zuletzt benutzt und der durchschnittliche Verbrauch in %/min (bei mehr als 5 Flügen auch der der letzten 5, als Hinweis auf nachlassende Leistung)
+- **Gesundheitsverlauf**: die Kapazität über die Ladezyklen, mit der 80-%-Linie. Die Akku-Elektronik meldet die volle Kapazität von Flug zu Flug um etwa 1 % unterschiedlich, die Linie nimmt deshalb je Zyklus den Median, die einzelnen Flüge stehen blass dahinter. Bei mehreren Akkus oben ein Vergleich aller Kurven: So sieht man, ob einer schneller nachlässt als die anderen
+- Je Flug die höchste Temperatur, die niedrigste Zellspannung und die größte Abweichung zwischen den Zellen als kleine Diagramme, mit denselben Warnschwellen wie in der Flugansicht (über 60 °C, unter 3,0 V, über 0,2 V); Werte jenseits davon sind orange
+- Liste der Flüge mit dem Akku; ein Klick darauf (oder auf einen Punkt im Diagramm) öffnet den Flug
+- Ohne DJI-API-Key kennt die Integration nur die Seriennummer: dann nur Flüge und Flugzeit, mit einem Hinweis statt der Diagramme
 
 **Überall**
 - ↻-Button oben rechts scannt den Log-Ordner sofort
