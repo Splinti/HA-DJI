@@ -172,6 +172,7 @@ class DjiFlightLogPanel extends HTMLElement {
     // Unfiltered flight list for "Flotte" and "Akkus"; null: to be (re)loaded.
     this._fleet = null;
     this._batFocus = null; // battery to scroll to once "Akkus" is rendered
+    this._batAircraft = ""; // "Akkus": only the batteries flown with this aircraft ("" for all)
     this._reload = false;
     this._uploading = false;
   }
@@ -524,6 +525,20 @@ class DjiFlightLogPanel extends HTMLElement {
         }
         .ac .bat:hover, .ac .bat:focus-visible { outline: 1px solid var(--ac-color); }
 
+        .pills { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+        .pills button {
+          display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 16px;
+          font: inherit; font-size: 13px; color: inherit; cursor: pointer;
+          background: var(--card-background-color, #fff); border: 1px solid var(--divider-color, #e0e0e0);
+        }
+        .pills button:hover, .pills button:focus-visible { border-color: var(--pill-color, var(--primary-color)); outline: none; }
+        .pills button[aria-pressed="true"] {
+          background: var(--pill-color, var(--primary-color)); border-color: var(--pill-color, var(--primary-color));
+          color: var(--text-primary-color, #fff);
+        }
+        .pills i { width: 8px; height: 8px; border-radius: 50%; background: var(--pill-color); }
+        .pills button[aria-pressed="true"] i { background: currentColor; }
+        .pills .n { opacity: 0.7; }
         .batcmp { grid-column: 1 / -1; }
         .batcmp .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
         .batcmp .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
@@ -1216,8 +1231,8 @@ class DjiFlightLogPanel extends HTMLElement {
     const box = this.shadowRoot.getElementById("batteries");
     const data = this._fleet;
     const flights = data?.flights || [];
-    const bats = aggregateBatteries(flights);
-    if (!bats.length) {
+    const all = aggregateBatteries(flights);
+    if (!all.length) {
       box.innerHTML = `<div class="empty">${
         flights.length ? "Die Logs nennen keinen Akku." : "Noch keine Flüge importiert."
       }</div>`;
@@ -1225,8 +1240,30 @@ class DjiFlightLogPanel extends HTMLElement {
     }
     const acName = (sn) =>
       data.aircraft?.[sn]?.name || flights.find((f) => (f.aircraft_sn || "?") === sn)?.aircraft_name || "DJI";
+    // Filter by aircraft, in the order and colors of "Flotte"; only with more than one.
+    const aircraft = aggregateFleet(flights)
+      .map((a) => ({ sn: a.sn, color: a.color, count: all.filter((b) => b.aircraft.includes(a.sn)).length }))
+      .filter((a) => a.count);
+    const focus = this._batFocus && all.find((b) => b.sn === this._batFocus);
+    if (
+      aircraft.length < 2 ||
+      !aircraft.some((a) => a.sn === this._batAircraft) ||
+      (focus && !focus.aircraft.includes(this._batAircraft))
+    ) {
+      this._batAircraft = "";
+    }
+    const bats = this._batAircraft ? all.filter((b) => b.aircraft.includes(this._batAircraft)) : all;
     const withCaps = bats.filter((b) => b.cycles.length);
     let html = "";
+    if (aircraft.length > 1) {
+      const pill = (sn, label, count, color) =>
+        `<button data-ac="${esc(sn)}" aria-pressed="${sn === this._batAircraft}"${color ? ` style="--pill-color:${esc(color)}"` : ""}>${
+          color ? "<i></i>" : ""
+        }${esc(label)} <span class="n">${count}</span></button>`;
+      html += `<div class="pills" role="group" aria-label="Akkus nach Drohne filtern">${
+        pill("", "Alle", all.length) + aircraft.map((a) => pill(a.sn, acName(a.sn), a.count, a.color)).join("")
+      }</div>`;
+    }
     if (withCaps.length > 1) {
       const series = withCaps.map((b) => ({
         color: b.color,
@@ -1245,6 +1282,12 @@ class DjiFlightLogPanel extends HTMLElement {
     }
     html += bats.map((b) => this._batteryHtml(b, acName)).join("");
     box.innerHTML = html;
+    for (const el of box.querySelectorAll(".pills button")) {
+      el.onclick = () => {
+        this._batAircraft = el.dataset.ac;
+        this._renderBatteries();
+      };
+    }
     for (const el of box.querySelectorAll("[data-flight]")) {
       el.onclick = () => this._openFlight(el.dataset.flight);
     }
