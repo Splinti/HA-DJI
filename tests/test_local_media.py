@@ -196,6 +196,8 @@ async def test_local_folder_flow_and_playback(
     body = await (await http.get(f"/api/{DOMAIN}/flights")).json()
     (media_json,) = [m for m in body["flights"][0]["media"] if m["id"] == video["id"]]
     assert media_json["web_url"] is None
+    # A local folder has no web view: no SD/HD links, the frontend falls back to the download.
+    assert media_json["sd_url"] is None and media_json["hd_url"] is None
     assert media_json["play"].startswith(f"{base}/play?authSig=")
     assert media_json["projection"] is None
     assert media_json["download"].startswith(f"{base}/original?authSig=")
