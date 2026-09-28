@@ -4,18 +4,36 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import quote
 
 import aiohttp
 
 from .const import GRAPH_URL
-from .media import ROLE_COVER, ROLE_EQUIRECT, ROLE_ORIGINAL, ROLE_PROXY, classify_name, is_flight_record
+from .media import (
+    MP4_EXTENSIONS,
+    MP4_MODEL_PATH,
+    ROLE_COVER,
+    ROLE_EQUIRECT,
+    ROLE_ORIGINAL,
+    ROLE_PROXY,
+    box_header,
+    classify_name,
+    is_flight_record,
+    meta_payload_start,
+    mp4_model,
+)
 from .media_backend import MediaAuthError, MediaError, MediaNotFound
 
 _LOGGER = logging.getLogger(__name__)
 
 _TIMEOUT = aiohttp.ClientTimeout(total=60)
+# Reading the aircraft model takes a few range requests per video; a first
+# sync of a large folder spreads them over several syncs.
+_MODEL_READS_PER_SYNC = 100
+_BLOCK = 64 * 1024
+
 # Only what normalize_item() needs; keeps delta pages small.
 _SELECT = "id,name,size,webUrl,file,folder,deleted,parentReference,photo,video,image"
 
@@ -193,6 +211,62 @@ class OneDriveClient:
         resp.release()
         return resp.headers.get("Location")
 
+    async def async_range(self, url: str, start: int, length: int) -> bytes:
+        """Bytes ``[start, start + length)`` of a download URL (pre-authenticated, no token)."""
+        headers = {"Range": f"bytes={start}-{start + length - 1}"}
+        async with self._session.get(url, headers=headers, timeout=_TIMEOUT) as resp:
+            if resp.status >= 400:
+                raise GraphError(resp.status, resp.reason or "range request failed")
+            if resp.status == 206:
+                return await resp.read()
+            # A server that ignores Range sends the whole file: read only up to the range.
+            data = b""
+            stop = start + length
+            while len(data) < stop and (chunk := await resp.content.read(stop - len(data))):
+                data += chunk
+        return data[start:]
+
+    async def async_mp4_model(self, item_id: str, size: int) -> str | None:
+        """Aircraft model from ``moov/udta/meta/ilst/©too`` (see ``media.mp4_model``).
+
+        Walks the box headers with range requests in 64 KiB blocks, so a
+        video costs a handful of small requests however large it is.
+        """
+        url = await self.async_download_url(item_id)
+        if not url:
+            return None
+        blocks: dict[int, bytes] = {}
+
+        async def read(pos: int, length: int) -> bytes:
+            out = b""
+            while len(out) < length and pos + len(out) < size:
+                block, offset = divmod(pos + len(out), _BLOCK)
+                if block not in blocks:
+                    blocks[block] = await self.async_range(url, block * _BLOCK, _BLOCK)
+                    if not blocks[block]:
+                        break
+                out += blocks[block][offset : offset + length - len(out)]
+            return out
+
+        box = (0, size)
+        for name in MP4_MODEL_PATH:
+            pos, end = box
+            for _ in range(64):
+                if pos + 8 > end:
+                    return None
+                header = box_header(await read(pos, 16), pos, end)
+                if header is None:
+                    return None
+                kind, payload, pos = header
+                if kind == name:
+                    box = (payload, pos)
+                    break
+            else:
+                return None
+            if name == b"meta":
+                box = (meta_payload_start(await read(box[0], 12), box[0]), box[1])
+        return mp4_model(await read(box[0], min(box[1] - box[0], 256)))
+
 
 def normalize_item(raw: dict[str, Any]) -> dict[str, Any] | None:
     """Reduce a Graph driveItem to what the integration stores.
@@ -276,14 +350,45 @@ class OneDriveMedia:
                 self._use_delta = False
                 self._delta_link = None
             else:
-                return self._apply_delta({} if full else items, raw)
+                changed = self._apply_delta({} if full else dict(items), raw, items)
+                return await self._async_read_models(changed)
 
         raw = await self.client.async_list_recursive(self._folder_id)
-        return self._apply_delta({}, raw)
+        return await self._async_read_models(self._apply_delta({}, raw, items))
+
+    async def _async_read_models(self, items: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Read the aircraft model of videos that were not read yet.
+
+        A request that may work later (network, 429, 5xx) leaves the item
+        unread, so the next sync tries again; other failures count as no model.
+        """
+        todo = [
+            item
+            for item in items.values()
+            if "model" not in item
+            and item.get("size")
+            and PurePosixPath(item["name"]).suffix.lower() in MP4_EXTENSIONS
+        ]
+        for item in todo[:_MODEL_READS_PER_SYNC]:
+            try:
+                model = await self.client.async_mp4_model(item["id"], item["size"])
+            except GraphAuthError:
+                raise
+            except (GraphError, aiohttp.ClientError, TimeoutError) as err:
+                _LOGGER.debug("Could not read the aircraft model of %s: %s", item["name"], err)
+                if not isinstance(err, GraphError) or err.status == 429 or err.status >= 500:
+                    continue
+                model = None
+            items[item["id"]] = {**item, "model": model}
+        return items
 
     def _apply_delta(
-        self, items: dict[str, dict[str, Any]], raw_items: list[dict[str, Any]]
+        self,
+        items: dict[str, dict[str, Any]],
+        raw_items: list[dict[str, Any]],
+        previous: dict[str, dict[str, Any]],
     ) -> dict[str, dict[str, Any]]:
+        """Apply changes to ``items``; an unchanged file keeps the model read from ``previous``."""
         for raw in raw_items:
             item_id = raw.get("id")
             if not item_id or item_id == self._folder_id:
@@ -297,8 +402,11 @@ class OneDriveMedia:
             item = normalize_item(raw)
             if item is None:
                 items.pop(item_id, None)
-            else:
-                items[item_id] = item
+                continue
+            old = previous.get(item_id)
+            if old and "model" in old and old.get("size") == item["size"]:
+                item["model"] = old["model"]
+            items[item_id] = item
         return items
 
     # -- thumbnails / files ----------------------------------------------------

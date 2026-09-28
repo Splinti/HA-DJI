@@ -16,9 +16,13 @@ from custom_components.dji_flightlog.media import (
     classify_name,
     duplicate_recordings,
     is_flight_record,
+    match_recordings,
+    model_key,
 )
 from custom_components.dji_flightlog.media_coordinator import play_projection, playable_ref
-from custom_components.dji_flightlog.onedrive import normalize_item
+from custom_components.dji_flightlog.onedrive import OneDriveClient, OneDriveMedia, normalize_item
+
+from .test_local_media import _mp4
 
 
 def test_is_flight_record() -> None:
@@ -162,3 +166,92 @@ def test_duplicate_prefers_copy_with_render() -> None:
     onedrive = {"a": _rec("a", name, 5000, "proxy")}
     nas = {"x": _rec("x", name, 5000, "proxy", "equirect")}
     assert duplicate_recordings([onedrive, nas]) == {"a"}
+
+
+def _flight(fid: str, start: str, end: str, aircraft: str) -> dict:
+    return {"flight_id": fid, "start_time": start, "end_time": end, "aircraft_name": aircraft}
+
+
+def test_model_key() -> None:
+    # Camera metadata vs. flight record.
+    assert model_key("DJI NEO2") == model_key("DJI Neo 2")
+    assert model_key("DJI Avata360") == model_key("DJI Avata 360")
+    assert model_key(None) == ""
+
+
+def test_match_recordings_by_aircraft() -> None:
+    """Two drones in the air at once: each shot goes to the flight of its own aircraft."""
+    flights = [
+        _flight("neo", "2026-09-26T14:14:00+00:00", "2026-09-26T15:25:00+00:00", "DJI Neo 2"),
+        _flight("avata", "2026-09-26T14:26:00+00:00", "2026-09-26T14:40:00+00:00", "DJI Avata 360"),
+    ]
+
+    def rec(rid: str, model: str | None) -> dict:
+        # Fully inside both flights: by time alone a tie, which the earlier (Neo) flight wins.
+        return {"id": rid, "start": "2026-09-26T14:30:00+00:00", "duration_s": 60, "model": model}
+
+    assert match_recordings(flights, [rec("osv", "DJI Avata360"), rec("mp4", "DJI NEO2")]) == {
+        "avata": ["osv"],
+        "neo": ["mp4"],
+    }
+    # No model (photo, old item) or one no flight carries (renamed in DJI Fly): time alone decides.
+    assert match_recordings(flights, [rec("a", None), rec("b", "DJI Mini 4 Pro")]) == {"neo": ["a", "b"]}
+    # Known model, but its flight is not in the air then: the shot stays unassigned.
+    late = {"id": "late", "start": "2026-09-26T15:00:00+00:00", "duration_s": 60, "model": "DJI Avata360"}
+    assert match_recordings(flights, [late]) == {}
+
+
+def test_build_recordings_model() -> None:
+    items = {
+        "o": {"id": "o", "name": "DJI_20260926162655_0025_D.OSV", "model": None},
+        "p": {"id": "p", "name": "DJI_20260926162655_0025_D.LRF", "model": "DJI Avata360"},
+        "j": {"id": "j", "name": "DJI_20260926162700_0026_D.JPG"},
+    }
+    recs = build_recordings(items, dt_util.UTC)
+    assert recs["o"]["model"] == "DJI Avata360"
+    assert recs["j"]["model"] is None
+
+
+class _RangeClient(OneDriveClient):
+    """Serves a byte string through the range reader, counting requests."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.requests = 0
+
+    async def async_download_url(self, item_id: str) -> str | None:
+        return "https://download.example/x"
+
+    async def async_range(self, url: str, start: int, length: int) -> bytes:
+        self.requests += 1
+        return self.data[start : start + length]
+
+
+async def test_onedrive_mp4_model() -> None:
+    for iso_meta in (True, False):
+        # 300 KiB of video data before the moov at the end.
+        data = _mp4(10, model="DJI Avata360", iso_meta=iso_meta, mdat_bytes=300 * 1024)
+        client = _RangeClient(data)
+        assert await client.async_mp4_model("id", len(data)) == "DJI Avata360"
+        assert client.requests <= 3  # header block, then the block(s) around moov
+    data = _mp4(10)
+    assert await _RangeClient(data).async_mp4_model("id", len(data)) is None
+
+
+async def test_onedrive_reads_models_once() -> None:
+    data = _mp4(10, model="DJI NEO2")
+    client = _RangeClient(data)
+    media = OneDriveMedia(client, "Drohne")
+    media._folder_id = "root"
+    raw = [
+        {"id": "v", "name": "DJI_20260926161442_0063_D.MP4", "size": len(data), "file": {}},
+        {"id": "s", "name": "DJI_20260926161442_0063_D.SRT", "size": 10, "file": {}},
+    ]
+    items = await media._async_read_models(media._apply_delta({}, raw, {}))
+    assert items["v"]["model"] == "DJI NEO2"
+    assert "model" not in items["s"]
+    # An unchanged file keeps the model through a delta (and a full resync).
+    requests = client.requests
+    items = await media._async_read_models(media._apply_delta({}, raw, items))
+    assert items["v"]["model"] == "DJI NEO2"
+    assert client.requests == requests

@@ -29,6 +29,8 @@ Drohne / SD-Karte ──PC-Skript──▶ lokaler OneDrive-Ordner ──OneDriv
 
 Die Aufnahmezeit steht im Dateinamen (`DJI_20260921190306_…` = 21.09.2026 19:03:06 **Ortszeit** der Drohne). Die Integration rechnet sie mit der Zeitzone von Home Assistant in UTC um und ordnet die Aufnahme dem Flug zu, dessen Zeitraum sie überlappt (± Toleranz, Standard 120 s). Bei mehreren Kandidaten gewinnt der zeitlich nächste Flug.
 
+Waren mehrere Drohnen gleichzeitig in der Luft, entscheidet zusätzlich die Drohne: Die Kamera schreibt ihr Modell in die Metadaten jedes Videos (`.MP4`, `.OSV`, `.LRF`, z. B. „DJI NEO2“, „DJI Avata360“). Eine solche Aufnahme kommt nur zu einem Flug mit demselben Drohnennamen („DJI Neo 2“, „DJI Avata 360“; Leerzeichen und Groß-/Kleinschreibung zählen nicht). Trägt kein einziger Flug diesen Namen, etwa weil die Drohne in DJI Fly umbenannt wurde, zählt wie bisher nur die Zeit. Fotos und Videos ohne diese Angabe (z. B. von ffmpeg umgepackte `…_proxy.mp4`) werden ebenfalls nur über die Zeit zugeordnet, es sei denn, das Original daneben nennt die Drohne. Bei OneDrive liest die Integration dafür einige 64-KiB-Blöcke aus jedem neuen Video (höchstens 100 Dateien pro Synchronisierung).
+
 Andere Namen (z. B. Clips, die DJI Fly in der Handy-Galerie gespeichert hat) werden über einen Zeitstempel `YYYYMMDD_HHMMSS` im Namen oder über das von OneDrive ausgelesene Aufnahmedatum zugeordnet.
 
 Zusammengehörige Dateien (gleicher Name ohne Endung, im selben Ordner) werden zu **einer** Aufnahme zusammengefasst: Original + `_proxy.mp4` + `_360.mp4` + `_cover.jpg` + `.DNG` + `.SRT`.

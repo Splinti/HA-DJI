@@ -24,6 +24,8 @@ from custom_components.dji_flightlog.const import (
     OAUTH2_TOKEN,
 )
 
+from .test_local_media import _mp4
+
 
 def _flightlog_entry(hass: HomeAssistant, tmp_path) -> MockConfigEntry:
     entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN, data={CONF_LOG_DIR: str(tmp_path)})
@@ -116,7 +118,7 @@ def _mock_tree(aioclient_mock, *, medien: bool = True) -> None:
                 {
                     "id": "v1",
                     "name": "DJI_20260921190306_0001_D.MP4",
-                    "size": 1000,
+                    "size": len(_VIDEO),
                     "webUrl": "https://onedrive.live.com/v1",
                     "file": {"mimeType": "video/mp4"},
                     "video": {"duration": 84000},
@@ -126,6 +128,17 @@ def _mock_tree(aioclient_mock, *, medien: bool = True) -> None:
             "@odata.deltaLink": f"{GRAPH_URL}/me/drive/items/f-medien/delta?token=t1",
         },
     )
+    # Graph hands out a short-lived URL for /content (playback, aircraft model).
+    aioclient_mock.get(
+        f"{GRAPH_URL}/me/drive/items/v1/content",
+        status=302,
+        headers={"Location": "https://my.microsoftpersonalcontent.com/v1"},
+    )
+    # Ignores Range and sends the whole file, which the reader copes with.
+    aioclient_mock.get("https://my.microsoftpersonalcontent.com/v1", content=_VIDEO)
+
+
+_VIDEO = _mp4(84, model="DJI Avata360")
 
 
 def _labels(result) -> list[str]:
@@ -175,6 +188,7 @@ async def test_onedrive_flow_picks_folder(
     assert entry.state is ConfigEntryState.LOADED
     coordinator = hass.data[DOMAIN][entry.entry_id]
     assert len(coordinator.data.recordings) == 1
+    assert coordinator.data.recordings["v1"]["model"] == "DJI Avata360"
 
     # Sensors on the account's device. The flight log (loaded along with the
     # integration) has no flights, so nothing is matched.
@@ -218,11 +232,6 @@ async def test_onedrive_flow_picks_folder(
     assert delta_calls() == before + 1
 
     # Playback redirects to the short-lived URL Graph hands out for /content.
-    aioclient_mock.get(
-        f"{GRAPH_URL}/me/drive/items/v1/content",
-        status=302,
-        headers={"Location": "https://my.microsoftpersonalcontent.com/v1"},
-    )
     http = await hass_client()
     resp = await http.get("/api/dji_flightlog/media/v1/play", allow_redirects=False)
     assert resp.status == 302

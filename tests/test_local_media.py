@@ -29,7 +29,7 @@ from custom_components.dji_flightlog.const import (
     ENTRY_TYPE_LOCAL,
     EVENT_FLIGHT_IMPORTED,
 )
-from custom_components.dji_flightlog.local_media import item_id, mp4_duration_ms, scan_folder
+from custom_components.dji_flightlog.local_media import item_id, mp4_info, scan_folder
 from custom_components.dji_flightlog.media_backend import MediaError, MediaNotFound
 
 from .test_integration import _fake_parse, _write_logs
@@ -39,7 +39,23 @@ def _box(kind: bytes, payload: bytes) -> bytes:
     return struct.pack(">I4s", 8 + len(payload), kind) + payload
 
 
-def _mp4(duration_s: float, *, version: int = 0, large_mdat: bool = False) -> bytes:
+def _udta(model: str, *, iso_meta: bool = True) -> bytes:
+    """udta with the aircraft model where DJI cameras put it (moov/udta/meta/ilst/©too)."""
+    too = _box(b"\xa9too", _box(b"data", struct.pack(">II", 1, 0) + model.encode()))
+    ilst = _box(b"ilst", _box(b"\xa9cmt", _box(b"data", b"\0" * 8 + b"EIS:RS;")) + too)
+    meta = (b"\0" * 4 if iso_meta else b"") + _box(b"hdlr", b"\0" * 8 + b"mdirappl" + b"\0" * 12) + ilst
+    return _box(b"udta", _box(b"fsid", b"/DCIM/x.MP4") + _box(b"meta", meta))
+
+
+def _mp4(
+    duration_s: float,
+    *,
+    version: int = 0,
+    large_mdat: bool = False,
+    model: str | None = None,
+    iso_meta: bool = True,
+    mdat_bytes: int = 200,
+) -> bytes:
     """ftyp, mdat, then moov at the end (no faststart), like the DJI files."""
     timescale = 90000
     duration = round(duration_s * timescale)
@@ -48,20 +64,32 @@ def _mp4(duration_s: float, *, version: int = 0, large_mdat: bool = False) -> by
     else:
         mvhd = bytes([0, 0, 0, 0]) + struct.pack(">IIII", 0, 0, timescale, duration)
     mvhd += b"\0" * 80
-    data = b"\x42" * 200
+    data = b"\x42" * mdat_bytes
     mdat = struct.pack(">I4sQ", 1, b"mdat", 16 + len(data)) + data if large_mdat else _box(b"mdat", data)
-    return _box(b"ftyp", b"isom\0\0\0\0isom") + mdat + _box(b"moov", _box(b"mvhd", mvhd))
+    udta = _udta(model, iso_meta=iso_meta) if model else b""
+    return _box(b"ftyp", b"isom\0\0\0\0isom") + mdat + _box(b"moov", _box(b"mvhd", mvhd) + udta)
 
 
 def test_mp4_duration(tmp_path: Path) -> None:
     for i, (version, large) in enumerate([(0, False), (1, False), (0, True)]):
         path = tmp_path / f"v{i}.mp4"
         path.write_bytes(_mp4(84.5, version=version, large_mdat=large))
-        assert mp4_duration_ms(path) == 84500
+        assert mp4_info(path) == (84500, None)
     broken = tmp_path / "broken.mp4"
     broken.write_bytes(b"\0\0\0\x08ftyp" + b"\xff" * 20)
-    assert mp4_duration_ms(broken) is None
-    assert mp4_duration_ms(tmp_path / "missing.mp4") is None
+    assert mp4_info(broken) == (None, None)
+    assert mp4_info(tmp_path / "missing.mp4") == (None, None)
+
+
+def test_mp4_model(tmp_path: Path) -> None:
+    """The aircraft model the camera writes into the header, with and without meta version field."""
+    path = tmp_path / "v.mp4"
+    for iso_meta in (True, False):
+        path.write_bytes(_mp4(12, model="DJI NEO2", iso_meta=iso_meta))
+        assert mp4_info(path) == (12000, "DJI NEO2")
+    # ffmpeg writes its own name there (proxies remuxed by the sync script).
+    path.write_bytes(_mp4(12, model="Lavf61.7.100"))
+    assert mp4_info(path) == (12000, None)
 
 
 def _media_tree(root: Path) -> dict[str, Path]:
@@ -72,7 +100,7 @@ def _media_tree(root: Path) -> dict[str, Path]:
         "proxy": day / "DJI_20260921190306_0001_D.LRF",
         "photo": day / "DJI_20260921191000_0002_D.JPG",
     }
-    files["video"].write_bytes(_mp4(84))
+    files["video"].write_bytes(_mp4(84, model="DJI Avata360"))
     files["proxy"].write_bytes(_mp4(84) + b"proxy")
     files["photo"].write_bytes(b"\xff\xd8\xff\xe0photo")
     # NAS housekeeping and non-media files are ignored.
@@ -89,6 +117,8 @@ def test_scan_folder(tmp_path: Path) -> None:
     assert sorted(i["name"] for i in items.values()) == sorted(p.name for p in files.values())
     video = items[item_id(root, "2026/2026-09-21/DJI_20260921190306_0001_D.MP4")]
     assert video["duration_ms"] == 84000
+    assert video["model"] == "DJI Avata360"
+    assert items[item_id(root, "2026/2026-09-21/DJI_20260921191000_0002_D.JPG")]["model"] is None
     assert video["folder"] == "2026/2026-09-21"
     assert video["path"] == "2026/2026-09-21/DJI_20260921190306_0001_D.MP4"
 
@@ -97,6 +127,12 @@ def test_scan_folder(tmp_path: Path) -> None:
     assert scan_folder(root, items)[video["id"]]["duration_ms"] == 1
     # A changed file is read again.
     files["video"].write_bytes(_mp4(90))
+    assert scan_folder(root, items)[video["id"]]["duration_ms"] == 90000
+    # Items stored before the model was read are read once more.
+    items = scan_folder(root, items)
+    video = items[video["id"]]
+    del video["model"]
+    video["duration_ms"] = 1
     assert scan_folder(root, items)[video["id"]]["duration_ms"] == 90000
 
     with pytest.raises(MediaNotFound):
