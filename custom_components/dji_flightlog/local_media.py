@@ -8,8 +8,9 @@ Compared to OneDrive, three things are done here instead of by the server:
 
 * Changes: a full scan per sync; files with unchanged size and mtime keep
   what was read from them before.
-* Duration: read from the MP4 header (``moov/mvhd``), which is enough to
-  match a recording to a flight. Only new or changed files are opened.
+* Duration and aircraft model: read from the MP4 header (``moov/mvhd``,
+  ``moov/udta/meta/ilst/©too``), which is enough to match a recording to
+  a flight. Only new or changed files are opened.
 * Thumbnails: rendered with ffmpeg from the cover image, the proxy or the
   original, scaled down.
 """
@@ -28,19 +29,21 @@ from homeassistant.core import HomeAssistant
 
 from .media import (
     KIND_PHOTO,
+    MP4_EXTENSIONS,
+    MP4_MODEL_PATH,
     ROLE_COVER,
     ROLE_EQUIRECT,
     ROLE_ORIGINAL,
     ROLE_PROXY,
+    box_header,
     classify_name,
     is_flight_record,
+    meta_payload_start,
+    mp4_model,
 )
 from .media_backend import MediaError, MediaNotFound
 
 _LOGGER = logging.getLogger(__name__)
-
-# Files whose duration is worth reading (MP4/QuickTime containers).
-_MP4_SUFFIXES = {".mp4", ".mov", ".lrf", ".osv"}
 # NAS housekeeping: Synology @eaDir thumbnails, recycle bins, hidden folders.
 _SKIP_DIR_PREFIXES = (".", "@", "#", "$")
 
@@ -76,48 +79,54 @@ def _find_box(fh: BinaryIO, start: int, end: int, name: bytes) -> tuple[int, int
         if pos + 8 > end:
             return None
         fh.seek(pos)
-        header = fh.read(16)
-        if len(header) < 8:
+        box = box_header(fh.read(16), pos, end)
+        if box is None:
             return None
-        size, kind = struct.unpack(">I4s", header[:8])
-        header_len = 8
-        if size == 1:  # 64-bit size follows
-            if len(header) < 16:
-                return None
-            size = struct.unpack(">Q", header[8:16])[0]
-            header_len = 16
-        elif size == 0:  # box runs to the end
-            size = end - pos
-        if size < header_len:
-            return None
+        kind, payload, pos = box
         if kind == name:
-            return pos + header_len, min(pos + size, end)
-        pos += size
+            return payload, pos
     return None
 
 
-def mp4_duration_ms(path: Path) -> int | None:
-    """Duration from the movie header; the ``moov`` box may sit at the end (no faststart)."""
+def _mp4_model(fh: BinaryIO, moov: tuple[int, int]) -> str | None:
+    """Aircraft model from ``moov/udta/meta/ilst/©too`` (see ``media.mp4_model``)."""
+    box: tuple[int, int] | None = moov
+    for name in MP4_MODEL_PATH[1:]:
+        box = _find_box(fh, *box, name)
+        if box is None:
+            return None
+        if name == b"meta":
+            fh.seek(box[0])
+            box = (meta_payload_start(fh.read(12), box[0]), box[1])
+    fh.seek(box[0])
+    return mp4_model(fh.read(min(box[1] - box[0], 256)))
+
+
+def mp4_info(path: Path) -> tuple[int | None, str | None]:
+    """Duration (ms) and aircraft model from the movie header.
+
+    The ``moov`` box may sit at the end (no faststart).
+    """
+    duration_ms = model = None
     try:
         with path.open("rb") as fh:
             end = os.fstat(fh.fileno()).st_size
             moov = _find_box(fh, 0, end, b"moov")
             if moov is None:
-                return None
-            mvhd = _find_box(fh, *moov, b"mvhd")
-            if mvhd is None:
-                return None
-            fh.seek(mvhd[0])
-            head = fh.read(32)
-            if head[:1] == b"\x01":
-                timescale, duration = struct.unpack(">IQ", head[20:32])
-            else:
-                timescale, duration = struct.unpack(">II", head[12:20])
+                return None, None
+            if mvhd := _find_box(fh, *moov, b"mvhd"):
+                fh.seek(mvhd[0])
+                head = fh.read(32)
+                if head[:1] == b"\x01":
+                    timescale, duration = struct.unpack(">IQ", head[20:32])
+                else:
+                    timescale, duration = struct.unpack(">II", head[12:20])
+                if timescale and duration not in (0, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
+                    duration_ms = round(duration * 1000 / timescale)
+            model = _mp4_model(fh, moov)
     except (OSError, struct.error):
-        return None
-    if not timescale or duration in (0, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
-        return None
-    return round(duration * 1000 / timescale)
+        pass
+    return duration_ms, model
 
 
 # -- scan ---------------------------------------------------------------------------
@@ -153,13 +162,20 @@ def scan_folder(root: Path, previous: dict[str, dict[str, Any]]) -> dict[str, di
             except OSError:
                 continue  # removed while scanning
             iid = item_id(root, rel)
+            is_mp4 = PurePosixPath(name).suffix.lower() in MP4_EXTENSIONS
             old = previous.get(iid)
-            if old and old.get("size") == st.st_size and old.get("mtime") == st.st_mtime_ns:
+            if (
+                old
+                and old.get("size") == st.st_size
+                and old.get("mtime") == st.st_mtime_ns
+                # Items stored before the model was read get read once more.
+                and (not is_mp4 or "model" in old)
+            ):
                 items[iid] = old
                 continue
-            duration = None
-            if PurePosixPath(name).suffix.lower() in _MP4_SUFFIXES:
-                duration = mp4_duration_ms(Path(dirpath, name))
+            duration = model = None
+            if is_mp4:
+                duration, model = mp4_info(Path(dirpath, name))
             items[iid] = {
                 "id": iid,
                 "name": name,
@@ -168,6 +184,7 @@ def scan_folder(root: Path, previous: dict[str, dict[str, Any]]) -> dict[str, di
                 "folder": rel_dir,
                 "taken_at": None,
                 "duration_ms": duration,
+                "model": model,
                 "width": None,
                 "height": None,
                 "path": rel,

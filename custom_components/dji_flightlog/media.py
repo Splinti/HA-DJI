@@ -6,7 +6,8 @@ Pure functions only (no Home Assistant, no network) so they are easy to test:
 * :func:`build_recordings` groups the files of one shot (original, proxy,
   equirectangular render, cover image, raw, subtitle telemetry) into one
   *recording*.
-* :func:`match_recordings` assigns recordings to flights by time.
+* :func:`match_recordings` assigns recordings to flights by time and, where
+  the file names it, by aircraft model (see :func:`mp4_model`).
 
 Naming conventions handled (DJI cameras write the local time of the
 recording start into the name)::
@@ -28,6 +29,7 @@ OneDrive extracted from the file.
 from __future__ import annotations
 
 import re
+import struct
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
@@ -70,6 +72,12 @@ _GENERIC_TS = re.compile(
     r"(?<!\d)(?P<y>20\d{2})[-_.]?(?P<mo>\d{2})[-_.]?(?P<d>\d{2})[-_. T]?"
     r"(?P<h>\d{2})[-_.:]?(?P<mi>\d{2})[-_.:]?(?P<s>\d{2})(?!\d)"
 )
+
+
+# MP4/QuickTime containers whose metadata can name the aircraft.
+MP4_EXTENSIONS = {".mp4", ".mov", ".lrf", ".osv"}
+# Where DJI cameras write the aircraft model: "DJI NEO2", "DJI Avata360".
+MP4_MODEL_PATH = (b"moov", b"udta", b"meta", b"ilst", b"\xa9too")
 
 
 @dataclass(frozen=True)
@@ -130,6 +138,60 @@ def classify_name(name: str) -> NameInfo | None:
     if ext in _EXT_VIDEO:
         return NameInfo(key, ROLE_ORIGINAL, KIND_VIDEO, local_time)
     return NameInfo(key, ROLE_ORIGINAL, KIND_PHOTO, local_time)
+
+
+def box_header(head: bytes, pos: int, end: int) -> tuple[bytes, int, int] | None:
+    """``(kind, payload start, box end)`` of the MP4 box whose first bytes are ``head``.
+
+    ``head`` holds up to 16 bytes read at ``pos``; ``end`` is where the
+    parent box ends. None if the header is cut off or broken.
+    """
+    if len(head) < 8:
+        return None
+    size, kind = struct.unpack(">I4s", head[:8])
+    header_len = 8
+    if size == 1:  # 64-bit size follows
+        if len(head) < 16:
+            return None
+        size = struct.unpack(">Q", head[8:16])[0]
+        header_len = 16
+    elif size == 0:  # box runs to the end
+        size = end - pos
+    if size < header_len:
+        return None
+    return kind, pos + header_len, min(pos + size, end)
+
+
+def meta_payload_start(payload_head: bytes, start: int) -> int:
+    """Where the children of a ``meta`` box begin.
+
+    ISO files give it a version/flags field, QuickTime files do not;
+    ``payload_head`` is its first 12 bytes.
+    """
+    return start + 4 if payload_head[8:12] == b"hdlr" else start
+
+
+def mp4_model(too_payload: bytes) -> str | None:
+    """The aircraft model from the payload of a ``©too`` box.
+
+    It holds a ``data`` box: type and locale, then the text. Files written
+    by ffmpeg (proxies remuxed by the sync script) carry "Lavf…" there
+    instead, so only DJI names count.
+    """
+    box = box_header(too_payload[:16], 0, len(too_payload))
+    if box is None or box[0] != b"data":
+        return None
+    text = too_payload[box[1] + 8 : box[2]].decode("utf-8", "replace").strip("\0 ")
+    return text if text.upper().startswith("DJI") else None
+
+
+def model_key(name: str | None) -> str:
+    """Comparable form of an aircraft name.
+
+    The camera writes "DJI NEO2" and "DJI Avata360", the flight record
+    "DJI Neo 2" and "DJI Avata 360".
+    """
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -209,6 +271,14 @@ def build_recordings(items: dict[str, dict[str, Any]], tz: tzinfo) -> dict[str, 
             ),
             None,
         )
+        model = next(
+            (
+                f.get("model")
+                for f in (files.get(ROLE_ORIGINAL), files.get(ROLE_PROXY), files.get(ROLE_EQUIRECT))
+                if f and f.get("model")
+            ),
+            None,
+        )
         rec_id = main["id"]
         recordings[rec_id] = {
             "id": rec_id,
@@ -216,6 +286,7 @@ def build_recordings(items: dict[str, dict[str, Any]], tz: tzinfo) -> dict[str, 
             "kind": kind,
             "start": start.astimezone(UTC).isoformat() if start else None,
             "duration_s": round(duration_ms / 1000, 1) if duration_ms else None,
+            "model": model,
             "web_url": main.get("web_url"),
             "folder": main.get("folder"),
             **{role: _file_ref(f) for role, f in files.items()},
@@ -243,19 +314,25 @@ def match_recordings(
     recordings started just before take-off). With several candidates the
     flight with the smallest gap, then the largest overlap wins.
 
+    A recording that names its aircraft model only goes to a flight of that
+    model, so shots of two drones in the air at once end up right. If no
+    flight at all carries that name (the aircraft was renamed in DJI Fly,
+    or none of its logs is here), the time alone decides.
+
     Returns ``{flight_id: [recording ids sorted by start]}``.
     """
     tol = timedelta(seconds=tolerance_s)
-    windows: list[tuple[datetime, datetime, str]] = []
+    windows: list[tuple[datetime, datetime, str, str]] = []
     for f in flights:
         start = _parse_iso(f.get("start_time"))
         if start is None:
             continue
         end = _parse_iso(f.get("end_time")) or start + timedelta(seconds=float(f.get("duration_s") or 0))
-        windows.append((start, max(end, start), f["flight_id"]))
+        windows.append((start, max(end, start), f["flight_id"], model_key(f.get("aircraft_name"))))
     windows.sort()
     starts = [w[0] for w in windows]
-    longest = max((fe - fs for fs, fe, _ in windows), default=timedelta(0))
+    longest = max((fe - fs for fs, fe, _, _ in windows), default=timedelta(0))
+    known_models = {w[3] for w in windows} - {""}
 
     assigned: dict[str, list[tuple[datetime, str]]] = {}
     for rec in recordings:
@@ -263,12 +340,15 @@ def match_recordings(
         if rs is None:
             continue
         re_ = rs + timedelta(seconds=float(rec.get("duration_s") or 0))
+        model = model_key(rec.get("model"))
+        if model not in known_models:
+            model = ""
         best: tuple[tuple[float, float], str] | None = None
         # Only flights starting in [rs - tol - longest, re_ + tol] can overlap.
         lo = bisect_left(starts, rs - tol - longest)
         hi = bisect_right(starts, re_ + tol)
-        for fs, fe, fid in windows[lo:hi]:
-            if rs > fe + tol or re_ < fs - tol:
+        for fs, fe, fid, fmodel in windows[lo:hi]:
+            if rs > fe + tol or re_ < fs - tol or (model and fmodel != model):
                 continue
             overlap = (min(re_, fe) - max(rs, fs)).total_seconds()
             score = (max(0.0, -overlap), -overlap)
