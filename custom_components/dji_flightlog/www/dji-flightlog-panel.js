@@ -19,8 +19,8 @@
  * folders onto the page (admins only).
  *
  * Pilots: admins add them in a dialog, link each to a Home Assistant user and
- * the aircraft it flies. The panel starts with the flights of the user's own
- * pilot; the filter switches to everyone, another pilot or unassigned flights.
+ * the aircraft it flies. The panel starts with everyone's flights; the filter
+ * switches to one pilot or unassigned flights.
  *
  * Registered by the integration via panel_custom; the maps are
  * dji-flight-map-card elements, loaded on demand like the detail view.
@@ -158,9 +158,9 @@ class DjiFlightLogPanel extends HTMLElement {
     this._selected = null;
     this._loading = false;
     this._lastKey = null;
-    // pilot: null until the user's own pilot is known (see _initPilot), "" for all.
+    // pilot: "" for all, a pilot id or "none".
     // day: a day picked in the calendar ("2026-09-26"); filtered here, not by the API.
-    this._filters = { days: "0", aircraft: "", pilot: null, day: null, heatmap: false, dipul: false };
+    this._filters = { days: "0", aircraft: "", pilot: "", day: null, heatmap: false, dipul: false };
     // "Statistik" under the filters: open or not, bars by flight time or count, stacked by aircraft or pilot.
     this._insights = { open: false, metric: "time", group: "aircraft", ...loadInsights() };
     this._period = "12"; // last 12 months, or a year
@@ -784,8 +784,7 @@ class DjiFlightLogPanel extends HTMLElement {
   }
 
   async _setupCard() {
-    // The pilot filter first, or the map would load everyone's flights once.
-    await Promise.all([loadCard(), this._initPilot()]);
+    await loadCard();
     const card = this._card;
     if (!card) return;
     // HA may not have attached the panel yet, and custom elements in a
@@ -1010,7 +1009,6 @@ class DjiFlightLogPanel extends HTMLElement {
     }
     this._loading = true;
     try {
-      await this._initPilot();
       this._data = await this._hass.callApi("GET", `${API}/flights?${this._query()}`);
       this._pilots = this._data.pilots || [];
       this._renderStats();
@@ -1492,20 +1490,6 @@ class DjiFlightLogPanel extends HTMLElement {
 
   // -- pilots ---------------------------------------------------------------
 
-  /** Once per panel: start with the flights of the pilot linked to this HA user. */
-  _initPilot() {
-    this._pilotInit ??= (async () => {
-      try {
-        const res = await this._hass.callApi("GET", `${API}/pilots`);
-        this._pilots = res.pilots || [];
-      } catch (err) {
-        console.error("dji-flightlog-panel pilots:", err);
-      }
-      this._filters.pilot = this._ownPilot()?.id || "";
-    })();
-    return this._pilotInit;
-  }
-
   _ownPilot() {
     const uid = this._hass?.user?.id;
     return uid ? this._pilots.find((p) => p.user_id === uid) || null : null;
@@ -1575,7 +1559,7 @@ class DjiFlightLogPanel extends HTMLElement {
           <div class="pil" data-id="${esc(p.id)}">
             <div class="top">
               <input type="text" class="name" value="${esc(p.name)}" maxlength="60" aria-label="Name">
-              <select class="user" title="Home-Assistant-Benutzer: sieht beim Öffnen des Panels die Flüge dieses Piloten">${userOpts}</select>
+              <select class="user" title="Home-Assistant-Benutzer dieses Piloten (für „ich“ im Filter und pilot: me in der Karten-Card)">${userOpts}</select>
               <button class="del" title="Pilot löschen">${svg(ICON_DELETE)}</button>
             </div>
             ${acs}
@@ -1586,7 +1570,7 @@ class DjiFlightLogPanel extends HTMLElement {
       <div class="box" role="dialog" aria-label="Piloten">
         <div class="bar"><span>Piloten</span><button class="close" title="Schließen">${svg(ICON_CLOSE)}</button></div>
         <div class="dbody">
-          <div class="hint">Flüge einer Drohne gehören automatisch dem Piloten, bei dem sie angehakt ist; jeder Flug lässt sich in der Ansicht „Flug“ auch einzeln zuordnen. Wer als Home-Assistant-Benutzer verknüpft ist, sieht beim Öffnen des Panels seine eigenen Flüge.</div>
+          <div class="hint">Flüge einer Drohne gehören automatisch dem Piloten, bei dem sie angehakt ist; jeder Flug lässt sich in der Ansicht „Flug“ auch einzeln zuordnen. Der verknüpfte Home-Assistant-Benutzer sieht seinen Piloten im Filter als „(ich)“.</div>
           ${pilots}
           <form class="add">
             <input type="text" placeholder="Name des neuen Piloten" maxlength="60" required aria-label="Name des neuen Piloten">
