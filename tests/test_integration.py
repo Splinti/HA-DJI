@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -857,6 +858,56 @@ async def test_outdated_parser_reparses_without_event(hass: HomeAssistant, setup
     with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse) as parse:
         await coordinator.async_refresh()
     assert parse.call_count == 0
+
+
+async def test_scan_progress_and_status(hass: HomeAssistant, setup_entry, hass_client, log_dir: Path):
+    """A long scan reports its progress and publishes flights as it goes."""
+    from custom_components.dji_flightlog import coordinator as coord_mod
+
+    entry = await setup_entry(2)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    client = await hass_client()
+
+    resp = await client.get(f"/api/{DOMAIN}/status")
+    assert resp.status == 200
+    status = await resp.json()
+    assert status["scan"] is None
+    assert status["last_scan"] is not None
+    version = status["version"]
+
+    # Nothing new: the version stays, so the panel does not reload.
+    with patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=_fake_parse):
+        await coordinator.async_refresh()
+    assert coordinator.data_version == version
+
+    past = (datetime.now(UTC) - timedelta(minutes=5)).timestamp()
+    for i in (2, 3):  # two more logs, named like _write_logs does
+        p = log_dir / f"DJIFlightRecord_2026-09-0{i + 1}_{i}.txt"
+        p.write_bytes(b"\x01" * (100 + i))
+        os.utime(p, (past, past))
+    seen: list[dict | None] = []
+    published: list[int] = []
+
+    def parse(path, **kwargs):
+        seen.append(dict(coordinator.scan_progress))
+        return _fake_parse(path, **kwargs)
+
+    coordinator.async_add_listener(lambda: published.append(len(coordinator.data.flights)))
+    with (
+        patch("custom_components.dji_flightlog.coordinator.parse_flight", side_effect=parse),
+        patch.object(coord_mod, "_PUBLISH_DURING_SCAN_S", 0.0),
+    ):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert seen == [{"done": 0, "total": 2}, {"done": 1, "total": 2}]
+    assert coordinator.scan_progress is None
+    # Published after the first new file (3 flights), then at the end (4).
+    assert published[:2] == [3, 4]
+    assert coordinator.data_version > version
+
+    body = await (await client.get(f"/api/{DOMAIN}/flights")).json()
+    assert body["scan"] is None and body["version"] == coordinator.data_version
 
 
 async def test_outdated_parser_keeps_full_import_without_key(hass: HomeAssistant, setup_entry):

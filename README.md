@@ -112,6 +112,7 @@ Die Integration registriert beim Start ein vollwertiges Panel **„Drohnenflüge
 
 **Überall**
 - ↻-Button oben rechts scannt den Log-Ordner sofort
+- Fortschrittsleiste, solange ein Scan mehrere Dateien einliest (z. B. nach einem Update alle Logs neu); die Liste aktualisiert sich dabei etwa alle 30 Sekunden
 - ⇧-Button oben rechts: **Flugaufzeichnungen hochladen** (nur für Admins). Alternativ Dateien oder den ganzen Ordner `FlightRecord` auf die Seite ziehen. Die Dateien landen im Log-Ordner und werden sofort importiert; schon vorhandene werden erkannt und nicht doppelt gespeichert
 - Hinweisleiste, wenn Flüge ohne GPS-Track importiert wurden (fehlender API-Key) oder nicht unterstützte Dateien im Ordner liegen
 
@@ -240,7 +241,7 @@ Unter *Integration → Konfigurieren → „Wetter zur Flugzeit von Open-Meteo a
 - Index (Zusammenfassungen, Datei-Bookkeeping, Notizen, Wetter): `/config/.storage/dji_flightlog.flights`
 - Tracks: `/config/.storage/dji_flightlog/tracks/<flight_id>.json`
 - Beides ist Teil des HA-Backups. Wird eine Rohdatei aus dem Ordner gelöscht, bleibt der Flug im Logbuch.
-- Liest eine neue Version der Integration mehr oder korrekter aus den Logs, werden bereits importierte Flüge beim nächsten Scan still neu eingelesen (kein erneutes `flight_imported`-Event). Das geht nur für Flüge, deren Rohdatei noch im Ordner liegt, und bei verschlüsselten Logs nur mit API-Key.
+- Liest eine neue Version der Integration mehr oder korrekter aus den Logs, werden bereits importierte Flüge beim nächsten Scan still neu eingelesen (kein erneutes `flight_imported`-Event). Das geht nur für Flüge, deren Rohdatei noch im Ordner liegt, und bei verschlüsselten Logs nur mit API-Key. Bei vielen Logs dauert das, weil jedes die Schlüssel bei DJI abholt; das Panel zeigt den Fortschritt (`GET /api/dji_flightlog/status`).
 
 ## Credits
 
