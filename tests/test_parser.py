@@ -410,6 +410,39 @@ def test_parse_flight_with_key(tmp_path):
     assert summary.duration_s == 49.0  # frames win over header
 
 
+def test_parse_flight_ignores_bogus_first_frame_time(tmp_path):
+    # Real Avata 2 log: the first timestamped frame read 2084-12-22, the rest
+    # (and the header) were right, so the flight sorted ~58 years ahead.
+    path = _write_log(tmp_path)
+    frames = make_frames(50)
+    frames[0].custom.date_time = datetime(2084, 12, 22, 21, 57, 31, tzinfo=UTC)
+    with _patched(_fake_log(14, frames)):
+        summary, _ = parse_flight(path, api_key="KEY", max_track_points=100)
+    assert summary.start_time == "2026-09-20T12:00:01+00:00"
+    assert summary.end_time == "2026-09-20T12:00:49+00:00"
+
+
+def test_parse_flight_frame_clock_all_wrong_keeps_header_start(tmp_path):
+    path = _write_log(tmp_path)
+    frames = make_frames(10, start=datetime(2085, 6, 6, tzinfo=UTC))
+    with _patched(_fake_log(14, frames)):
+        summary, _ = parse_flight(path, api_key="KEY", max_track_points=100)
+    assert summary.start_time == "2026-09-20T12:00:00+00:00"
+    assert summary.end_time is None
+    assert summary.duration_s == 9.0  # from fly_time, not the clock
+
+
+def test_summarize_without_anchor_rejects_future_times():
+    frames = make_frames(10)
+    frames[0].custom.date_time = datetime(2085, 6, 6, tzinfo=UTC)
+    for f in frames:
+        f.osd.fly_time = 0.0  # force the wall clock timeline
+    summary, track = summarize_frames(frames, dict(BASE), max_track_points=100)
+    assert summary.start_time == "2026-09-20T12:00:01+00:00"
+    assert summary.duration_s == 8.0
+    assert track.profile["t"][0] == 0.0 and track.profile["t"][-1] == 8.0  # bogus frame dropped
+
+
 def test_parse_flight_keychain_error(tmp_path):
     path = _write_log(tmp_path)
     fake = _fake_log(14, fail_keychain=True)

@@ -829,6 +829,9 @@ async def test_outdated_parser_reparses_without_event(hass: HomeAssistant, setup
         assert record["parser"] == PARSER_VERSION
         record["parser"] = PARSER_VERSION - 1
     coordinator.store.flights["flight0001"]["duration_s"] = 1040.5  # what the old parser stored
+    # The old parser took a bogus frame clock; weather looked up for that moment.
+    coordinator.store.flights["flight0001"]["start_time"] = "2084-12-22T21:57:31+00:00"
+    coordinator.store.flight_weather.update(flight0000={"temp_c": 12.0}, flight0001={"temp_c": 3.0})
 
     events = []
     hass.bus.async_listen(EVENT_FLIGHT_IMPORTED, events.append)
@@ -841,6 +844,10 @@ async def test_outdated_parser_reparses_without_event(hass: HomeAssistant, setup
 
     assert parse.call_count == 2
     assert coordinator.data.flights["flight0001"]["duration_s"] == 50.0
+    assert coordinator.data.flights["flight0001"]["start_time"].startswith("2026-09-02")
+    # Moved flight: its weather is dropped (and looked up again when enabled).
+    assert "flight0001" not in coordinator.store.flight_weather
+    assert coordinator.store.flight_weather["flight0000"] == {"temp_c": 12.0}
     assert all(r["parser"] == PARSER_VERSION for r in coordinator.store.files.values())
     assert events == []
     # Saved although no flight is new, or every restart would parse them all again.

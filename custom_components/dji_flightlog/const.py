@@ -33,7 +33,8 @@ STORAGE_VERSION = 1
 # 6: SD card faults and recording time left.
 # 7: cell deviation from plausible cell readings only (empty cells read 0 V).
 # 8: the camera's recordings in the track, to align the video with the charts.
-PARSER_VERSION = 8
+# 9: frame times far off the header's start time are ignored (bogus 2085 starts).
+PARSER_VERSION = 9
 
 # "Before the next flight" checks on each aircraft's and battery's latest flight.
 ATTENTION_SD_VIDEO_LEFT_S = 600  # less recording time left than this

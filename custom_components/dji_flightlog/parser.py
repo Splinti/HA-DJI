@@ -11,7 +11,7 @@ import hashlib
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,11 @@ _LOGGER = logging.getLogger(__name__)
 
 # Minimum GPS quality for a frame to count as a valid fix.
 _MIN_GPS_LEVEL = 3
+
+# A frame's wall clock time can be garbage (seen: an Avata 2 and several Neo 2
+# logs whose first timestamped frame read 2028-2085 while the rest were right).
+# Frame times further than this from the header's start time are ignored.
+_MAX_CLOCK_SKEW = timedelta(days=1)
 
 # Flight controller actions that mean something went wrong, by severity. Same
 # split as pydjirecord's anomaly check, whose other rules are left out: it
@@ -213,6 +218,22 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.astimezone(UTC).isoformat()
 
 
+def _frame_time(fr: Any, anchor: datetime | None) -> datetime | None:
+    """The frame's wall clock time, or None when it is unset or implausible.
+
+    ``anchor`` is the header's start time; without one, times in the future
+    are rejected.
+    """
+    ts = getattr(fr.custom, "date_time", None)
+    if ts is None or ts.year <= 2000:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    if anchor is not None:
+        return ts if abs(ts - anchor) <= _MAX_CLOCK_SKEW else None
+    return ts if ts <= datetime.now(UTC) + _MAX_CLOCK_SKEW else None
+
+
 # The DJI app writes these placeholders into the address fields when its
 # reverse geocoding has not finished before the record is closed.
 _PLACE_PLACEHOLDERS = frozenset({"map loading", "loading", "unknown", "n/a", "--"})
@@ -331,13 +352,23 @@ def parse_flight(
         return FlightSummary(status=STATUS_FAILED, error=str(err), **base), None
 
     base.update(_sd_card(records))
-    return summarize_frames(frames, base, max_track_points)
+    anchor = details.start_time
+    if anchor is not None and anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=UTC)
+    return summarize_frames(frames, base, max_track_points, anchor=anchor)
 
 
 def summarize_frames(
-    frames: list[Any], base: dict[str, Any], max_track_points: int
+    frames: list[Any],
+    base: dict[str, Any],
+    max_track_points: int,
+    *,
+    anchor: datetime | None = None,
 ) -> tuple[FlightSummary, FlightTrack]:
-    """Build summary fields and a track from decoded frames."""
+    """Build summary fields and a track from decoded frames.
+
+    ``anchor`` is the header's start time, used to reject bogus frame times.
+    """
     raw_points: list[list[float]] = []
     first_time: datetime | None = None
     last_time: datetime | None = None
@@ -358,8 +389,8 @@ def summarize_frames(
 
     for fr in frames:
         osd = fr.osd
-        ts = getattr(fr.custom, "date_time", None)
-        if ts is not None and ts.year > 2000:
+        ts = _frame_time(fr, anchor)
+        if ts is not None:
             first_time = first_time or ts
             last_time = ts
         fly_time = max(0.0, float(getattr(osd, "fly_time", 0.0) or 0.0) - fly_time_base)
@@ -395,7 +426,7 @@ def summarize_frames(
         )
 
     track = FlightTrack(points=_downsample(raw_points, max_track_points), home=home)
-    timeline = _timeline(frames, fly_time_base if max_fly_time > 0 else None, first_time, home)
+    timeline = _timeline(frames, fly_time_base if max_fly_time > 0 else None, first_time, home, anchor)
     track.profile, track.modes, track.events = timeline["profile"], timeline["modes"], timeline["events"]
     track.videos = timeline["videos"]
     base["max_distance_m"] = timeline["max_distance_m"]
@@ -448,7 +479,11 @@ def _name(value: Any) -> str | None:
 
 
 def _timeline(
-    frames: list[Any], fly_time_base: float | None, first_time: datetime | None, home: list[float] | None
+    frames: list[Any],
+    fly_time_base: float | None,
+    first_time: datetime | None,
+    home: list[float] | None,
+    anchor: datetime | None = None,
 ) -> dict[str, Any]:
     """Per-second profile, flight mode segments, events and distance from home.
 
@@ -461,8 +496,8 @@ def _timeline(
         if fly_time_base is not None:
             t = max(0.0, float(getattr(osd, "fly_time", 0.0) or 0.0) - fly_time_base)
         else:
-            ts = getattr(fr.custom, "date_time", None)
-            if ts is None or ts.year <= 2000 or first_time is None:
+            ts = _frame_time(fr, anchor)
+            if ts is None or first_time is None:
                 continue
             t = (ts - first_time).total_seconds()
         fix = osd.gps_level >= _MIN_GPS_LEVEL and _valid_fix(osd.latitude, osd.longitude)

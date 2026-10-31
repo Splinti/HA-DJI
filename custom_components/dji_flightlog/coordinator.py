@@ -246,6 +246,10 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         )
         if track is not None:
             self.store.write_track(summary.flight_id, track.as_dict())
+        previous = self.store.flights.get(summary.flight_id)
+        if previous is not None and previous.get("start_time") != summary.start_time:
+            # A re-parse moved the flight (e.g. a bogus frame clock fixed): new weather.
+            self.store.flight_weather.pop(summary.flight_id, None)
         self.store.flights[summary.flight_id] = summary_dict
         record["flight_id"] = summary.flight_id
         record["status"] = summary.status
