@@ -175,6 +175,8 @@ class DjiFlightLogPanel extends HTMLElement {
     this._batAircraft = ""; // "Akkus": only the batteries flown with this aircraft ("" for all)
     this._reload = false;
     this._uploading = false;
+    this._statusTimer = null;
+    this._version = null; // the backend's data version at the last status poll
   }
 
   set hass(hass) {
@@ -194,6 +196,7 @@ class DjiFlightLogPanel extends HTMLElement {
       this._lastKey = key;
       this._load();
     }
+    if (first && this.isConnected) this._pollStatus();
     const spots = hass.states["sensor.dji_flight_log_saved_spots"];
     const spotsKey = spots ? spots.last_updated : "none";
     if (first || spotsKey !== this._spotsKey) {
@@ -434,7 +437,7 @@ class DjiFlightLogPanel extends HTMLElement {
         #attention button.done:hover { background: var(--secondary-background-color, #f2f2f2); }
         #attention .item + .item { border-top: 1px solid var(--divider-color, #e0e0e0); }
 
-        #upbar {
+        #upbar, #scanbar {
           margin: 12px 16px 0; padding: 10px 14px; border-radius: 8px; font-size: 13px;
           background: var(--card-background-color, #fff);
           border-left: 4px solid var(--primary-color);
@@ -446,6 +449,14 @@ class DjiFlightLogPanel extends HTMLElement {
         #upbar li { overflow-wrap: anywhere; }
         #upbar button { background: none; border: none; cursor: pointer; color: inherit; padding: 2px; line-height: 0; }
         #upbar.problem { border-left-color: var(--warning-color, #ffa600); }
+        #scanbar .txt { flex: 1; min-width: 0; }
+        #scanbar .sub { color: var(--secondary-text-color); font-size: 12px; margin-top: 2px; }
+        #scanbar .track {
+          margin-top: 8px; height: 4px; border-radius: 2px; overflow: hidden;
+          background: var(--divider-color, #e0e0e0);
+        }
+        #scanbar .track div { height: 100%; background: var(--primary-color, #03a9f4); transition: width .4s ease; }
+        #scanbar[hidden] { display: none; }
         #drop {
           position: fixed; inset: 0; z-index: 10;
           display: flex; align-items: center; justify-content: center;
@@ -639,6 +650,7 @@ class DjiFlightLogPanel extends HTMLElement {
           <button data-view="batteries">Akkus</button>
         </nav>
 
+        <div id="scanbar" hidden></div>
         <div id="upbar" hidden></div>
         <div id="note" hidden></div>
 
@@ -780,7 +792,13 @@ class DjiFlightLogPanel extends HTMLElement {
     };
   }
 
+  connectedCallback() {
+    if (this._hass) this._pollStatus();
+  }
+
   disconnectedCallback() {
+    clearTimeout(this._statusTimer);
+    this._statusTimer = null;
     this._closePlayer();
     this._closePilots();
     this._details?.pause?.();
@@ -1063,6 +1081,7 @@ class DjiFlightLogPanel extends HTMLElement {
     btn.classList.add("busy");
     try {
       await this._hass.callService(API, "scan", {});
+      setTimeout(() => this._pollStatus(), 1000); // a long scan shows its progress
       setTimeout(() => {
         this._load();
         if (this._cardReady) this._card.updateOptions({});
@@ -1816,6 +1835,55 @@ class DjiFlightLogPanel extends HTMLElement {
       this._load();
       if (this._cardReady) this._card.updateOptions({});
     }
+  }
+
+  // -- scan progress ----------------------------------------------------------
+
+  /**
+   * Poll the backend's status: a progress bar while a scan parses files (after
+   * an update it re-reads every log, which takes many minutes), and a reload
+   * whenever the flights were published anew. Faster while a scan runs.
+   */
+  async _pollStatus() {
+    clearTimeout(this._statusTimer);
+    this._statusTimer = null;
+    if (!this._hass || !this.isConnected) return;
+    let scan = null;
+    try {
+      const status = await this._hass.callApi("GET", `${API}/status`);
+      scan = status.scan;
+      if (this._version !== null && status.version !== this._version) {
+        this._load();
+        if (this._cardReady) this._card.updateOptions({});
+        if (this._planReady && this._planFlights) this._planCard.updateOptions({});
+      }
+      this._version = status.version;
+    } catch (err) {
+      // Not ready yet (503) or offline: try again later.
+    }
+    this._renderScan(scan);
+    if (this.isConnected) {
+      this._statusTimer = setTimeout(() => this._pollStatus(), scan ? 3000 : 30000);
+    }
+  }
+
+  _renderScan(scan) {
+    const bar = this.shadowRoot.getElementById("scanbar");
+    if (!bar) return;
+    // A single new log is done before anyone could read a progress bar.
+    if (!scan || scan.total < 2) {
+      bar.hidden = true;
+      return;
+    }
+    const pct = Math.round((100 * scan.done) / scan.total);
+    bar.hidden = false;
+    bar.innerHTML = `
+      <div class="txt">
+        <div>Lese Flugaufzeichnungen ein … ${scan.done} von ${scan.total}</div>
+        <div class="sub">Die Liste aktualisiert sich zwischendurch.</div>
+        <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="${scan.total}"
+          aria-valuenow="${scan.done}"><div style="width:${pct}%"></div></div>
+      </div>`;
   }
 
   _renderUpload(state) {

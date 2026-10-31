@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -54,6 +55,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # Never mark a file as "failed" while it is still being written to.
 _MIN_FILE_AGE = timedelta(seconds=30)
+# During a long scan, publish the flights parsed so far this often.
+_PUBLISH_DURING_SCAN_S = 30.0
 
 # Weather lookups: at most this many Open-Meteo requests per scan (a large
 # logbook is filled in over several scans), and a place/day without data yet
@@ -174,6 +177,18 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         self._weather_task: asyncio.Task[None] | None = None
         # flight id -> not before; flights Open-Meteo had no data for yet
         self._weather_retry: dict[str, datetime] = {}
+        # {"done", "total"} while a scan parses files, for the panel's progress bar.
+        self.scan_progress: dict[str, int] | None = None
+        # Bumped when data that changed is published, so the panel knows when to
+        # reload; a scan that found nothing new leaves it alone.
+        self.data_version = 0
+        self._changed = False
+
+    def async_update_listeners(self) -> None:
+        if self._changed:
+            self._changed = False
+            self.data_version += 1
+        super().async_update_listeners()
 
     # -- scanning -------------------------------------------------------------
 
@@ -350,6 +365,7 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
             data.pending_files = self.data.pending_files
             data.last_scan = self.data.last_scan
         data.log_dir_ok = True
+        self._changed = True
         self.async_set_updated_data(data)
 
     async def async_dismiss(self, keys: list[str]) -> None:
@@ -439,22 +455,35 @@ class FlightLogCoordinator(DataUpdateCoordinator[FlightData]):
         # resumes where it stopped instead of starting over.
         imported = 0
         pending = 0
-        for path in todo:
-            try:
-                summary, is_new = await self.hass.async_add_executor_job(self._process_file, path)
-            except OSError as err:
-                _LOGGER.debug("Skipping %s: %s", path.name, err)
-                continue
-            self.store.async_delay_save()
-            changed = True
-            if summary is None and str(path) not in self.store.files:
-                pending += 1
-            elif summary is not None and is_new:
-                imported += 1
-                self._fire_imported(summary)
+        # A full re-read after a parser update takes many minutes: report the
+        # progress and publish what is done every now and then.
+        self.scan_progress = {"done": 0, "total": len(todo)} if todo else None
+        last_publish = time.monotonic()
+        try:
+            for done, path in enumerate(todo, start=1):
+                try:
+                    summary, is_new = await self.hass.async_add_executor_job(self._process_file, path)
+                except OSError as err:
+                    _LOGGER.debug("Skipping %s: %s", path.name, err)
+                    continue
+                finally:
+                    self.scan_progress = {"done": done, "total": len(todo)}
+                self.store.async_delay_save()
+                changed = True
+                if summary is None and str(path) not in self.store.files:
+                    pending += 1
+                elif summary is not None and is_new:
+                    imported += 1
+                    self._fire_imported(summary)
+                if done < len(todo) and time.monotonic() - last_publish >= _PUBLISH_DURING_SCAN_S:
+                    last_publish = time.monotonic()
+                    self._publish()
+        finally:
+            self.scan_progress = None
 
         if changed:
             await self.store.async_save()
+            self._changed = True
         if imported:
             _LOGGER.info("Imported %d new flight(s) from %s", imported, self.log_dir)
 

@@ -123,6 +123,8 @@ class FlightsView(HomeAssistantView):
             "attention": data.attention,
             "last_import": data.last_import,
             "last_scan": data.last_scan,
+            "scan": coordinator.scan_progress,
+            "version": coordinator.data_version,
         }
         if media_coordinators(hass):
             index = media_index(hass, data.flights)
@@ -133,6 +135,31 @@ class FlightsView(HomeAssistantView):
             body["media"] = media_status(hass, index)
         body["flights"] = flights
         return self.json(body)
+
+
+class StatusView(HomeAssistantView):
+    """Scan progress and a data version, cheap enough for the panel to poll.
+
+    ``scan`` is ``{"done", "total"}`` while files are being parsed, else null.
+    ``version`` changes whenever the flights were published anew.
+    """
+
+    url = f"{API_BASE}/status"
+    name = f"api:{DOMAIN}:status"
+    requires_auth = True
+
+    async def get(self, request: web.Request) -> web.Response:
+        coordinator = _coordinator(request.app["hass"])
+        if coordinator is None or coordinator.data is None:
+            return self.json_message("Integration not ready", status_code=503)
+        return self.json(
+            {
+                "scan": coordinator.scan_progress,
+                "version": coordinator.data_version,
+                "last_scan": coordinator.data.last_scan,
+                "last_import": coordinator.data.last_import,
+            }
+        )
 
 
 class TracksView(HomeAssistantView):
@@ -648,6 +675,7 @@ def render_export(summary: dict[str, Any], track: dict[str, Any], fmt: str) -> t
 def async_register_views(hass: HomeAssistant) -> None:
     for view in (
         FlightsView,
+        StatusView,
         TracksView,
         TrackView,
         ExportView,
